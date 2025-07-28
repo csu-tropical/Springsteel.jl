@@ -1137,8 +1137,10 @@ function regularGridTransform(grid::RL_Grid)
     # Output on regular grid
     # Transform from the spectral to grid space
     # For RZ grid, varying dimensions are R, Z, and variable
-    num_r_gridpoints = Int64(ceil((grid.params.xmax - grid.params.xmin) / grid.params.r_incr_out)) + 1
-    num_l_gridpoints = Int64(ceil((grid.params.ymax - grid.params.ymin) / grid.params.l_incr_out))
+    num_r_gridpoints = grid.params.r_regular_out
+    num_l_gridpoints = grid.params.l_regular_out
+    r_incr_out = (grid.params.xmax - grid.params.xmin) / (grid.params.r_regular_out - 1)
+    l_incr_out = (grid.params.ymax - grid.params.ymin) / (grid.params.l_regular_out - 1)
 
     spline = zeros(Float64, num_r_gridpoints, num_l_gridpoints)
     spline_r = zeros(Float64, num_r_gridpoints, num_l_gridpoints)
@@ -1158,7 +1160,7 @@ function regularGridTransform(grid::RL_Grid)
     # Output on the nodes
     rpoints = zeros(Float64, num_r_gridpoints)
     for r = 1:num_r_gridpoints
-        rpoints[r] = grid.params.xmin + (r-1)*grid.params.r_incr_out
+        rpoints[r] = grid.params.xmin + (r-1)*r_incr_out
     end
     
     for v in values(grid.params.vars)
@@ -1188,7 +1190,7 @@ function regularGridTransform(grid::RL_Grid)
             SIxxtransform(grid.splines[3,v], rpoints, view(spline_rr,:,p+1))
         end
         
-        for r = 1:grid.params.num_cells
+        for r = 1:num_r_gridpoints
             # Value
             ring.b .= 0.0
             ring.b[1] = spline[r,1]
@@ -1252,14 +1254,17 @@ end
 function getRegularGridpoints(grid::RL_Grid)
 
     # Return an array of the gridpoint locations
-    num_r_gridpoints = Int64(ceil((grid.params.xmax - grid.params.xmin) / grid.params.r_incr_out)) + 1
-    num_l_gridpoints = Int64(ceil((grid.params.ymax - grid.params.ymin) / grid.params.l_incr_out))
+    num_r_gridpoints = grid.params.r_regular_out
+    num_l_gridpoints = grid.params.l_regular_out
+    r_incr_out = (grid.params.xmax - grid.params.xmin) / (grid.params.r_regular_out - 1)
+    l_incr_out = (grid.params.ymax - grid.params.ymin) / (grid.params.l_regular_out - 1)
+
     gridpoints = zeros(Float64, num_r_gridpoints, num_l_gridpoints, 4)
     i = 1
     for r = 1:num_r_gridpoints
-        r_m = grid.params.xmin + (r-1)*grid.params.r_incr_out
+        r_m = grid.params.xmin + (r-1)*r_incr_out
         for l = 1:num_l_gridpoints
-            l_m = grid.params.ymin + (l-1)*grid.params.l_incr_out
+            l_m = grid.params.ymin + (l-1)*l_incr_out
             gridpoints[r,l,1] = r_m
             gridpoints[r,l,2] = l_m
             gridpoints[r,l,3] = r_m * cos(l_m)
