@@ -81,7 +81,7 @@ function create_RL_Grid(gp::GridParameters)
             offset = 0.5 * dl * (ri-1)
             # Default is to use the maximum wavenumber for the ring
             kmax_ring = ri
-            if var_kmax > 0
+            if var_kmax >= 0
                 # User override the maximum wavenumber, but don't exceed the ring size
                 kmax_ring = min(var_kmax, ri)
             end
