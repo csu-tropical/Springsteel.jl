@@ -79,7 +79,9 @@ end
 include("r_grid.jl")
 include("rz_grid.jl")
 include("rl_grid.jl")
+include("rr_grid.jl")
 include("rlz_grid.jl")
+include("rrr_grid.jl")
 
 # Not yet implemented
 struct Z_Grid <: AbstractGrid
@@ -110,11 +112,21 @@ function createGrid(gp::GridParameters)
         grid = create_RL_Grid(gp)
         return grid
 
+    elseif gp.geometry == "RR"
+        # RR grid
+        grid = create_RR_Grid(gp)
+        return grid
+
     elseif gp.geometry == "RLZ"
         # RLZ grid
         grid = create_RLZ_Grid(gp)
         return grid
         
+    elseif gp.geometry == "RRR"
+        # RRR grid
+        grid = create_RRR_Grid(gp)
+        return grid
+
     elseif gp.geometry == "Z"
         # Z grid
         throw(DomainError(0, "Z column model not implemented yet"))
