@@ -27,9 +27,10 @@ export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
 export setMishValues
 
-export FourierParameters, Fourier1D
+export FourierParameters, Fourier1D, Fourier
 export FBtransform, FBtransform!, FAtransform!, FItransform!
-export FBxtransform, FIxtransform, FIxxtransform
+export FBxtransform, FIxtransform, FIxxtransform, FIInttransform
+export IInttransform
 
 export Chebyshev, ChebyshevParameters, Chebyshev1D
 export CBtransform, CBtransform!, CAtransform!, CItransform!

@@ -6,6 +6,9 @@ using FFTW
 export ChebyshevParameters, Chebyshev1D
 export CBtransform, CBtransform!, CAtransform!, CItransform!
 export CBxtransform, CIxtransform, CIxxtransform, CIInttransform
+# Generic (no-prefix) wrappers for abstract 1D basis dispatch
+export Btransform!, Atransform!, Itransform!
+export Ixtransform, Ixxtransform, IInttransform
 
 #Define some convenient aliases
 const real = Float64
@@ -14,15 +17,64 @@ const uint = UInt64
 
 # Define homogeneous boundary conditions
 # Inhomgoneous conditions to be implemented later
+"""Dirichlet (zero-value) boundary condition: field value is zero at the boundary."""
 const R0 = Dict("R0" => 0)
+
+"""Neumann (zero first-derivative) BC via the global affine method (bottom/interior anchor)."""
 const R1T0 = Dict("α0" =>  0.0)
+
+"""Neumann (zero first-derivative) BC via the Wang et al. (1993) global coefficient method."""
 const R1T1 = Dict("α1" =>  0.0) 
+
+"""Alternate Neumann (zero first-derivative) BC formulation."""
 const R1T2 = Dict("α2" =>  0.0)
+
+"""Rank-2 combination boundary condition variant 1 (β₁, β₂ coefficients)."""
 const R2T10 = Dict("β1" => 0.0, "β2" => 0.0)
+
+"""Rank-2 combination boundary condition variant 2 (β₁, β₂ coefficients)."""
 const R2T20 = Dict("β1" => 0.0, "β2" => 0.0)
+
+"""Rank-3 boundary condition (removes three degrees of freedom at each end)."""
 const R3 = Dict("R3" => 0)
 
-# Define the spline parameters
+"""
+    ChebyshevParameters
+
+Immutable parameter struct (using `@kwdef`) for a 1D Chebyshev column basis.
+
+The physical domain `[zmin, zmax]` is sampled at `zDim` Chebyshev–Gauss–Lobatto (CGL)
+points clustered near both endpoints:
+``z_j = \\cos\\!\\left(\\frac{(j-1)\\pi}{N-1}\\right)``
+mapped to the physical range. This gives spectral accuracy for smooth functions.
+
+# Fields
+- `zmin::Float64`: Bottom of the vertical domain (e.g. 0 m or a pressure level).
+- `zmax::Float64`: Top of the vertical domain.
+- `zDim::Int64`: Number of CGL nodes (physical grid points). Both endpoints are included.
+- `bDim::Int64`: Number of retained Chebyshev modes. When `bDim < zDim` a sharp truncation
+  matrix is applied; when `bDim == zDim` an exponential Eresman damping filter
+  `exp(−36*(k/N)^36)` is used instead.
+- `BCB::Dict`: Bottom boundary condition. One of [`R0`](@ref), [`R1T0`](@ref),
+  [`R1T1`](@ref), [`R1T2`](@ref), [`R2T10`](@ref), [`R2T20`](@ref), [`R3`](@ref).
+- `BCT::Dict`: Top boundary condition dict (same options as `BCB`).
+
+# Notes
+- Unlike `CubicBSpline.SplineParameters`, there are no auto-computed fields;
+  all six must be set explicitly.
+- `zDim` must be ≥ 2 (a DCT-I requires at least two endpoints).
+
+# Example
+```julia
+cp = Chebyshev.ChebyshevParameters(
+    zmin = 0.0, zmax = 10000.0,
+    zDim = 25, bDim = 25,
+    BCB = Chebyshev.R0, BCT = Chebyshev.R0
+)
+```
+
+See also: [`Chebyshev1D`](@ref)
+"""
 Base.@kwdef struct ChebyshevParameters
     zmin::real = 0.0   # Minimum z in meters
     zmax::real = 0.0   # Maximum z in meters
@@ -32,6 +84,37 @@ Base.@kwdef struct ChebyshevParameters
     BCT::Dict = R0     # Top boundary condition
 end
 
+"""
+    Chebyshev1D
+
+One-dimensional Chebyshev column object. Construct via `Chebyshev1D(cp::ChebyshevParameters)`.
+
+# Fields
+- `params::ChebyshevParameters`: Column configuration (domain bounds, grid size, BCs).
+- `mishPoints::Vector{Float64}`: CGL points ordered **from `zmin` up to `zmax`** (increasing
+  z), because `scale = -0.5*(zmax-zmin)` flips the cosine so that `cos(0)` maps to `zmin`
+  (bottom) and `cos(π)` maps to `zmax` (top). Points are clustered near both endpoints.
+- `gammaBC::Array{Float64}`: Spectral BC correction factor. A zero `Vector` for `R0/R0`
+  (no correction); a rank-1 `Vector` or full `N×N` `Matrix` for Neumann/Robin combinations.
+  The polymorphic `Array` type annotation covers both cases.
+- `fftPlan::FFTW.r2rFFTWPlan`: Pre-measured `FFTW.REDFT00` (DCT-I) plan. DCT-I is symmetric
+  around both endpoints, consistent with the CGL grid that includes both `zmin` and `zmax`.
+  **Do not serialise**; FFTW plans are not portable.
+- `filter::Matrix{Float64}`: Size `(bDim, zDim)`. Either a sharp truncation matrix
+  (when `bDim < zDim`) or an exponential spectral damping matrix (when `bDim == zDim`).
+- `uMish::Vector{Float64}`: Physical field values at the `zDim` CGL points (mutable buffer).
+- `b::Vector{Float64}`: Filtered Chebyshev B-coefficients of length `bDim`.
+- `a::Vector{Float64}`: BC-corrected A-coefficients of length `zDim`, ready for inverse DCT.
+- `ax::Vector{Float64}`: Working buffer of length `zDim` for derivative/integral coefficients.
+
+# Notes
+- Constructing `Chebyshev1D` calls `FFTW.plan_r2r` with `FFTW.PATIENT`; first construction
+  is slow but subsequent transforms are fast.
+- The struct is **not thread-safe** if `uMish`, `b`, `a`, or `ax` are mutated concurrently.
+
+See also: [`ChebyshevParameters`](@ref), [`CBtransform`](@ref), [`CAtransform`](@ref),
+[`CItransform`](@ref)
+"""
 struct Chebyshev1D
     # Parameters for the column
     params::ChebyshevParameters
@@ -58,6 +141,36 @@ struct Chebyshev1D
     ax::Vector{real}
 end
 
+"""
+    Chebyshev1D(cp::ChebyshevParameters) -> Chebyshev1D
+
+Construct a [`Chebyshev1D`](@ref) object from column parameters.
+
+Pre-computes and caches all state needed for repeated spectral transforms:
+1. CGL mish points via [`calcMishPoints`](@ref)
+2. BC correction matrix/vector via [`calcGammaBC`](@ref)
+3. A `FFTW.REDFT00` (DCT-I) plan measured with `FFTW.PATIENT`
+4. A spectral filter matrix via [`calcFilterMatrix`](@ref)
+5. Zero-initialised working buffers `uMish`, `b`, `a`, `ax`
+
+Reuse the constructed `Chebyshev1D` object across transforms to amortise the
+plan-measurement cost.
+
+# Arguments
+- `cp::ChebyshevParameters`: Column configuration
+
+# Returns
+- `Chebyshev1D`: Initialised column ready for transform calls
+
+# Example
+```julia
+cp = Chebyshev.ChebyshevParameters(zmin=0.0, zmax=1.0, zDim=25, bDim=25,
+                                    BCB=Chebyshev.R0, BCT=Chebyshev.R0)
+col = Chebyshev.Chebyshev1D(cp)
+```
+
+See also: [`CBtransform`](@ref), [`CAtransform`](@ref), [`CItransform`](@ref)
+"""
 function Chebyshev1D(cp::ChebyshevParameters)
 
     # Constructor for 1D Chebsyshev structure
@@ -83,6 +196,23 @@ function Chebyshev1D(cp::ChebyshevParameters)
     return column
 end
 
+"""
+    calcMishPoints(cp::ChebyshevParameters) -> Vector{Float64}
+
+Compute the Chebyshev–Gauss–Lobatto (CGL) physical grid points for the column.
+
+Points are placed at
+``z_j = \\cos\\!\\left(\\frac{(j-1)\\pi}{N-1}\\right) \\cdot s + o``
+where `s = -0.5*(zmax−zmin)` (negative scale) and `o = 0.5*(zmin+zmax)`. The negative
+scale maps `cos(0) = 1` → `zmin` and `cos(π) = −1` → `zmax`, so the returned vector
+runs **from `zmin` up to `zmax`** (increasing z, bottom to top). Points are clustered
+near both endpoints according to the CGL distribution.
+
+# Returns
+- `Vector{Float64}`: CGL points of length `zDim`, from `zmin` to `zmax`
+
+See also: [`Chebyshev1D`](@ref)
+"""
 function calcMishPoints(cp::ChebyshevParameters)
 
     # Calculate the physical Chebyshev points
@@ -99,6 +229,25 @@ function calcMishPoints(cp::ChebyshevParameters)
     return z
 end
 
+"""
+    calcFilterMatrix(cp::ChebyshevParameters) -> Matrix{Float64}
+
+Build the spectral filter/truncation matrix of size `(bDim, zDim)` (when `bDim < zDim`)
+or `(zDim, zDim)` with exponential damping (when `bDim == zDim`).
+
+Two branches:
+- **Sharp truncation** (`bDim < zDim`): returns the leading `bDim × zDim` rows of the
+  identity, zeroing all Chebyshev modes above index `bDim`.
+- **Spectral damping** (`bDim == zDim`): returns a diagonal matrix with entries
+  ``\\text{filter}_{ii} = \\exp\\!\\left(-36 \\left(\\frac{i}{N}\\right)^{36}\\right)``,
+  which leaves low modes essentially unchanged while strongly attenuating modes near the
+  Nyquist limit (the Eresman/Boyd exponential filter).
+
+# Returns
+- `Matrix{Float64}`: Filter matrix applied after the forward DCT in `CBtransform!`
+
+See also: [`CBtransform`](@ref), [`Chebyshev1D`](@ref)
+"""
 function calcFilterMatrix(cp::ChebyshevParameters)
 
     # Create a matrix to truncate the coefficients to bDim after Fourier transformation
@@ -115,6 +264,36 @@ function calcFilterMatrix(cp::ChebyshevParameters)
     end
 end
 
+"""
+    CBtransform(cp::ChebyshevParameters, fftPlan, uMish::Vector{Float64}) -> Vector{Float64}
+    CBtransform(column::Chebyshev1D, uMish::Vector{Float64}) -> Vector{Float64}
+    CBtransform!(column::Chebyshev1D)
+
+Compute the forward Chebyshev transform (physical → filtered B-coefficients).
+
+``b = \\text{filter} \\cdot \\frac{\\text{DCT}(u)}{2(N-1)}``
+
+The `FFTW.REDFT00` (DCT-I) output is divided by `2*(zDim−1)` so that the discrete
+orthogonality relation is satisfied and amplitude-1 polynomials map to amplitude-1
+coefficients. The filter matrix then truncates to `bDim` modes or applies exponential
+damping per [`calcFilterMatrix`](@ref).
+
+# Variants
+- `CBtransform(cp, fftPlan, uMish)` — allocates; requires explicit plan (useful for
+  constructing columns with varying parameters without a full `Chebyshev1D` object)
+- `CBtransform(column, uMish)` — allocates using `column`'s cached filter and plan
+- `CBtransform!(column)` — in-place; reads `column.uMish`, writes `column.b`
+
+# Arguments
+- `cp::ChebyshevParameters`: Column parameters
+- `fftPlan`: Pre-measured `FFTW.r2rFFTWPlan` for the DCT-I forward transform
+- `uMish::Vector{Float64}`: Physical field values at the `zDim` CGL points
+
+# Returns
+- `Vector{Float64}`: Filtered B-coefficient vector of length `bDim` (allocating variants)
+
+See also: [`CAtransform`](@ref), [`CItransform`](@ref)
+"""
 function CBtransform(cp::ChebyshevParameters, fftPlan, uMish::Vector{real})
 
     # Do the DCT transform and pre-scale the output based on the physical length
@@ -136,6 +315,29 @@ function CBtransform(column::Chebyshev1D, uMish::Vector{real})
     return column.filter * b
 end
 
+"""
+    CAtransform(cp::ChebyshevParameters, gammaBC, b::Vector{Float64}) -> Vector{Float64}
+    CAtransform!(column::Chebyshev1D)
+
+Apply boundary conditions and zero-pad B-coefficients to produce A-coefficients.
+
+``a = b_{\\text{fill}} + \\texttt{gammaBC}^\\top \\cdot b_{\\text{fill}}``
+
+where ``b_{\\text{fill}}`` is `b` zero-padded from `bDim` to `zDim`. The additive structure
+means that `gammaBC = 0` (the `R0/R0` Dirichlet case) applies no correction. Julia's `*`
+operator handles both vector and matrix `gammaBC` transparently.
+
+The resulting `a` has length `zDim` and is ready for the inverse DCT in [`CItransform`](@ref).
+
+# Variants
+- `CAtransform(cp, gammaBC, b)` — allocates and returns `a`
+- `CAtransform!(column)` — in-place; reads `column.b`, writes `column.a`
+
+# Returns
+- `Vector{Float64}`: BC-corrected A-coefficients of length `zDim` (allocating variant)
+
+See also: [`CBtransform`](@ref), [`CItransform`](@ref)
+"""
 function CAtransform(cp::ChebyshevParameters, gammaBC, b::Vector{real})
 
     # Apply the boundary conditions and pad the coefficients with zeros back to zDim
@@ -153,6 +355,28 @@ function CAtransform!(column::Chebyshev1D)
     column.a .= a
 end
     
+"""
+    CItransform(cp::ChebyshevParameters, fftPlan, a::Vector{Float64}) -> Vector{Float64}
+    CItransform!(column::Chebyshev1D)
+
+Compute the inverse Chebyshev transform (A-coefficients → physical values).
+
+``u = \\text{DCT-I}(a)``
+
+Performs the `FFTW.REDFT00` (DCT-I) inverse transform on the `zDim`-length A-coefficient
+vector. No additional scaling is needed; the forward normalisation applied in
+[`CBtransform`](@ref) ensures that the round-trip `CB → CA → CI` recovers the original
+physical values.
+
+# Variants
+- `CItransform(cp, fftPlan, a)` — allocates and returns `uMish`
+- `CItransform!(column)` — in-place; reads `column.a`, writes `column.uMish`
+
+# Returns
+- `Vector{Float64}`: Physical field values of length `zDim` (allocating variant)
+
+See also: [`CBtransform`](@ref), [`CAtransform`](@ref)
+"""
 function CItransform(cp::ChebyshevParameters, fftPlan, a::Vector{real})
 
     # Do the inverse DCT transform to get back physical values
@@ -167,6 +391,28 @@ function CItransform!(column::Chebyshev1D)
 end
 
 
+"""
+    CIIntcoefficients(cp::ChebyshevParameters, a::Vector{Float64}, C0::Float64 = 0.0) -> Vector{Float64}
+
+Convert A-coefficients to indefinite-integral A-coefficients via the Chebyshev recurrence.
+
+``a^{\\text{int}}_k = \\frac{\\Delta z}{4} \\cdot \\frac{a_{k-1} - a_{k+1}}{k-1}, \\quad k = 2 \\ldots N-1``
+``a^{\\text{int}}_N = \\frac{a_{N-1}}{N-1}``
+``a^{\\text{int}}_1 = C_0 - 2\\sum_{k=2}^{N} a^{\\text{int}}_k``
+
+where ``\\Delta z = z_{\\max} - z_{\\min}`` and `C0` is the optional constant of integration
+(value of the integral at the reference point).
+
+# Arguments
+- `cp::ChebyshevParameters`: Column parameters
+- `a::Vector{Float64}`: Source A-coefficient vector of length `zDim`
+- `C0::Float64`: Constant of integration (default `0.0`)
+
+# Returns
+- `Vector{Float64}`: Integral A-coefficient vector (allocates)
+
+See also: [`CIInttransform`](@ref)
+"""
 function CIIntcoefficients(cp::ChebyshevParameters, a::Vector{real}, C0::real = 0.0)
 
     # Calculate the integral coefficients using a recursive relationship
@@ -184,6 +430,27 @@ function CIIntcoefficients(cp::ChebyshevParameters, a::Vector{real}, C0::real = 
     return aInt
 end
 
+"""
+    CIInttransform(cp::ChebyshevParameters, fftPlan, a::Vector{Float64}, C0::Float64 = 0.0) -> Vector{Float64}
+    CIInttransform(column::Chebyshev1D, C0::Float64 = 0.0) -> Vector{Float64}
+
+Compute the **indefinite integral** of the Chebyshev expansion in physical space.
+
+Applies [`CIIntcoefficients`](@ref) to convert A-coefficients to integral coefficients,
+then performs an inverse DCT-I. The constant of integration `C0` sets the reference value.
+
+# Variants
+- `CIInttransform(cp, fftPlan, a, C0)` — allocates; requires explicit plan
+- `CIInttransform(column, C0)` — convenience form using the cached `column` internals
+
+# Arguments
+- `C0::Float64`: Constant of integration (default `0.0`)
+
+# Returns
+- `Vector{Float64}`: Integral field values of length `zDim`
+
+See also: [`CIIntcoefficients`](@ref), [`CIxtransform`](@ref)
+"""
 function CIInttransform(cp::ChebyshevParameters, fftPlan, a::Vector{real}, C0::real = 0.0)
 
     # Do a transform to get the integral of the column values
@@ -200,6 +467,28 @@ function CIInttransform(column::Chebyshev1D, C0::real = 0.0)
     return uInt
 end
 
+"""
+    CIxcoefficients(cp::ChebyshevParameters, a::Vector{Float64}, ax::Vector{Float64}) -> Vector{Float64}
+
+Convert A-coefficients to first-derivative A-coefficients via the Chebyshev recurrence.
+
+The recurrence proceeds **backwards** from `k = zDim` to `k = 2`:
+``a'_{k-1} = 2(k-1) a_k + a'_{k+1}``
+then scaled by ``-1 / (0.5 \\cdot (z_{\\max} - z_{\\min}))`` to map from the reference
+domain ``[-1,1]`` to the physical domain.
+
+**Mutates** `ax` in-place and also returns it.
+
+# Arguments
+- `cp::ChebyshevParameters`: Column parameters
+- `a::Vector{Float64}`: Source A-coefficient vector of length `zDim`
+- `ax::Vector{Float64}`: Pre-allocated output buffer of length `zDim`; overwritten on return
+
+# Returns
+- `ax`: Derivative A-coefficient vector
+
+See also: [`CIxtransform`](@ref), [`CIxxtransform`](@ref)
+"""
 function CIxcoefficients(cp::ChebyshevParameters, a::Vector{real}, ax::Vector{real})
 
     # Calculate the derivative coefficients using a recursive relationship
@@ -212,6 +501,24 @@ function CIxcoefficients(cp::ChebyshevParameters, a::Vector{real}, ax::Vector{re
     return ax
 end
 
+"""
+    CIxtransform(cp::ChebyshevParameters, fftPlan, a::Vector{Float64}, ax::Vector{Float64}) -> Vector{Float64}
+    CIxtransform(column::Chebyshev1D) -> Vector{Float64}
+
+Evaluate the **first vertical derivative** ``\\partial u / \\partial z`` in physical space.
+
+Applies [`CIxcoefficients`](@ref) to convert A-coefficients to derivative coefficients,
+then performs an inverse DCT-I.
+
+# Variants
+- `CIxtransform(cp, fftPlan, a, ax)` — allocates a new output vector; `ax` is overwritten
+- `CIxtransform(column)` — convenience form using the cached `column` internals
+
+# Returns
+- `Vector{Float64}`: First-derivative values of length `zDim`
+
+See also: [`CIxcoefficients`](@ref), [`CIxxtransform`](@ref), [`CItransform`](@ref)
+"""
 function CIxtransform(cp::ChebyshevParameters, fftPlan, a::Vector{real}, ax::Vector{real})
     
     # Do the inverse transform to get back the first derivative in physical space
@@ -226,6 +533,21 @@ function CIxtransform(column::Chebyshev1D)
     return ux
 end
 
+"""
+    CIxxtransform(column::Chebyshev1D) -> Vector{Float64}
+
+Evaluate the **second vertical derivative** ``\\partial^2 u / \\partial z^2`` in physical space.
+
+Applies [`CIxcoefficients`](@ref) twice: first on `column.a` to obtain first-derivative
+coefficients `a'`, then again on `a'` to obtain `a''`. A `copy` of the intermediate `a'`
+buffer is used to avoid overwriting the `ax` working buffer mid-computation. Performs one
+inverse DCT-I on the final `a''` coefficients.
+
+# Returns
+- `Vector{Float64}`: Second-derivative values of length `zDim`
+
+See also: [`CIxtransform`](@ref), [`CItransform`](@ref)
+"""
 function CIxxtransform(column::Chebyshev1D)
 
     # Do the inverse transform to get back the second derivative in physical space
@@ -235,6 +557,16 @@ function CIxxtransform(column::Chebyshev1D)
 end
 
 
+"""
+    dct_matrix(Nbasis::Int64) -> Matrix{Float64}
+
+Build the full DCT-I evaluation matrix of size `(Nbasis, Nbasis)`.
+
+Entry `[i,j] = 2 cos((j-1) * (i-1)*π/(N-1))` with endpoint columns scaled by 0.5.
+Useful for debugging transforms and constructing linear solvers directly in spectral space.
+
+See also: [`dct_1st_derivative`](@ref), [`dct_2nd_derivative`](@ref)
+"""
 function dct_matrix(Nbasis::Int64)
     
     # Create a matrix with the DCT as basis functions
@@ -251,6 +583,18 @@ function dct_matrix(Nbasis::Int64)
     return dct
 end
 
+"""
+    dct_1st_derivative(Nbasis::Int64, physical_length::Float64) -> Matrix{Float64}
+
+Build the first-derivative matrix in DCT-I basis of size `(Nbasis, Nbasis)`.
+
+Applies spectral differentiation analytically: entry `[i,j]` is the value of
+``dT_n/dx`` at the `i`-th CGL node, scaled by `1 / (physical_length/4)` to convert
+from the reference domain ``[-1,1]`` to the physical domain. Endpoint rows use the
+limiting formula to avoid a `sin(t) = 0` singularity.
+
+See also: [`dct_matrix`](@ref), [`dct_2nd_derivative`](@ref)
+"""
 function dct_1st_derivative(Nbasis::Int64, physical_length::Float64)
 
     # Create a 1st derivative matrix with the DCT as basis functions
@@ -272,6 +616,16 @@ function dct_1st_derivative(Nbasis::Int64, physical_length::Float64)
     return dct ./ (physical_length/4.0)
 end
 
+"""
+    dct_2nd_derivative(Nbasis::Int64, physical_length::Float64) -> Matrix{Float64}
+
+Build the second-derivative matrix in DCT-I basis of size `(Nbasis, Nbasis)`.
+
+Analytic second spectral derivative, scaled by `1 / (physical_length^2/8)`. Endpoint rows
+use the limiting formula. Useful for BVP solvers and debugging.
+
+See also: [`dct_matrix`](@ref), [`dct_1st_derivative`](@ref)
+"""
 function dct_2nd_derivative(Nbasis::Int64, physical_length::Float64)
 
     # Create a 2nd derivative matrix with the DCT as basis functions
@@ -295,6 +649,15 @@ function dct_2nd_derivative(Nbasis::Int64, physical_length::Float64)
     return dct ./ (physical_length^2/8.0)
 end
 
+"""
+    calcGammaBCalt(cp::ChebyshevParameters)
+
+Alternative BC matrix construction via DCT matrix inversion.
+
+!!! warning "Deprecated"
+    This function works only for Dirichlet BCs and is retained for reference.
+    It does not handle Neumann BCs. Use [`calcGammaBC`](@ref) instead.
+"""
 function calcGammaBCalt(cp::ChebyshevParameters)
     
     # This works for Dirichelet BCs, but not for Neumann
@@ -329,6 +692,32 @@ function calcGammaBCalt(cp::ChebyshevParameters)
     return gammaBC
 end
 
+"""
+    calcGammaBC(cp::ChebyshevParameters) -> Union{Vector{Float64}, Matrix{Float64}}
+
+Compute the spectral BC correction term for `CAtransform`.
+
+Following the Ooyama (2002) nomenclature, returns:
+- A zero `Vector{Float64}` for `R0/R0` (Dirichlet at both ends — no correction needed)
+- A rank-1 `Vector{Float64}` or rank-1 `Matrix{Float64}` for simple Neumann (R1T0/R0, R0/R1T0)
+- A full `N×N` `Matrix{Float64}` for Neumann BCs using the Wang et al. (1993) global
+  coefficient method (R1T1, R0/R1T1, R1T1/R0, R1T1/R1T1)
+- Combined matrices for mixed-BC combinations
+
+Neumann BCs via the global method reference:
+> Wang, H., Lacroix, S., & Labrosse, G. (1993). *A Chebyshev collocation method for the
+> Navier–Stokes equations with application to double-diffusive convection*.
+> JCP **109**, 133. https://doi.org/10.1006/jcph.1993.1133
+
+# Returns
+- `Array{Float64}`: Vector or matrix depending on BC combination
+
+# Notes
+- Each supported BC combination is handled by a separate branch. Unsupported combinations
+  throw a `DomainError`.
+
+See also: [`CAtransform`](@ref), [`Chebyshev1D`](@ref)
+"""
 function calcGammaBC(cp::ChebyshevParameters)
 
     # Calculate a matrix to apply the Neumann and Dirichelet BCs
@@ -514,6 +903,18 @@ function calcGammaBC(cp::ChebyshevParameters)
 
 end
 
+"""
+    bvp(N, u, ux, uxx, f, d0, d1, d2, scale, alpha, beta) -> Vector{Float64}
+
+Modified Chebyshev boundary value problem solver (Boyd 2000).
+
+Solves a general second-order BVP ``d_2 u'' + d_1 u' + d_0 u = f`` on ``[-1,1]`` with
+Dirichlet boundary conditions `u(+1) = alpha`, `u(-1) = beta`. Uses the modified basis
+functions from [`bvp_modified_basis`](@ref) to enforce homogeneous BCs automatically.
+Primarily useful for testing the DCT matrix formulation against analytic solutions.
+
+See also: [`bvp_modified_basis`](@ref), [`bvp_basis`](@ref)
+"""
 function bvp(N::Int64, u::Array{Float64}, ux::Array{Float64}, uxx::Array{Float64},
         f::Array{Float64}, d0::Array{Float64}, d1::Array{Float64}, d2::Array{Float64},
         scale::Float64 = 1.0, alpha::Float64 = 0.0, beta::Float64 = 0.0)
@@ -585,6 +986,17 @@ function bvp(N::Int64, u::Array{Float64}, ux::Array{Float64}, uxx::Array{Float64
     return u
 end
 
+"""
+    bvp_modified_basis(x, nbasis, phi, phix, phixx, scale) -> (phi, phix, phixx)
+
+Evaluate the modified Chebyshev basis functions and their derivatives at point `x`.
+
+Modified basis functions satisfy homogeneous Dirichlet BCs at `±1`. Handles the
+singularity at endpoints by using the limiting formulae. Returns in-place the arrays
+`phi` (values), `phix` (first derivatives), `phixx` (second derivatives).
+
+See also: [`bvp`](@ref)
+"""
 function bvp_modified_basis(x::Float64, nbasis::Int64, phi::Array{Float64}, phix::Array{Float64}, phixx::Array{Float64}, scale::Float64)
 
     if abs(x) < 1.0 # Avoid singularities at the endpoints
@@ -627,6 +1039,14 @@ function bvp_modified_basis(x::Float64, nbasis::Int64, phi::Array{Float64}, phix
     return phi, phix, phixx
 end
 
+"""
+    bvp_basis(x, nbasis, phi, phix, phixx) -> (phi, phix, phixx)
+
+Evaluate the standard (unmodified) Chebyshev basis functions and their derivatives at `x`.
+
+Used for debugging and verification; does not enforce BCs. See [`bvp_modified_basis`](@ref)
+for the BC-enforcing variant.
+"""
 function bvp_basis(x::Float64, nbasis::Int64, phi::Array{Float64}, phix::Array{Float64}, phixx::Array{Float64})
 
     if abs(x) < 1.0 # Avoid singularities at the endpoints
@@ -670,6 +1090,14 @@ function bvp_basis(x::Float64, nbasis::Int64, phi::Array{Float64}, phix::Array{F
     return phi, phix, phixx
 end
 
+"""
+    evaluate_chebyshev(z, b)
+
+Evaluate the Chebyshev expansion at arbitrary points `z` given B-coefficients `b`.
+
+Builds a DCT evaluation matrix for the requested `z` points, applies the BC transform via
+`CAtransform!`, then multiplies. Useful for off-grid evaluations and debugging.
+"""
 function evaluate_chebyshev(z, b)
 
     dct = zeros(Float64,length(z), cp.zDim)
@@ -690,6 +1118,13 @@ function evaluate_chebyshev(z, b)
     dct * a
 end
 
+"""
+    evaluate_chebyshev_1st_derivative(z, b)
+
+Evaluate the first derivative of the Chebyshev expansion at arbitrary points `z`.
+
+Analogous to [`evaluate_chebyshev`](@ref) but uses the spectral first-derivative matrix.
+"""
 function evaluate_chebyshev_1st_derivative(z, b)
 
     dct = zeros(Float64,length(z), cp.zDim)
@@ -715,4 +1150,30 @@ function evaluate_chebyshev_1st_derivative(z, b)
     dct * a
 end
 
+
+# ---------------------------------------------------------------------------
+# Generic wrappers (no "C" prefix) dispatching on Chebyshev1D
+# These enable abstract 1D basis code that calls Btransform!, Itransform!, etc.
+# without needing to know the underlying basis type.
+# ---------------------------------------------------------------------------
+
+"""Generic in-place B-transform wrapper for `Chebyshev1D`. Delegates to `CBtransform!`."""
+Btransform!(column::Chebyshev1D) = CBtransform!(column)
+
+"""Generic in-place A-transform wrapper for `Chebyshev1D`. Delegates to `CAtransform!`."""
+Atransform!(column::Chebyshev1D) = CAtransform!(column)
+
+"""Generic in-place I-transform wrapper for `Chebyshev1D`. Delegates to `CItransform!`."""
+Itransform!(column::Chebyshev1D) = CItransform!(column)
+
+"""Generic Ix-transform wrapper for `Chebyshev1D` (allocating). Delegates to [`CIxtransform`](@ref)."""
+Ixtransform(column::Chebyshev1D) = CIxtransform(column)
+
+"""Generic Ixx-transform wrapper for `Chebyshev1D` (allocating). Delegates to [`CIxxtransform`](@ref)."""
+Ixxtransform(column::Chebyshev1D) = CIxxtransform(column)
+
+"""Generic indefinite-integral transform wrapper for `Chebyshev1D`. Delegates to [`CIInttransform`](@ref)."""
+IInttransform(column::Chebyshev1D, C0::real = 0.0) = CIInttransform(column, C0)
+
+#Module end
 end #module

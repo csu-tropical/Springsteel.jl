@@ -1,5 +1,61 @@
 # Functions for the R Grid
 
+"""
+    R_Grid <: AbstractGrid
+
+One-dimensional spectral grid using cubic B-spline basis functions in the radial (R) direction.
+
+# Fields
+- `params::GridParameters`: Grid configuration including domain bounds, resolution, and boundary conditions
+- `splines::Array{Spline1D}`: Array of 1D spline objects, one per variable
+- `spectral::Array{Float64}`: Spectral coefficients array with dimensions `(b_rDim, vars)`
+- `physical::Array{Float64}`: Physical space values with dimensions `(rDim, vars, 3)` where the last dimension stores `[value, derivative, second_derivative]`
+
+# Description
+`R_Grid` provides a one-dimensional spectral representation using cubic B-splines. The grid supports:
+- Multiple variables with independent boundary conditions
+- Variable-specific filter lengths (l_q parameter)
+- Efficient spectral transforms between physical and spectral space
+- Domain tiling for parallel/distributed computing
+- Automatic computation of derivatives up to second order
+
+# Example
+```julia
+using Springsteel
+
+# Create a simple 1D grid
+gp = GridParameters(
+    geometry = "R",
+    xmin = 0.0,
+    xmax = 10.0,
+    num_cells = 20,
+    BCL = Dict("u" => CubicBSpline.R0),
+    BCR = Dict("u" => CubicBSpline.R0),
+    vars = Dict("u" => 1)
+)
+
+grid = createGrid(gp)
+
+# Set values in physical space
+gridpoints = getGridpoints(grid)
+for i in eachindex(gridpoints)
+    grid.physical[i, 1, 1] = sin(gridpoints[i])
+end
+
+# Transform to spectral space
+spectralTransform!(grid)
+
+# Transform back to physical space (with derivatives)
+gridTransform!(grid)
+
+# Access derivatives
+values = grid.physical[:, 1, 1]
+first_derivatives = grid.physical[:, 1, 2]
+second_derivatives = grid.physical[:, 1, 3]
+```
+
+See also: [`create_R_Grid`](@ref), [`GridParameters`](@ref), [`spectralTransform!`](@ref), [`gridTransform!`](@ref)
+"""
 struct R_Grid <: AbstractGrid
     params::GridParameters
     splines::Array{Spline1D}
@@ -7,6 +63,43 @@ struct R_Grid <: AbstractGrid
     physical::Array{Float64}
 end
 
+"""
+    create_R_Grid(gp::GridParameters) -> R_Grid
+
+Create a one-dimensional spectral grid with cubic B-spline basis functions.
+
+# Arguments
+- `gp::GridParameters`: Grid parameters specifying domain, resolution, boundary conditions, and variables
+
+# Returns
+- `R_Grid`: Initialized grid with allocated spline objects and arrays
+
+# Description
+Constructs an `R_Grid` by:
+1. Allocating spectral and physical space arrays based on grid dimensions
+2. Creating a `Spline1D` object for each variable with specified boundary conditions
+3. Supporting variable-specific filter lengths via `gp.l_q` dictionary
+
+The resulting grid is ready for spectral transforms and derivative computation.
+
+# Example
+```julia
+gp = GridParameters(
+    geometry = "R",
+    xmin = -1.0,
+    xmax = 1.0,
+    num_cells = 50,
+    BCL = Dict("temperature" => CubicBSpline.R0, "velocity" => CubicBSpline.R1),
+    BCR = Dict("temperature" => CubicBSpline.R0, "velocity" => CubicBSpline.R1),
+    vars = Dict("temperature" => 1, "velocity" => 2),
+    l_q = Dict("temperature" => 3.0)  # Custom filter length for temperature
+)
+
+grid = create_R_Grid(gp)
+```
+
+See also: [`R_Grid`](@ref), [`GridParameters`](@ref)
+"""
 function create_R_Grid(gp::GridParameters)
 
     # Create a 1-D grid with bSplines as basis
@@ -74,12 +167,75 @@ function calcTileSizes(patch::R_Grid, num_tiles::int)
     return tile_params
 end
 
+"""
+    getGridpoints(grid::R_Grid) -> Vector{Float64}
+
+Return the physical locations of all gridpoints in the R direction.
+
+# Arguments
+- `grid::R_Grid`: The grid object
+
+# Returns
+- `Vector{Float64}`: Array of gridpoint locations (mesh points) in the radial direction
+
+# Description
+Returns the mesh points (collocation points) where the physical field values are defined.
+For cubic B-splines with `num_cells` cells, there are `3*num_cells` interior gridpoints
+plus boundary points determined by the boundary conditions.
+
+# Example
+```julia
+grid = createGrid(gp)
+points = getGridpoints(grid)
+
+# Use gridpoints to initialize field
+for (i, r) in enumerate(points)
+    grid.physical[i, 1, 1] = exp(-r^2)
+end
+```
+
+See also: [`R_Grid`](@ref)
+"""
 function getGridpoints(grid::R_Grid)
 
     # Return an array of the gridpoint locations
     return grid.splines[1].mishPoints
 end
 
+"""
+    spectralTransform!(grid::R_Grid) -> Array{Float64}
+
+Transform field values from physical space to spectral (B-spline coefficient) space.
+
+# Arguments
+- `grid::R_Grid`: Grid containing physical values in `grid.physical[:, :, 1]`
+
+# Returns
+- `Array{Float64}`: Spectral coefficients (also stored in `grid.spectral`)
+
+# Description
+Performs a spectral transform for all variables in the grid, computing the B-spline
+coefficients that represent the physical field. The transform uses a cubic B-spline
+basis with the boundary conditions specified in the grid parameters.
+
+The function modifies `grid.spectral` in-place and returns the spectral array.
+Only the field values `grid.physical[:, :, 1]` are used; derivatives are ignored.
+
+# Example
+```julia
+# Set physical values
+for i in 1:length(gridpoints)
+    grid.physical[i, 1, 1] = sin(2π * gridpoints[i])
+end
+
+# Transform to spectral space
+coeffs = spectralTransform!(grid)
+
+# Spectral coefficients are now in grid.spectral
+```
+
+See also: [`gridTransform!`](@ref), [`R_Grid`](@ref)
+"""
 function spectralTransform!(grid::R_Grid)
     
     # Transform from the grid to spectral space
@@ -128,6 +284,43 @@ function spectralxTransform(grid::R_Grid, physical::Array{real}, spectral::Array
 
 end
 
+"""
+    gridTransform!(grid::R_Grid) -> Array{Float64}
+
+Transform from spectral (B-spline coefficient) space to physical space with derivatives.
+
+# Arguments
+- `grid::R_Grid`: Grid containing spectral coefficients in `grid.spectral`
+
+# Returns
+- `Array{Float64}`: Physical values and derivatives (also stored in `grid.physical`)
+
+# Description
+Performs the inverse spectral transform, evaluating the B-spline representation at all
+gridpoints. For each variable, computes:
+- `grid.physical[:, var, 1]`: Field values
+- `grid.physical[:, var, 2]`: First derivatives (∂/∂r)
+- `grid.physical[:, var, 3]`: Second derivatives (∂²/∂r²)
+
+The transform uses the spectral coefficients in `grid.spectral` and the B-spline basis
+functions defined by the grid parameters.
+
+# Example
+```julia
+# After spectral transform or spectral space operations
+spectralTransform!(grid)
+
+# Transform back to physical space
+gridTransform!(grid)
+
+# Access values and derivatives
+values = grid.physical[:, 1, 1]
+derivatives = grid.physical[:, 1, 2]
+second_derivatives = grid.physical[:, 1, 3]
+```
+
+See also: [`spectralTransform!`](@ref), [`R_Grid`](@ref)
+"""
 function gridTransform!(grid::R_Grid)
     
     # Transform from the spectral to grid space
@@ -230,14 +423,14 @@ function sumSpectralTile!(patch::R_Grid, tile::R_Grid)
     return spectral
 end
 
-function sumSpectralTile(spectral_patch::Array{real}, spectral_tile::Array{real},
-                         spectralIndexL::int, spectralIndexR::int)
-
-    # Add the tile b's to the patch
-    spectral_patch[spectralIndexL:spectralIndexR,:] =
-        spectral_patch[spectralIndexL:spectralIndexR,:] .+ spectral_tile[:,:]
-    return spectral_patch
-end
+#function sumSpectralTile(spectral_patch::Array{real}, spectral_tile::Array{real},
+#                         spectralIndexL::int, spectralIndexR::int)
+#
+#    # Add the tile b's to the patch
+#    spectral_patch[spectralIndexL:spectralIndexR,:] =
+#        spectral_patch[spectralIndexL:spectralIndexR,:] .+ spectral_tile[:,:]
+#    return spectral_patch
+#end
 
 function setSpectralTile!(patch::R_Grid, tile::R_Grid)
 

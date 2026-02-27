@@ -550,7 +550,10 @@ performing the SA transform.
 See also: [`setSpectralTile!`](@ref), [`sumSharedSpectral`](@ref)
 """
 function sumSpectralTile!(patch::Spline1D_Grid, tile::Spline1D_Grid)
-    return spectral
+    siL = tile.params.spectralIndexL
+    siR = tile.params.spectralIndexR
+    patch.spectral[siL:siR,:] .+= tile.spectral[:,:]   
+    return patch.spectral
 end
 
 function sumSpectralTile(spectral_patch::Array{real}, spectral_tile::Array{real},
@@ -572,8 +575,8 @@ Equivalent to zeroing the patch spectral array and then calling [`sumSpectralTil
 with one tile.  Useful when only one tile contributes (e.g. single-tile patches or testing).
 
 # Variants
-- `setSpectralTile!(patch, tile)` — mutates `patch.spectral` in-place using a 4-argument
-  lower-level call (reads indices from `tile.params`)
+- `setSpectralTile!(patch, tile)` — mutates `patch.spectral` in-place; delegates to the
+  3-argument form using `patch.params` and `patch.spectral`
 - `setSpectralTile(patchSpectral, pp, tile)` — clears `patchSpectral`, then inserts
   `tile.spectral` at the tile's spectral indices; `pp` is unused in 1D (API compatibility)
 
@@ -583,7 +586,7 @@ with one tile.  Useful when only one tile contributes (e.g. single-tile patches 
 See also: [`sumSpectralTile!`](@ref)
 """
 function setSpectralTile!(patch::Spline1D_Grid, tile::Spline1D_Grid)
-    return spectral
+    return setSpectralTile(patch.spectral, patch.params, tile)
 end
 
 function setSpectralTile(patchSpectral::Array{real}, pp::SpringsteelGridParameters, tile::Spline1D_Grid)
@@ -706,6 +709,7 @@ array can be written exclusively by this worker (i.e. without conflict with adja
 See also: [`calcHaloMap`](@ref), [`calcTileSizes`](@ref)
 """
 function calcPatchMap(patch::Spline1D_Grid, tile::Spline1D_Grid)
+    patchMap = falses(size(patch.spectral))
     tileView = falses(size(tile.spectral))
 
     # Indices of sharedArray that won't be touched by other workers
@@ -743,6 +747,7 @@ tile.  These must be summed (not exclusively written) during distributed transfo
 See also: [`calcPatchMap`](@ref), [`getBorderSpectral`](@ref)
 """
 function calcHaloMap(patch::Spline1D_Grid, tile::Spline1D_Grid)
+    haloMap = falses(size(patch.spectral))
     haloView = falses(size(tile.spectral))
 
     # Indices of border matrix

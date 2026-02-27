@@ -1,0 +1,59 @@
+```@meta
+CurrentModule = Springsteel
+```
+
+# Fourier
+
+The `Fourier` submodule implements the 1D Fourier ring basis used for the azimuthal
+direction in cylindrical-coordinate grids (`RL_Grid`, `RLZ_Grid`).  It uses
+[FFTW.jl](https://juliamath.github.io/FFTW.jl/latest/) real-to-halfcomplex transforms
+(`FFTW.R2HC` / `FFTW.HC2R`) with a pre-measured plan for maximum throughput.
+
+## Boundary Condition Constants
+
+```@docs
+Fourier.PERIODIC
+```
+
+## Parameter and Data Structures
+
+```@docs
+Fourier.FourierParameters
+Fourier.Fourier1D
+Fourier.Fourier1D(::Fourier.FourierParameters)
+```
+
+## Internal Setup Functions
+
+```@docs
+Fourier.calcMishPoints
+Fourier.calcPhaseFilter
+Fourier.calcInvPhaseFilter
+```
+
+## Transform Functions
+
+```@docs
+Fourier.FBtransform
+Fourier.FAtransform
+Fourier.FItransform
+Fourier.FIxcoefficients
+Fourier.FIxtransform
+Fourier.FIxxtransform
+Fourier.FIIntcoefficients
+Fourier.FIInttransform
+```
+
+## Generic Wrappers
+
+No-prefix wrappers that delegate to the `F`-prefixed functions above, enabling
+basis-type-agnostic code.
+
+```@docs
+Fourier.Btransform!
+Fourier.Atransform!
+Fourier.Itransform!
+Fourier.Ixtransform
+Fourier.Ixxtransform
+Fourier.IInttransform
+```

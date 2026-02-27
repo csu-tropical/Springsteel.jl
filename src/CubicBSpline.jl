@@ -12,6 +12,10 @@ export SplineParameters, Spline1D
 export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
 export setMishValues
+# Generic (no-prefix) wrappers for abstract 1D basis dispatch
+export Btransform, Btransform!, Bxtransform
+export Atransform, Atransform!
+export Itransform, Itransform!, Ixtransform, Ixxtransform
 
 #Define some convenient aliases
 const real = Float64
@@ -842,6 +846,60 @@ function SIxxtransform(sp::SplineParameters, a::Vector{real}, points::Vector{rea
     uprime2 = SItransform(sp,a,points,2)
     return uprime2
 end
+
+# ---------------------------------------------------------------------------
+# Generic wrappers (no "S" prefix) dispatching on Spline1D
+# These enable abstract 1D basis code that calls Btransform, Itransform, etc.
+# without needing to know the underlying basis type.
+# ---------------------------------------------------------------------------
+
+"""Generic B-transform wrapper for `Spline1D`. Delegates to [`SBtransform`](@ref)."""
+Btransform(spline::Spline1D, uMish::Vector{real}) = SBtransform(spline, uMish)
+
+"""Generic in-place B-transform wrapper for `Spline1D`. Delegates to `SBtransform!`."""
+Btransform!(spline::Spline1D) = SBtransform!(spline)
+
+"""Generic Bx-transform wrapper for `Spline1D`. Delegates to [`SBxtransform`](@ref)."""
+Bxtransform(spline::Spline1D, uMish::Vector{real}, BCL::real, BCR::real) =
+    SBxtransform(spline, uMish, BCL, BCR)
+
+"""Generic A-transform wrapper for `Spline1D` (allocating). Delegates to [`SAtransform`](@ref)."""
+Atransform(spline::Spline1D, b::AbstractVector) = SAtransform(spline, b)
+
+"""Generic A-transform wrapper for `Spline1D` (inhomogeneous form). Delegates to [`SAtransform`](@ref)."""
+Atransform(spline::Spline1D, b::Vector{real}, ahat::Vector{real}) = SAtransform(spline, b, ahat)
+
+"""Generic in-place A-transform wrapper for `Spline1D`. Delegates to `SAtransform!`."""
+Atransform!(spline::Spline1D) = SAtransform!(spline)
+
+"""Generic in-place I-transform wrapper for `Spline1D`. Delegates to `SItransform!`."""
+Itransform!(spline::Spline1D) = SItransform!(spline)
+
+"""Generic I-transform wrapper for `Spline1D` (mish points, in-place output). Delegates to [`SItransform`](@ref)."""
+Itransform(spline::Spline1D, u::AbstractVector) = SItransform(spline, u)
+
+"""Generic I-transform wrapper for `Spline1D` (custom points, in-place output). Delegates to [`SItransform`](@ref)."""
+Itransform(spline::Spline1D, points::Vector{real}, u::AbstractVector) = SItransform(spline, points, u)
+
+"""Generic Ix-transform wrapper for `Spline1D` (allocating, mish points). Delegates to [`SIxtransform`](@ref)."""
+Ixtransform(spline::Spline1D) = SIxtransform(spline)
+
+"""Generic Ix-transform wrapper for `Spline1D` (mish points, in-place output). Delegates to [`SIxtransform`](@ref)."""
+Ixtransform(spline::Spline1D, uprime::AbstractVector) = SIxtransform(spline, uprime)
+
+"""Generic Ix-transform wrapper for `Spline1D` (custom points, in-place output). Delegates to [`SIxtransform`](@ref)."""
+Ixtransform(spline::Spline1D, points::Vector{real}, uprime::AbstractVector) =
+    SIxtransform(spline, points, uprime)
+
+"""Generic Ixx-transform wrapper for `Spline1D` (allocating, mish points). Delegates to [`SIxxtransform`](@ref)."""
+Ixxtransform(spline::Spline1D) = SIxxtransform(spline)
+
+"""Generic Ixx-transform wrapper for `Spline1D` (mish points, in-place output). Delegates to [`SIxxtransform`](@ref)."""
+Ixxtransform(spline::Spline1D, uprime2::AbstractVector) = SIxxtransform(spline, uprime2)
+
+"""Generic Ixx-transform wrapper for `Spline1D` (custom points, in-place output). Delegates to [`SIxxtransform`](@ref)."""
+Ixxtransform(spline::Spline1D, points::Vector{real}, uprime2::AbstractVector) =
+    SIxxtransform(spline, points, uprime2)
 
 #Module end
 end

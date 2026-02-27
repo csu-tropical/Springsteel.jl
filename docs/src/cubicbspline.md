@@ -49,3 +49,20 @@ CubicBSpline.SItransform_matrix
 CubicBSpline.SIxtransform
 CubicBSpline.SIxxtransform
 ```
+
+## Generic Wrappers
+
+No-prefix wrappers that delegate to the `S`-prefixed functions above, enabling
+basis-type-agnostic code.
+
+```@docs
+CubicBSpline.Btransform
+CubicBSpline.Btransform!
+CubicBSpline.Bxtransform
+CubicBSpline.Atransform
+CubicBSpline.Atransform!
+CubicBSpline.Itransform!
+CubicBSpline.Itransform
+CubicBSpline.Ixtransform
+CubicBSpline.Ixxtransform
+```
