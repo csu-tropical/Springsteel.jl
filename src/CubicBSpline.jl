@@ -21,22 +21,66 @@ const ONESIXTH = 1.0/6.0
 const FOURSIXTH = 4.0/6.0
 const sqrt35 = sqrt(3.0/5.0)
 
-# Define homogeneous boundary conditions
-# Inhomgoneous conditions to be implemented later
+# Homogeneous boundary conditions.
+# Inhomogeneous conditions are not yet implemented.
+
+"""Pinned boundary condition: value is zero at the boundary (`u = 0`)."""
 const R0 = Dict("R0" => 0)
+
+"""Robin BC type 0: `α₁·u + β₁·u' = 0` with α₁ = -4, β₁ = -1 (free-slip near wall)."""
 const R1T0 = Dict("α1" => -4.0, "β1" => -1.0)
+
+"""Robin BC type 1: zero first derivative at boundary (`u' = 0`, Neumann condition)."""
 const R1T1 = Dict("α1" =>  0.0, "β1" =>  1.0)
+
+"""Robin BC type 2: `α₁·u + β₁·u' = 0` with α₁ = 2, β₁ = -1."""
 const R1T2 = Dict("α1" =>  2.0, "β1" => -1.0)
+
+"""Rank-2 Robin BC type 1–0: `α₂·u + β₂·u'' = 0` with α₂ = 1, β₂ = -0.5."""
 const R2T10 = Dict("α2" => 1.0, "β2" => -0.5)
+
+"""Rank-2 Robin BC type 2–0: `α₂·u + β₂·u'' = 0` with α₂ = -1, β₂ = 0."""
 const R2T20 = Dict("α2" => -1.0, "β2" => 0.0)
+
+"""Rank-3 boundary condition: eliminates three edge coefficients (not commonly used)."""
 const R3 = Dict("R3" => 0)
+
+"""Periodic boundary condition: identifies left and right boundaries."""
 const PERIODIC = Dict("PERIODIC" => 0)
 
 # Fix the mish to 3 points
 const mubar = 3
 const gaussweight = [5.0/18.0, 8.0/18.0, 5.0/18.0]
 
-# Define the spline parameters
+"""
+    SplineParameters
+
+Immutable parameter struct (using `@kwdef`) for a 1D cubic B-spline basis.
+
+# Fields
+- `xmin::Float64`: Left boundary of the domain
+- `xmax::Float64`: Right boundary of the domain
+- `num_cells::Int64`: Number of spline cells; total physical gridpoints = `num_cells * mubar`
+- `l_q::Float64`: Filter length scale (default `2.0`). Larger values produce smoother spectral fits
+- `BCL::Dict`: Left boundary condition (one of [`R0`](@ref), [`R1T0`](@ref), [`R1T1`](@ref), [`R1T2`](@ref), [`R2T10`](@ref), [`R2T20`](@ref), [`R3`](@ref), [`PERIODIC`](@ref))
+- `BCR::Dict`: Right boundary condition (same options as `BCL`)
+- `DX::Float64`: Cell width, computed as `(xmax - xmin) / num_cells`
+- `DXrecip::Float64`: Reciprocal of `DX`, precomputed for efficiency
+
+# Example
+```julia
+sp = CubicBSpline.SplineParameters(
+    xmin = 0.0,
+    xmax = 100.0,
+    num_cells = 20,
+    l_q = 2.0,
+    BCL = CubicBSpline.R0,
+    BCR = CubicBSpline.R0
+)
+```
+
+See also: [`Spline1D`](@ref)
+"""
 Base.@kwdef struct SplineParameters
     xmin::real = 0.0
     xmax::real = 0.0
@@ -48,7 +92,30 @@ Base.@kwdef struct SplineParameters
     DXrecip::real = 1.0/DX
 end
 
-# This structure holds a 1D Cubic B-spline type
+"""
+    Spline1D
+
+One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParameters)`.
+
+# Fields
+- `params::SplineParameters`: Configuration (domain, cells, BCs, filter length)
+- `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix (maps interior to full coefficient space)
+- `pq`: Full `(P + Q)` matrix used in the least-squares / variational solve
+- `pqFactor::SuiteSparse.CHOLMOD.Factor{Float64}`: Sparse Cholesky factorisation of the open-form `(P + Q)` matrix for fast solves
+- `mishDim::Int64`: Number of Gaussian quadrature (mish) points = `num_cells * mubar`
+- `bDim::Int64`: Number of spectral coefficients = `num_cells + 3`
+- `mishPoints::Vector{Float64}`: Physical locations of the mish points
+- `uMish::Vector{Float64}`: Physical field values at mish points (mutable working buffer)
+- `b::Vector{Float64}`: B-vector (result of SB transform, inner products ⟨φₘ, u⟩)
+- `a::Vector{Float64}`: Spectral coefficient vector (result of SA transform)
+
+# Notes
+- Constructing `Spline1D` builds `gammaBC` and factorises the `(P + Q)` matrix, which is the
+  computationally expensive step.  Reuse spline objects when possible.
+- The `mubar = 3` Gauss–Legendre points per cell are fixed (Ooyama 2002).
+
+See also: [`SplineParameters`](@ref), [`SBtransform`](@ref), [`SAtransform`](@ref), [`SItransform`](@ref)
+"""
 struct Spline1D
     params::SplineParameters
     gammaBC::Matrix{real}
@@ -62,12 +129,31 @@ struct Spline1D
     a::Vector{real}
 end
 
-function basis(sp::SplineParameters, m::int, x::real, derivative::int)
+"""
+    basis(sp::SplineParameters, m::Int64, x::Float64, derivative::Int64) -> Float64
 
-    # Calculate the cubic b-spline basis function for a given set of spline parameters
-    # m = node index
-    # x = physical location
-    # derivative = 0, 1, or 2 for none, first, or second derivative
+Evaluate the cubic B-spline basis function φₘ(x) or one of its derivatives.
+
+Follows the Ooyama (2002) compact-support cubic B-spline formulation. Each basis function
+is nonzero only within two cell widths of node `m`.
+
+# Arguments
+- `sp::SplineParameters`: Spline configuration (domain and cell width)
+- `m::Int64`: Node index.  Node positions are `xmin + m*DX` for `m = -1, 0, ..., num_cells+1`
+- `x::Float64`: Physical evaluation point; must lie within `[sp.xmin, sp.xmax]`
+- `derivative::Int64`: Order of derivative to evaluate:
+  - `0` — function value
+  - `1` — first derivative ∂φ/∂x
+  - `2` — second derivative ∂²φ/∂x²
+  - `3` — third derivative (piecewise constant, used for the Q-matrix smoothing term)
+
+# Returns
+- `Float64`: Value of φₘ(x) or its requested derivative at `x`
+
+# Throws
+- `DomainError` if `x` lies outside `[sp.xmin, sp.xmax]`
+"""
+function basis(sp::SplineParameters, m::int, x::real, derivative::int)
     
     b = 0.0
     if (x < sp.xmin) || (x > sp.xmax)
@@ -112,9 +198,25 @@ function basis(sp::SplineParameters, m::int, x::real, derivative::int)
     return b
 end
 
-function calcGammaBC(sp::SplineParameters)
+"""
+    calcGammaBC(sp::SplineParameters) -> Matrix{Float64}
 
-    # Calculate the boundary condition matrix
+Build the boundary-condition projection matrix Γ.
+
+The matrix maps the interior (free) spline coefficients to the full coefficient vector
+of length `num_cells + 3`, encoding the homogeneous boundary conditions specified by
+`sp.BCL` and `sp.BCR`.  It is used inside [`SAtransform`](@ref) to fold and unfold
+boundary conditions during the spectral solve.
+
+# Arguments
+- `sp::SplineParameters`: Spline parameters including `BCL`, `BCR`, and `num_cells`
+
+# Returns
+- `Matrix{Float64}`: Projection matrix of size `(Minterior, num_cells+3)` where
+  `Minterior = num_cells + 3 - rankL - rankR` and `rankL`/`rankR` are the number of
+  constraints imposed by the left/right BCs.
+"""
+function calcGammaBC(sp::SplineParameters)
     if haskey(sp.BCL,"α1")
         rankL = 1
     elseif haskey(sp.BCL,"α2")
@@ -174,10 +276,31 @@ function calcGammaBC(sp::SplineParameters)
     return gammaBC
 end
 
-function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
+"""
+    calcPQfactor(sp::SplineParameters, gammaBC::Matrix{Float64}) -> (Matrix{Float64}, SuiteSparse.CHOLMOD.Factor)
 
-    # Calculate the P + Q matrix, convert to sparse representation, 
-    # and factor with Cholesky decomposition
+Build the variational `(P + Q)` matrix and return its sparse Cholesky factorisation.
+
+Following Ooyama (2002), the spectral fit minimises a penalised least-squares functional:
+
+``J[a] = \\langle u - \\hat{u},\\, u - \\hat{u} \\rangle_P + \\varepsilon_q \\langle a''', a''' \\rangle_Q``
+
+where P contains mass-matrix inner products of basis functions and Q contains inner products
+of their third derivatives.  The smoothing weight is:
+
+``\\varepsilon_q = \\left(\\frac{l_q \\cdot \\Delta x}{2\\pi}\\right)^6``
+
+The open-form `(P + Q)` (with BCs folded in via `gammaBC`) is factorised with a sparse
+Cholesky decomposition for repeated fast linear solves during [`SAtransform`](@ref).
+
+# Arguments
+- `sp::SplineParameters`: Spline parameters (domain, cells, filter length `l_q`)
+- `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix from [`calcGammaBC`](@ref)
+
+# Returns
+- `(pq::Matrix{Float64}, pqFactor)`: Full `(P + Q)` matrix and its Cholesky factor
+"""
+function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
     eps_q = ((sp.l_q*sp.DX)/(2*π))^6
     Mdim = sp.num_cells + 3
 
@@ -221,9 +344,26 @@ function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
     return PQ, PQfactor
 end
 
-function calcMishPoints(sp::SplineParameters)
+"""
+    calcMishPoints(sp::SplineParameters) -> Vector{Float64}
 
-    # Calculate the Gaussian quadrature "mish" points in between the nodes
+Compute the Gaussian quadrature ("mish") point locations.
+
+For each of the `num_cells` cells, three Gauss–Legendre quadrature points are placed
+at positions determined by the `sqrt(3/5)` abscissae (5-point rule mapped to each cell).
+These are the physical-space locations where field values must be provided for the
+spectral transform.
+
+# Arguments
+- `sp::SplineParameters`: Spline parameters (domain, cell width)
+
+# Returns
+- `Vector{Float64}`: Sorted vector of `num_cells * mubar` (= `num_cells * 3`) mish point
+  coordinates in `[xmin, xmax]`
+
+See also: [`Spline1D`](@ref), [`SBtransform`](@ref)
+"""
+function calcMishPoints(sp::SplineParameters)
     x = zeros(real,sp.num_cells*mubar)
     for mc = 0:(sp.num_cells-1)
         for mu = 1:mubar
@@ -234,9 +374,39 @@ function calcMishPoints(sp::SplineParameters)
     return x
 end
 
-function Spline1D(sp::SplineParameters)
+"""
+    Spline1D(sp::SplineParameters) -> Spline1D
 
-    # Constructor for the 1D Spline structure
+Construct a [`Spline1D`](@ref) object from spline parameters.
+
+This constructor pre-computes and caches all objects needed for repeated spectral
+transforms:
+1. The boundary-condition projection matrix `gammaBC` via [`calcGammaBC`](@ref)
+2. The `(P + Q)` matrix and its sparse Cholesky factorisation via [`calcPQfactor`](@ref)
+3. The mish point locations via [`calcMishPoints`](@ref)
+4. Zero-initialised working buffers `uMish`, `b`, and `a`
+
+Reuse the constructed `Spline1D` object for multiple transforms to amortise the
+Choleksy factorisation cost.
+
+# Arguments
+- `sp::SplineParameters`: Spline configuration
+
+# Returns
+- `Spline1D`: Initialised spline object ready for transform calls
+
+# Example
+```julia
+sp = CubicBSpline.SplineParameters(
+    xmin = 0.0, xmax = 1.0, num_cells = 10,
+    BCL = CubicBSpline.R0, BCR = CubicBSpline.R0
+)
+spline = CubicBSpline.Spline1D(sp)
+```
+
+See also: [`SBtransform`](@ref), [`SAtransform`](@ref), [`SItransform`](@ref)
+"""
+function Spline1D(sp::SplineParameters)
     gammaBC = calcGammaBC(sp)
     pq, pqFactor = calcPQfactor(sp, gammaBC)
 
@@ -252,16 +422,52 @@ function Spline1D(sp::SplineParameters)
     return spline
 end
 
-function setMishValues(spline::Spline1D, uMish::Vector{real})
+"""
+    setMishValues(spline::Spline1D, uMish::Vector{Float64})
 
-    # Convenience function to assign a vector to the spline mish values
+Copy physical field values into the spline's internal mish buffer.
+
+Convenience wrapper that performs `spline.uMish .= uMish`.  Use before calling
+`SBtransform!(spline)` when you prefer the in-place workflow.
+
+# Arguments
+- `spline::Spline1D`: Target spline object
+- `uMish::Vector{Float64}`: Field values at the mish points (length `num_cells * 3`)
+
+See also: [`SBtransform`](@ref)
+"""
+function setMishValues(spline::Spline1D, uMish::Vector{real})
     spline.uMish .= uMish
 end
 
-function SBtransform(sp::SplineParameters, uMish::Vector{real})
+"""
+    SBtransform(sp::SplineParameters, uMish::Vector{Float64}) -> Vector{Float64}
+    SBtransform(spline::Spline1D,      uMish::Vector{Float64}) -> Vector{Float64}
+    SBtransform!(spline::Spline1D)
 
-    # SB transform from physical space (u) to B vector
-    # The various versions of this function take different type inputs, which is useful for different calling scenarios
+Compute the **SB transform**: project physical field values at the mish points onto the
+cubic B-spline basis to obtain the B-vector ``b_m = \\langle \\varphi_m,\\, u \\rangle``.
+
+``b_m = \\sum_{\\text{cells}} \\Delta x \\sum_{\\mu} w_\\mu \\,\\varphi_m(x_\\mu)\\, u(x_\\mu)``
+
+This is the first step of the two-step physical→spectral transform.  The full transform
+continues with [`SAtransform`](@ref).
+
+# Arguments  
+- `sp` / `spline`: Spline parameters or a constructed `Spline1D`
+- `uMish::Vector{Float64}`: Field values at the `num_cells * 3` mish points
+
+# Returns
+- `Vector{Float64}`: B-vector of length `num_cells + 3` (allocating versions)
+- The in-place `SBtransform!` stores the result in `spline.b`
+
+# Notes
+- The boundary folds (gammaBC) are **not** applied here; they are applied inside
+  [`SAtransform`](@ref).
+
+See also: [`SAtransform`](@ref), [`SBxtransform`](@ref)
+"""
+function SBtransform(sp::SplineParameters, uMish::Vector{real})
     Mdim = sp.num_cells + 3
     b = zeros(real,Mdim)
 
@@ -296,13 +502,28 @@ function SBtransform!(spline::Spline1D)
     spline.b .= b
 end
 
-#= function SBxtransform(sp::SplineParameters, uMish::Vector{real}, BCL, BCR)
+"""
+    SBxtransform(sp::SplineParameters, uMish::Vector{Float64}, BCL::Float64, BCR::Float64) -> Vector{Float64}
+    SBxtransform(spline::Spline1D,      uMish::Vector{Float64}, BCL::Float64, BCR::Float64) -> Vector{Float64}
 
-    # This function does the SBx transform but is not working
-    # It is essentially integration by parts, but still needs some bug fixes evidently
-    # Do not use at this time!
+Compute the **SBx transform**: B-vector of the derivative ``f'`` via integration by parts.
+
+``b_m = \\bigl[\\varphi_m \\cdot f\\bigr]_{x_0}^{x_0'} - \\int \\varphi'_m(x)\\, f(x)\\, dx``
+
+# Arguments
+- `sp` / `spline`: Spline parameters or a constructed `Spline1D`
+- `uMish::Vector{Float64}`: Field values at the `num_cells * 3` mish points
+- `BCL::Float64`: Value of `f` at the left boundary `xmin` (not a boundary condition constant)
+- `BCR::Float64`: Value of `f` at the right boundary `xmax`
+
+# Returns
+- `Vector{Float64}`: B-vector for `f'`, of length `num_cells + 3`
+
+See also: [`SBtransform`](@ref), [`SAtransform`](@ref)
+"""
+function SBxtransform(sp::SplineParameters, uMish::Vector{real}, BCL::real, BCR::real)
     Mdim = sp.num_cells + 3
-    b = zeros(real,Mdim)
+    b = zeros(real, Mdim)
 
     for mi = 1:Mdim
         m = mi - 2
@@ -319,22 +540,46 @@ end
         end
         bl = basis(sp, m, sp.xmin, 0) * BCL
         br = basis(sp, m, sp.xmax, 0) * BCR
-        b[mi] = br - bl - b[mi] 
+        b[mi] = br - bl - b[mi]
     end
-    
+
     return b
-end 
+end
 
-function SBxtransform(spline::Spline1D, uMish::Vector{real}, BCL, BCR)
+function SBxtransform(spline::Spline1D, uMish::Vector{real}, BCL::real, BCR::real)
 
-    bx = SBxtransform(spline.params,uMish,BCL,BCR)
+    bx = SBxtransform(spline.params, uMish, BCL, BCR)
     return bx
-end =#
+end
 
+"""
+    SAtransform(sp::SplineParameters, gammaBC::Matrix{Float64}, pqFactor, b::Vector{Float64}) -> Vector{Float64}
+    SAtransform(spline::Spline1D, b::AbstractVector) -> Vector{Float64}
+    SAtransform!(spline::Spline1D)
+    SAtransform(spline::Spline1D, b::Vector{Float64}, ahat::Vector{Float64}) -> Vector{Float64}
+
+Compute the **SA transform**: convert a B-vector to spectral A-coefficients by solving
+the variational system with boundary conditions.
+
+``a = \\Gamma^T \\bigl[(\\Gamma (P+Q) \\Gamma^T)^{-1}\\, \\Gamma\\, b\\bigr]``
+
+where ``\\Gamma`` is the boundary-condition projection matrix and `(P+Q)` is the
+pre-computed (and pre-factored) variational matrix.
+
+# Variants
+- `SAtransform(sp, gammaBC, pqFactor, b)` — lowest-level call with all components explicit
+- `SAtransform(spline, b)` — allocates and returns `a` using the cached spline internals
+- `SAtransform!(spline)` — in-place; reads `spline.b`, writes `spline.a`
+- `SAtransform(spline, b, ahat)` — inhomogeneous/incremental form; `ahat` is a background
+  coefficient vector that carries inhomogeneous boundary values
+
+# Returns
+- `Vector{Float64}`: Spectral coefficient vector `a` of length `num_cells + 3`
+  (allocating variants); the in-place `SAtransform!` stores in `spline.a`
+
+See also: [`SBtransform`](@ref), [`SItransform`](@ref)
+"""
 function SAtransform(sp::SplineParameters, gammaBC::Matrix{Float64}, pqFactor, b::Vector{real})
-
-    # The SA transform converts a B matrix into A coefficients, applying the boundary conditions
-    # The various versions of this function take different type inputs, which is useful for different calling scenarios
     a = gammaBC' * (pqFactor \ (gammaBC * b))
     return a
 end
@@ -358,10 +603,43 @@ function SAtransform(spline::Spline1D, b::Vector{real}, ahat::Vector{real})
     return a
 end
 
-function SItransform(sp::SplineParameters, a::Vector{real}, x::real, derivative::int = 0)
+"""
+    SItransform(sp::SplineParameters, a::Vector{Float64}, x::Float64, derivative::Int64 = 0) -> Float64
+    SItransform(sp::SplineParameters, a::Vector{Float64}, derivative::Int64 = 0) -> Vector{Float64}
+    SItransform(sp::SplineParameters, a::Vector{Float64}, points::Vector{Float64}, derivative::Int64 = 0) -> Vector{Float64}
+    SItransform(sp::SplineParameters, a::Vector{Float64}, points::Vector{Float64}, u::AbstractVector, derivative::Int64 = 0) -> Vector{Float64}
+    SItransform!(spline::Spline1D)
+    SItransform(spline::Spline1D, u::AbstractVector) -> Vector{Float64}
+    SItransform(spline::Spline1D, points::Vector{Float64}, u::AbstractVector) -> Vector{Float64}
 
-    # The SI transform converts A coefficients back to physical space (u)
-    # The various versions of this function take different type inputs, which is useful for different calling scenarios
+Compute the **SI transform**: evaluate the B-spline expansion at physical locations.
+
+``u(x) = \\sum_m a_m\\, \\varphi_m(x)``
+
+This is the spectral→physical step and is the inverse of the SB+SA pipeline.
+
+# Variants
+- Single point: `SItransform(sp, a, x, derivative)` — returns one `Float64`
+- All mish points (allocating): `SItransform(sp, a, derivative)`
+- Custom points (allocating): `SItransform(sp, a, points, derivative)`
+- Custom points (in-place): `SItransform(sp, a, points, u, derivative)` — writes into `u`
+- In-place at mish points: `SItransform!(spline)` — writes into `spline.uMish`
+- Convenience at mish points: `SItransform(spline, u)`
+- Convenience at custom points: `SItransform(spline, points, u)`
+
+# Arguments
+- `sp` / `spline`: Spline parameters or a `Spline1D` object
+- `a::Vector{Float64}`: Spectral coefficient vector of length `num_cells + 3`
+- `x` / `points`: Evaluation location(s); must lie within `[xmin, xmax]`
+- `derivative::Int64`: Derivative order (default `0`; supports `0`, `1`, `2`)
+- `u`: Pre-allocated output vector (written in-place where applicable)
+
+# Returns
+- Evaluated field values (and/or derivatives) at the requested points
+
+See also: [`SAtransform`](@ref), [`SIxtransform`](@ref), [`SIxxtransform`](@ref)
+"""
+function SItransform(sp::SplineParameters, a::Vector{real}, x::real, derivative::int = 0)
     u = 0.0
     xm = ceil(int,(x - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
     for m = xm:(xm + 3)
@@ -440,10 +718,27 @@ function SItransform(spline::Spline1D, points::Vector{real}, u::AbstractVector)
     return u
 end
 
-function SItransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64 = 0)
+"""
+    SItransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64 = 0) -> Matrix{Float64}
 
-    # This function creates a matrix for the SI transform, which is mostly useful for debugging
-    # but could have value in linear equation solutions later on
+Build the SI transform as an explicit evaluation matrix (mainly for debugging and
+linear-system solving).
+
+Returns a matrix `M` of size `(num_cells*mubar, bDim)` such that `M * a ≈ u` at the
+given `points`.  Each row corresponds to one point and each column to one spline basis
+function.
+
+# Arguments
+- `spline::Spline1D`: Spline object (provides parameters and `bDim`)
+- `points::Vector{Float64}`: Physical evaluation locations
+- `derivative::Int64`: Derivative order (default `0`)
+
+# Returns
+- `Matrix{Float64}` of size `(length(points), bDim)`
+
+See also: [`SItransform`](@ref)
+"""
+function SItransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64 = 0)
     sp = spline.params
     u = zeros(Float64,sp.num_cells*mubar,spline.bDim)
     for i in eachindex(points)
@@ -458,9 +753,29 @@ function SItransform_matrix(spline::Spline1D, points::Vector{Float64}, derivativ
     return u
 end
 
-function SIxtransform(spline::Spline1D)
+"""
+    SIxtransform(spline::Spline1D) -> Vector{Float64}
+    SIxtransform(spline::Spline1D, uprime::AbstractVector) -> Vector{Float64}
+    SIxtransform(spline::Spline1D, points::Vector{Float64}, uprime::AbstractVector) -> Vector{Float64}
+    SIxtransform(sp::SplineParameters, a::Vector{Float64}, points::AbstractVector) -> Vector{Float64}
 
-    # SIx transform gives back the 1st derivative of the function in physical space
+Evaluate the **first derivative** ``u'(x) = \\partial u / \\partial x`` of the B-spline
+expansion at physical locations.
+
+All variants delegate to `SItransform(..., derivative=1)`.
+
+# Variants
+- `SIxtransform(spline)` — allocates; evaluates at all mish points
+- `SIxtransform(spline, uprime)` — in-place; `uprime` is written with derivatives at mish points
+- `SIxtransform(spline, points, uprime)` — in-place at custom `points`
+- `SIxtransform(sp, a, points)` — allocating at custom `points` given raw parameters
+
+# Returns
+- `Vector{Float64}`: First-derivative values at the requested points
+
+See also: [`SItransform`](@ref), [`SIxxtransform`](@ref)
+"""
+function SIxtransform(spline::Spline1D)
     uprime = SItransform(spline.params,spline.a,spline.mishPoints,1)
     return uprime
 end
@@ -483,9 +798,29 @@ function SIxtransform(sp::SplineParameters, a::Vector{real}, points::AbstractVec
     return uprime
 end
 
-function SIxxtransform(spline::Spline1D)
+"""
+    SIxxtransform(spline::Spline1D) -> Vector{Float64}
+    SIxxtransform(spline::Spline1D, uprime2::AbstractVector) -> Vector{Float64}
+    SIxxtransform(spline::Spline1D, points::Vector{Float64}, uprime2::AbstractVector) -> Vector{Float64}
+    SIxxtransform(sp::SplineParameters, a::Vector{Float64}, points::Vector{Float64}) -> Vector{Float64}
 
-    # SIxx transform gives back the 2nd derivative of the function in physical space
+Evaluate the **second derivative** ``u''(x) = \\partial^2 u / \\partial x^2`` of the
+B-spline expansion at physical locations.
+
+All variants delegate to `SItransform(..., derivative=2)`.
+
+# Variants
+- `SIxxtransform(spline)` — allocates; evaluates at all mish points
+- `SIxxtransform(spline, uprime2)` — in-place; `uprime2` is written at mish points
+- `SIxxtransform(spline, points, uprime2)` — in-place at custom `points`
+- `SIxxtransform(sp, a, points)` — allocating at custom `points` given raw parameters
+
+# Returns
+- `Vector{Float64}`: Second-derivative values at the requested points
+
+See also: [`SItransform`](@ref), [`SIxtransform`](@ref)
+"""
+function SIxxtransform(spline::Spline1D)
     uprime2 = SItransform(spline.params,spline.a,spline.mishPoints,2)
     return uprime2
 end

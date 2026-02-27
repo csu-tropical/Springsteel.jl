@@ -1,1 +1,12 @@
 src/.ipynb_checkpoints
+.DS_Store
+Manifest.toml
+docs/build/
+
+# Act (local GitHub Actions testing)
+.secrets
+*.env
+
+# Test artifacts
+/tmp/
+*.log
