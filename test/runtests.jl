@@ -22,10 +22,10 @@ using SparseArrays
             grid = createGrid(gp)
             
             @test typeof(grid) <: Springsteel.R_Grid
-            @test grid.params.rDim == 30  # num_cells * mubar (10 * 3)
-            @test grid.params.b_rDim == 13  # num_cells + 3
-            @test size(grid.physical, 1) == grid.params.rDim
-            @test size(grid.spectral, 1) == grid.params.b_rDim
+            @test grid.params.iDim == 30  # num_cells * mubar (10 * 3)
+            @test grid.params.b_iDim == 13  # num_cells + 3
+            @test size(grid.physical, 1) == grid.params.iDim
+            @test size(grid.spectral, 1) == grid.params.b_iDim
             @test size(grid.physical, 2) == 1  # 1 variable
             @test size(grid.physical, 3) == 3  # value, dr, drr
         end
@@ -61,7 +61,7 @@ using SparseArrays
             grid = createGrid(gp)
             gridpoints = getGridpoints(grid)
             
-            @test length(gridpoints) == grid.params.rDim
+            @test length(gridpoints) == grid.params.iDim
             @test gridpoints[1] >= gp.xmin
             @test gridpoints[end] <= gp.xmax
             # Test that gridpoints are monotonically increasing
@@ -223,8 +223,8 @@ using SparseArrays
             grid = createGrid(gp)
             
             # Check that splines have different filter lengths
-            @test grid.splines[1, 1].params.l_q == 1.5
-            @test grid.splines[1, 2].params.l_q == 3.0
+            @test grid.ibasis.data[1, 1].params.l_q == 1.5
+            @test grid.ibasis.data[1, 2].params.l_q == 3.0
         end
     end
 
@@ -1489,8 +1489,8 @@ using SparseArrays
             grid = createGrid(gp)
             
             # Check that splines have different filter lengths
-            @test grid.splines[1, 1].params.l_q == 1.5
-            @test grid.splines[1, 2].params.l_q == 3.0
+            @test grid.ibasis.data[1, 1].params.l_q == 1.5
+            @test grid.ibasis.data[1, 2].params.l_q == 3.0
         end
         
         @testset "regularGridTransform - Gaussian" begin
@@ -1703,15 +1703,10 @@ using SparseArrays
             )
             tile = createGrid(gp_tile)
 
-            # splineTransform!: B (in SharedArray) → A (in patchA)
-            sharedB = SharedArray{Float64}(size(patch.spectral))
-            sharedB[:, :] .= patch.spectral
-            patchA = zeros(Float64, size(patch.spectral))
-            splineTransform!(patch.splines, patchA, patch.params, sharedB, tile)
-
-            # tileTransform!: A coefficients → physical on tile gridpoints
-            splineBuffer = allocateSplineBuffer(patch, tile)
-            tileTransform!(patch.splines, patchA, patch.params, tile, splineBuffer)
+            # Evaluate patch spectral representation at tile gridpoints
+            # (this is the primary cross-grid interface; splineTransform!/tileTransform! require
+            #  sub-tiles created by calcTileSizes with proper spectral indices)
+            gridTransform!(patch, tile)
 
             tile_pts = getGridpoints(tile)
             analytic_vals = [exp(-(x / sigma)^2) for x in tile_pts]
@@ -1735,23 +1730,23 @@ using SparseArrays
             )
             patch = createGrid(gp_p)
 
-            # 3 equal tiles
-            tp3 = Springsteel.calcTileSizes(patch, 3)
-            @test size(tp3, 2) == 3
-            @test tp3[1, 1] ≈ 0.0                             # first iMin = patch iMin
-            @test tp3[2, end] ≈ 30.0                           # last iMax = patch iMax
-            @test sum(Int.(tp3[3, :])) == 30                   # num_cells sums to patch total
-            @test Int(tp3[4, 1]) == 1                          # first spectralIndexL = 1
-            @test Int(tp3[4, 2]) == Int(tp3[3, 1]) + 1        # second starts after first's cells
-            @test sum(Int.(tp3[5, :])) == patch.params.iDim    # tile sizes sum to total gridpoints
+            # 3 equal tiles — returns Vector{SpringsteelGrid}
+            tiles3 = Springsteel.calcTileSizes(patch, 3)
+            @test length(tiles3) == 3
+            @test tiles3[1].params.iMin ≈ 0.0                    # first iMin = patch iMin
+            @test tiles3[end].params.iMax ≈ 30.0                  # last iMax = patch iMax
+            @test sum([t.params.num_cells for t in tiles3]) == 30  # num_cells sums to patch total
+            @test tiles3[1].params.spectralIndexL == 1             # first spectralIndexL = 1
+            @test tiles3[2].params.spectralIndexL == tiles3[1].params.num_cells + 1  # second starts after first
+            @test sum([t.params.iDim for t in tiles3]) == patch.params.iDim  # gridpoints sum to total
 
             # 2 equal tiles
-            tp2 = Springsteel.calcTileSizes(patch, 2)
-            @test size(tp2, 2) == 2
-            @test tp2[1, 1] ≈ 0.0
-            @test tp2[2, end] ≈ 30.0
-            @test sum(Int.(tp2[3, :])) == 30
-            @test Int(tp2[4, 1]) == 1
+            tiles2 = Springsteel.calcTileSizes(patch, 2)
+            @test length(tiles2) == 2
+            @test tiles2[1].params.iMin ≈ 0.0
+            @test tiles2[end].params.iMax ≈ 30.0
+            @test sum([t.params.num_cells for t in tiles2]) == 30
+            @test tiles2[1].params.spectralIndexL == 1
 
             # Too many tiles (each tile < 9 gridpoints) → DomainError
             @test_throws DomainError Springsteel.calcTileSizes(patch, 11)
@@ -1783,7 +1778,7 @@ using SparseArrays
             splineBuffer = allocateSplineBuffer(patch, tile)
 
             # 5-arg gridTransform! (explicit patchSplines, patchSpectral, pp)
-            gridTransform!(patch.splines, patch.spectral, patch.params, tile, splineBuffer)
+            gridTransform!(patch.ibasis, patch.spectral, patch.params, tile, splineBuffer)
 
             tile_pts = getGridpoints(tile)
             @test maximum(abs.(tile.physical[:, 1, 1] .-
@@ -1898,16 +1893,16 @@ using SparseArrays
             tile = createGrid(gp_t)
             tile.spectral[:, 1] .= collect(1.0:tile.params.b_iDim)
 
-            # biL..biR in patch = spectralIndexR-2 .. spectralIndexR = 16..18
-            # tiL..tiR in tile  = b_iDim-2 .. b_iDim                = 16..18
+            # biL..biR in tile (indexed by spectralIndexR) = b_iDim-2 .. b_iDim = 16..18
+            # tiL..tiR in tile spectral                    = b_iDim-2 .. b_iDim = 16..18
             biL = tile.params.spectralIndexR - 2
             biR = tile.params.spectralIndexR
             tiL = tile.params.b_iDim - 2
 
             ps_buf = zeros(Float64, patch.params.b_iDim, 1)
-            border = Springsteel.getBorderSpectral(patch.params, tile, ps_buf)
+            border = Springsteel.getBorderSpectral(tile)
 
-            @test size(border, 1) == patch.params.b_iDim
+            @test size(border, 1) == tile.params.b_iDim
             @test Vector(border[biL:biR, 1]) ≈ collect(Float64, tiL:tile.params.b_iDim)
             @test nnz(border) == 3   # exactly 3 non-zero entries (1 variable × 3 rows; nnz from SparseArrays)
         end
@@ -1937,12 +1932,12 @@ using SparseArrays
             siL = tile.params.spectralIndexL
             siR = tile.params.spectralIndexR - 3
 
-            patchMap, tileView = calcPatchMap(patch, tile)
+            patchMap = calcPatchMap(patch, tile)
 
             @test size(patchMap) == size(patch.spectral)
-            @test all(patchMap[siL:siR, :])              # inner rows marked
-            @test !any(patchMap[siR+1:end, :])           # rows beyond siR not marked
-            @test length(tileView) == (siR - siL + 1)   # view covers same span
+            @test all(patchMap[siL:siR, :] .!= 0)         # inner rows marked
+            @test !any(patchMap[siR+1:end, :] .!= 0)      # rows beyond siR not marked
+            @test nnz(patchMap) == (siR - siL + 1)         # one entry per inner row (1 variable)
         end
 
         @testset "calcHaloMap" begin
@@ -1969,12 +1964,11 @@ using SparseArrays
             hiL = tile.params.spectralIndexR - 2
             hiR = tile.params.spectralIndexR
 
-            haloMap, haloView = calcHaloMap(patch, tile)
+            haloMap = calcHaloMap(patch, tile)
 
             @test size(haloMap) == size(patch.spectral)
-            @test all(haloMap[hiL:hiR, :])     # exactly those 3 rows are true
-            @test count(haloMap) == 3
-            @test length(haloView) == 3        # view covers the 3 halo coefficients
+            @test all(haloMap[hiL:hiR, :] .!= 0)  # exactly those 3 rows are non-zero
+            @test nnz(haloMap) == 3                # 3 entries (1 variable × 3 rows)
         end
 
         @testset "sumSharedSpectral" begin
@@ -1998,13 +1992,15 @@ using SparseArrays
             tile = createGrid(gp_t)
             tile.spectral[:, 1] .= collect(1.0:tile.params.b_iDim)
 
-            # Build border spectral (sparse: non-zeros at patch rows 16-18)
+            # Build border spectral (sparse: non-zeros at tile rows 16-18)
             ps_buf = zeros(Float64, patch.params.b_iDim, 1)
-            borderSpectral = Springsteel.getBorderSpectral(patch.params, tile, ps_buf)
+            borderSpectral = Springsteel.getBorderSpectral(tile)
 
             sharedSpectral = SharedArray{Float64}(patch.params.b_iDim, 1)
             sharedSpectral[:, :] .= 0.0
-            Springsteel.sumSharedSpectral(sharedSpectral, borderSpectral, patch.params, tile)
+            patchMap = calcPatchMap(patch, tile)
+            haloMap = calcHaloMap(patch, tile)
+            Springsteel.sumSharedSpectral(sharedSpectral, tile, patchMap, haloMap)
 
             siL = tile.params.spectralIndexL       # 1
             siR = tile.params.spectralIndexR - 3   # 15
@@ -2024,9 +2020,9 @@ using SparseArrays
             )
             grid = createGrid(gp)
 
-            @test Springsteel.num_columns(grid) == 0
+            @test Springsteel.num_columns(grid) == 1
 
-            buf = allocateSplineBuffer(grid, grid)
+            buf = allocateSplineBuffer(grid)
             @test isa(buf, Array)   # returns a (trivial) array
         end
     end
@@ -2175,11 +2171,11 @@ using SparseArrays
             
             grid = createGrid(gp)
             
-            # splines array: one for each j spectral coefficient
-            @test size(grid.splines, 1) == grid.params.b_jDim
+            # ibasis: one for each j spectral coefficient
+            @test size(grid.ibasis.data, 1) == grid.params.b_jDim
             
-            # rings array: one for each i gridpoint
-            @test size(grid.rings, 1) == grid.params.iDim
+            # jbasis: one for each i gridpoint
+            @test size(grid.jbasis.data, 1) == grid.params.iDim
         end
         
         @testset "Variable-specific Filter Lengths" begin
@@ -2201,12 +2197,2499 @@ using SparseArrays
             
             grid = createGrid(gp)
             
-            # Check that splines have correct filter length for i dimension
-            @test grid.splines[1, 1].params.l_q == 1.5
+            # Check that ibasis has correct filter length for i dimension
+            @test grid.ibasis.data[1, 1].params.l_q == 1.5
             
-            # Check that rings have correct filter length for j dimension
-            @test grid.rings[1, 1].params.l_q == 2.5
+            # Check that jbasis has correct filter length for j dimension
+            @test grid.jbasis.data[1, 1].params.l_q == 2.5
         end
     end
-    
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 1: SpringsteelGrid Type System
+    # Tests written first (TDD). Some will fail until types.jl is implemented.
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "SpringsteelGrid Type System" begin
+
+        @testset "Geometry sentinels" begin
+            @test CartesianGeometry() isa AbstractGeometry
+            @test CylindricalGeometry() isa AbstractGeometry
+            @test SphericalGeometry() isa AbstractGeometry
+            @test CartesianGeometry() != CylindricalGeometry()
+            @test CylindricalGeometry() != SphericalGeometry()
+            @test CartesianGeometry() != SphericalGeometry()
+        end
+
+        @testset "Basis sentinel types" begin
+            @test SplineBasisType() isa AbstractBasisType
+            @test FourierBasisType() isa AbstractBasisType
+            @test ChebyshevBasisType() isa AbstractBasisType
+            @test NoBasisType() isa AbstractBasisType
+        end
+
+        @testset "Basis containers" begin
+            @test NoBasisArray() isa NoBasisArray
+            # SplineBasisArray requires actual Spline1D objects; construct a trivial array
+            spline_arr = Array{CubicBSpline.Spline1D}(undef, 0)
+            @test SplineBasisArray(spline_arr) isa SplineBasisArray
+            fourier_arr = Array{Fourier.Fourier1D}(undef, 0)
+            @test FourierBasisArray(fourier_arr) isa FourierBasisArray
+            cheb_arr = Array{Chebyshev.Chebyshev1D}(undef, 0)
+            @test ChebyshevBasisArray(cheb_arr) isa ChebyshevBasisArray
+        end
+
+        @testset "SpringsteelGrid struct" begin
+            # Test that SpringsteelGrid is a concrete parametric struct (not abstract)
+            @test !isabstracttype(SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+            @test SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray} <: AbstractGrid
+            @test SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray} <: AbstractGrid
+            @test SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray} <: AbstractGrid
+        end
+
+        @testset "num_deriv_slots" begin
+            @test num_deriv_slots(NoBasisArray(), NoBasisArray()) == 3   # 1D
+            @test num_deriv_slots(SplineBasisArray(Array{CubicBSpline.Spline1D}(undef, 0)), NoBasisArray()) == 5  # 2D (j active)
+            @test num_deriv_slots(FourierBasisArray(Array{Fourier.Fourier1D}(undef, 0)), NoBasisArray()) == 5    # 2D (j active)
+            @test num_deriv_slots(NoBasisArray(), ChebyshevBasisArray(Array{Chebyshev.Chebyshev1D}(undef, 0))) == 5  # 2D (k active, j empty — RZ case)
+            @test num_deriv_slots(SplineBasisArray(Array{CubicBSpline.Spline1D}(undef, 0)),
+                                  ChebyshevBasisArray(Array{Chebyshev.Chebyshev1D}(undef, 0))) == 7  # 3D
+        end
+
+        @testset "New type aliases (SL, SLZ)" begin
+            # SL_Grid and SLZ_Grid are new — no conflict with existing structs
+            @test SL_Grid  <: AbstractGrid
+            @test SLZ_Grid <: AbstractGrid
+            @test SL_Grid  == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+            @test SLZ_Grid == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+        end
+
+        @testset "Existing type aliases still resolve" begin
+            # Old grid types must remain available as AbstractGrid subtypes
+            # (they are still the old structs during the transition; will become
+            # SpringsteelGrid const aliases in Phase 10)
+            @test R_Grid       <: AbstractGrid
+            @test Spline1D_Grid <: AbstractGrid
+            @test RL_Grid      <: AbstractGrid
+            @test RZ_Grid      <: AbstractGrid
+            @test RR_Grid      <: AbstractGrid
+            @test Spline2D_Grid <: AbstractGrid
+            @test RLZ_Grid     <: AbstractGrid
+            @test RRR_Grid     <: AbstractGrid
+        end
+
+        # Phase 10: aliases now activated — these must pass
+        @test R_Grid === Spline1D_Grid
+        @test RR_Grid === Spline2D_Grid
+
+    end  # SpringsteelGrid Type System
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 1: Basis Interface
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "Basis Interface" begin
+
+        @testset "Spline1D accessors" begin
+            gp = GridParameters(
+                geometry = "R",
+                xmin = 0.0, xmax = 10.0, num_cells = 5,
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                vars = Dict("u" => 1)
+            )
+            grid = createGrid(gp)
+            spline = grid.ibasis.data[1]
+
+            pts = gridpoints(spline)
+            @test length(pts) == spline.mishDim
+            @test pts == spline.mishPoints
+
+            @test spectral_dim(spline) == spline.bDim          # num_cells + 3
+            @test spectral_dim(spline) == 8                    # 5 + 3
+            @test physical_dim(spline) == spline.mishDim       # num_cells * mubar
+            @test physical_dim(spline) == 15                   # 5 * 3
+        end
+
+        @testset "Fourier1D accessors" begin
+            gp = GridParameters(
+                geometry = "RL",
+                xmin = 0.0, xmax = 10.0, num_cells = 4,
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                vars = Dict("u" => 1)
+            )
+            grid = createGrid(gp)
+            ring = grid.jbasis.data[1, 1]
+
+            pts = gridpoints(ring)
+            @test length(pts) == ring.params.yDim
+            @test pts == ring.mishPoints
+
+            @test spectral_dim(ring) == ring.params.bDim
+            @test physical_dim(ring) == ring.params.yDim
+        end
+
+        @testset "Chebyshev1D accessors" begin
+            gp = GridParameters(
+                geometry = "RZ",
+                xmin = 0.0, xmax = 10.0, num_cells = 4,
+                zmin = 0.0, zmax = 5.0, zDim = 10,
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1)
+            )
+            grid = createGrid(gp)
+            col = grid.kbasis.data[1]
+
+            pts = gridpoints(col)
+            @test length(pts) == col.params.zDim
+            @test pts == col.mishPoints
+
+            @test spectral_dim(col) == col.params.bDim
+            @test physical_dim(col) == col.params.zDim
+        end
+
+    end  # Basis Interface
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 2: SpringsteelGrid Factory
+    # Written first (TDD). Fail until parameters.jl and factory.jl are implemented.
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "SpringsteelGrid Factory" begin
+
+        @testset "parse_geometry" begin
+            for (geom_str, expected_G) in [
+                ("R",        CartesianGeometry),
+                ("Spline1D", CartesianGeometry),
+                ("RR",       CartesianGeometry),
+                ("Spline2D", CartesianGeometry),
+                ("RZ",       CartesianGeometry),
+                ("RRR",      CartesianGeometry),
+                ("RL",       CylindricalGeometry),
+                ("RLZ",      CylindricalGeometry),
+                ("SL",       SphericalGeometry),
+                ("SLZ",      SphericalGeometry),
+            ]
+                G, It, Jt, Kt = parse_geometry(geom_str)
+                @test G isa expected_G
+            end
+            # Basis type sentinels
+            G, It, Jt, Kt = parse_geometry("R")
+            @test It isa SplineBasisType
+            @test Jt isa NoBasisType
+            @test Kt isa NoBasisType
+
+            G, It, Jt, Kt = parse_geometry("RL")
+            @test It isa SplineBasisType
+            @test Jt isa FourierBasisType
+            @test Kt isa NoBasisType
+
+            G, It, Jt, Kt = parse_geometry("RLZ")
+            @test It isa SplineBasisType
+            @test Jt isa FourierBasisType
+            @test Kt isa ChebyshevBasisType
+
+            G, It, Jt, Kt = parse_geometry("RZ")
+            @test It isa SplineBasisType
+            @test Jt isa NoBasisType
+            @test Kt isa ChebyshevBasisType
+
+            G, It, Jt, Kt = parse_geometry("RRR")
+            @test It isa SplineBasisType
+            @test Jt isa SplineBasisType
+            @test Kt isa SplineBasisType
+        end
+
+        @testset "R Grid creation" begin
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 10,
+                iMin = 0.0,
+                iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+            @test grid.params.iDim  == 10 * 3     # num_cells * mubar
+            @test grid.params.b_iDim == 10 + 3    # num_cells + 3
+            @test size(grid.spectral, 1) == grid.params.b_iDim
+            @test size(grid.spectral, 2) == 1
+            @test size(grid.physical, 1) == grid.params.iDim
+            @test size(grid.physical, 2) == 1
+            @test size(grid.physical, 3) == 3     # 1D: value, ∂/∂i, ∂²/∂i²
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa NoBasisArray
+            @test grid.kbasis isa NoBasisArray
+            @test size(grid.ibasis.data) == (1, 1)
+        end
+
+        @testset "Multi-variable R Grid creation" begin
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 8,
+                iMin = 0.0,
+                iMax = 50.0,
+                vars = Dict("u" => 1, "v" => 2, "w" => 3),
+                BCL = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0, "w" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0, "w" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+            @test size(grid.spectral, 2) == 3
+            @test size(grid.physical, 2) == 3
+            @test size(grid.ibasis.data) == (1, 3)
+        end
+
+        @testset "RL Grid creation" begin
+            num_cells = 5
+            gp = SpringsteelGridParameters(
+                geometry = "RL",
+                num_cells = num_cells,
+                iMin = 0.0,
+                iMax = 50.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim   = num_cells * 3
+            b_iDim = num_cells + 3
+            exp_jDim   = sum(4 + 4*r for r in 1:iDim)
+            exp_b_jDim = sum(1 + 2*r for r in 1:iDim)
+
+            @test typeof(grid) == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+            @test grid.params.jDim   == exp_jDim
+            @test grid.params.b_jDim == exp_b_jDim
+            @test size(grid.spectral, 1) == exp_b_jDim
+            @test size(grid.physical, 1) == exp_jDim
+            @test size(grid.physical, 3) == 5     # 2D: 5 derivative slots
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa FourierBasisArray
+            @test grid.kbasis isa NoBasisArray
+            @test size(grid.ibasis.data) == (3, 1)    # 3 splines per variable
+            @test size(grid.jbasis.data) == (iDim, 1) # one ring per radial point per var
+        end
+
+        @testset "RZ Grid creation" begin
+            num_cells = 5
+            kDim = 10
+            gp = SpringsteelGridParameters(
+                geometry = "RZ",
+                num_cells = num_cells,
+                iMin = 0.0,
+                iMax = 50.0,
+                kMin = 0.0,
+                kMax = 20.0,
+                kDim = kDim,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            iDim   = num_cells * 3
+            b_iDim = num_cells + 3
+            b_kDim = min(kDim, Int(floor(((2*kDim) - 1) / 3)) + 1)
+
+            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray}
+            @test size(grid.spectral, 1) == b_kDim * b_iDim
+            @test size(grid.physical, 1) == iDim * kDim
+            @test size(grid.physical, 3) == 5     # 2D (j=NoBasis, k=Cheb): 5 slots
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa NoBasisArray
+            @test grid.kbasis isa ChebyshevBasisArray
+            @test size(grid.ibasis.data) == (b_kDim, 1)
+            @test size(grid.kbasis.data) == (1,)
+        end
+
+        @testset "RR Grid creation" begin
+            num_cells = 4
+            gp = SpringsteelGridParameters(
+                geometry = "RR",
+                num_cells = num_cells,
+                iMin = 0.0,
+                iMax = 40.0,
+                jMin = 0.0,
+                jMax = 40.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            # Same domain extent → same num_cells_j = num_cells
+            iDim   = num_cells * 3
+            b_iDim = num_cells + 3
+            jDim   = num_cells * 3   # same as iDim since same domain
+            b_jDim = num_cells + 3
+
+            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}
+            @test grid.params.jDim   == jDim
+            @test grid.params.b_jDim == b_jDim
+            @test size(grid.spectral, 1) == b_iDim * b_jDim
+            @test size(grid.physical, 1) == iDim * jDim
+            @test size(grid.physical, 3) == 5     # 2D (j=Spline, k=NoBasis)
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa SplineBasisArray
+            @test grid.kbasis isa NoBasisArray
+            @test size(grid.ibasis.data) == (b_jDim, 1)
+            @test size(grid.jbasis.data) == (iDim, 1)
+        end
+
+        @testset "RLZ Grid creation" begin
+            num_cells = 3
+            kDim = 8
+            gp = SpringsteelGridParameters(
+                geometry = "RLZ",
+                num_cells = num_cells,
+                iMin = 0.0,
+                iMax = 30.0,
+                kMin = 0.0,
+                kMax = 10.0,
+                kDim = kDim,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            iDim       = num_cells * 3
+            b_iDim     = num_cells + 3
+            b_kDim     = min(kDim, Int(floor(((2*kDim) - 1) / 3)) + 1)
+            exp_jDim   = sum(4 + 4*r for r in 1:iDim)
+            exp_b_jDim = sum(1 + 2*r for r in 1:iDim)
+            exp_spectral = b_kDim * b_iDim * (1 + 2*(iDim + 0))  # patchOffsetL=0
+
+            @test typeof(grid) == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+            @test grid.params.jDim   == exp_jDim
+            @test grid.params.b_jDim == exp_b_jDim
+            @test size(grid.spectral, 1) == exp_spectral
+            @test size(grid.physical, 1) == exp_jDim * kDim
+            @test size(grid.physical, 3) == 7     # 3D
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa FourierBasisArray
+            @test grid.kbasis isa ChebyshevBasisArray
+            @test size(grid.ibasis.data) == (b_kDim, 1)
+            @test size(grid.jbasis.data) == (iDim, b_kDim)
+            @test size(grid.kbasis.data) == (1,)
+        end
+
+        @testset "RRR Grid creation" begin
+            num_cells = 3
+            gp = SpringsteelGridParameters(
+                geometry = "RRR",
+                num_cells = num_cells,
+                iMin = 0.0,
+                iMax = 30.0,
+                jMin = 0.0,
+                jMax = 30.0,
+                kMin = 0.0,
+                kMax = 30.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim   = num_cells * 3
+            b_iDim = num_cells + 3
+            jDim   = num_cells * 3   # same domain
+            b_jDim = num_cells + 3
+            kDim   = num_cells * 3
+            b_kDim = num_cells + 3   # spline formula for k
+
+            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+            @test grid.params.jDim   == jDim
+            @test grid.params.b_jDim == b_jDim
+            @test grid.params.kDim   == kDim
+            @test grid.params.b_kDim == b_kDim
+            @test size(grid.spectral, 1) == b_iDim * b_jDim * b_kDim
+            @test size(grid.physical, 1) == iDim * jDim * kDim
+            @test size(grid.physical, 3) == 7     # 3D
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa SplineBasisArray
+            @test grid.kbasis isa SplineBasisArray
+            @test size(grid.ibasis.data) == (b_jDim, b_kDim, 1)
+            @test size(grid.jbasis.data) == (iDim, b_kDim, 1)
+            @test size(grid.kbasis.data) == (iDim, jDim, 1)
+        end
+
+        @testset "SL Grid creation" begin
+            num_cells = 4
+            gp = SpringsteelGridParameters(
+                geometry = "SL",
+                num_cells = num_cells,
+                iMin = 0.05,
+                iMax = π - 0.05,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = num_cells * 3
+
+            @test typeof(grid) == SL_Grid
+            @test typeof(grid) == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+            @test grid.params.jDim > 0
+            @test grid.params.b_jDim > 0
+            @test size(grid.spectral, 1) == grid.params.b_jDim
+            @test size(grid.physical, 1) == grid.params.jDim
+            @test size(grid.physical, 3) == 5     # 2D
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa FourierBasisArray
+            @test grid.kbasis isa NoBasisArray
+            @test size(grid.ibasis.data, 2) == 1  # 1 variable
+        end
+
+        @testset "SLZ Grid creation" begin
+            num_cells = 3
+            kDim = 6
+            gp = SpringsteelGridParameters(
+                geometry = "SLZ",
+                num_cells = num_cells,
+                iMin = 0.05,
+                iMax = π - 0.05,
+                kMin = 0.0,
+                kMax = 10.0,
+                kDim = kDim,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            @test typeof(grid) == SLZ_Grid
+            @test typeof(grid) == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+            @test grid.params.jDim > 0
+            @test size(grid.physical, 3) == 7     # 3D
+            @test grid.ibasis isa SplineBasisArray
+            @test grid.jbasis isa FourierBasisArray
+            @test grid.kbasis isa ChebyshevBasisArray
+        end
+
+    end  # SpringsteelGrid Factory
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 3: 1D Cartesian Transforms
+    # Tests for spectralTransform! / gridTransform! on
+    # SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "1D Cartesian roundtrip" begin
+
+        @testset "getGridpoints" begin
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 10,
+                iMin = 0.0,
+                iMax = 10.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            pts = getGridpoints(grid)
+
+            @test length(pts) == grid.params.iDim       # 30 = 10*3 mish points
+            @test pts[1] >= gp.iMin
+            @test pts[end] <= gp.iMax
+            @test all(diff(pts) .> 0)                   # monotonically increasing
+        end
+
+        @testset "Cubic polynomial roundtrip (exact)" begin
+            # Cubic B-splines represent cubic polynomials exactly,
+            # so f(x) = x^3 - 2x^2 + x + 1 should roundtrip to machine precision.
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 10,
+                iMin = 0.0,
+                iMax = 1.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+
+            for i in eachindex(pts)
+                x = pts[i]
+                grid.physical[i, 1, 1] = x^3 - 2*x^2 + x + 1
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10  # non-trivial coefficients
+
+            gridTransform!(grid)
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-3    # cubic spline accuracy with BCs
+        end
+
+        @testset "Sinusoid roundtrip (smooth function)" begin
+            # Smooth periodic function: f(x) = sin(2π x / L) on [0, L]
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 20,
+                iMin = 0.0,
+                iMax = 10.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.PERIODIC),
+                BCR = Dict("u" => CubicBSpline.PERIODIC))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+            L    = gp.iMax - gp.iMin
+
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = sin(2π * pts[i] / L)
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-4    # cubic spline accuracy for smooth function
+        end
+
+        @testset "Multi-variable roundtrip" begin
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 15,
+                iMin = 0.0,
+                iMax = 2π,
+                vars = Dict("u" => 1, "v" => 2),
+                BCL = Dict("u" => CubicBSpline.PERIODIC, "v" => CubicBSpline.PERIODIC),
+                BCR = Dict("u" => CubicBSpline.PERIODIC, "v" => CubicBSpline.PERIODIC))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = sin(pts[i])
+                grid.physical[i, 2, 1] = cos(pts[i])
+            end
+            orig_u = copy(grid.physical[:, 1, 1])
+            orig_v = copy(grid.physical[:, 2, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            @test maximum(abs.(grid.physical[:, 1, 1] .- orig_u)) < 1e-4
+            @test maximum(abs.(grid.physical[:, 2, 1] .- orig_v)) < 1e-4
+        end
+
+        @testset "Derivative accuracy: sin(x)" begin
+            # f(x) = sin(x) on [0, 2π] periodic
+            # df/dx = cos(x),  d²f/dx² = -sin(x)
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 30,
+                iMin = 0.0,
+                iMax = 2π,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.PERIODIC),
+                BCR = Dict("u" => CubicBSpline.PERIODIC))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = sin(pts[i])
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # Value
+            @test maximum(abs.(grid.physical[:, 1, 1] .- sin.(pts))) < 1e-4
+            # First derivative: cos(x)
+            @test maximum(abs.(grid.physical[:, 1, 2] .- cos.(pts))) < 0.01
+            # Second derivative: -sin(x)
+            @test maximum(abs.(grid.physical[:, 1, 3] .+ sin.(pts))) < 0.01
+        end
+
+        @testset "Gaussian derivatives" begin
+            # Analytic test: u = exp(-(x/σ)²), u' = -2x/σ² * u, u'' = (4x²/σ⁴ - 2/σ²) * u
+            sigma = 20.0
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 100,
+                iMin = -50.0,
+                iMax = 50.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = exp(-(pts[i] / sigma)^2)
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            analytic_vals = [exp(-(x / sigma)^2)                          for x in pts]
+            analytic_dx   = [-2x / sigma^2 * exp(-(x / sigma)^2)          for x in pts]
+            analytic_dxx  = [(4x^2 / sigma^4 - 2 / sigma^2) * exp(-(x / sigma)^2) for x in pts]
+
+            @test maximum(abs.(grid.physical[:, 1, 1] .- analytic_vals)) < 1e-5
+            @test maximum(abs.(grid.physical[:, 1, 2] .- analytic_dx))   < 1e-4
+            @test maximum(abs.(grid.physical[:, 1, 3] .- analytic_dxx))  < 1e-4
+        end
+
+        @testset "spectralTransform / gridTransform (explicit-array variants)" begin
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 20,
+                iMin = 0.0,
+                iMax = 2π,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.PERIODIC),
+                BCR = Dict("u" => CubicBSpline.PERIODIC))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = sin(pts[i])
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            # Explicit-array forward transform
+            spec2 = zeros(Float64, size(grid.spectral))
+            Springsteel.spectralTransform(grid, grid.physical, spec2)
+            @test maximum(abs.(spec2 .- grid.spectral)) > 0.0   # non-trivial (grid.spectral still zero)
+            @test maximum(abs.(spec2)) > 1e-10                  # non-trivial coefficients
+
+            # Explicit-array inverse transform
+            phys2 = zeros(Float64, size(grid.physical))
+            Springsteel.gridTransform(grid, phys2, spec2)
+            max_err = maximum(abs.(phys2[:, 1, 1] .- original))
+            @test max_err < 1e-4
+        end
+
+    end  # 1D Cartesian roundtrip
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 4: 2D Cartesian Transforms
+    # Tests for spectralTransform! / gridTransform! on
+    # SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}  (RR)
+    # SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray} (RZ)
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "2D Cartesian Transforms" begin
+
+        @testset "RR getGridpoints" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RR",
+                num_cells = 6,
+                iMin = 0.0, iMax = 30.0,
+                jMin = 0.0, jMax = 30.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+
+            @test size(pts, 2) == 2
+            @test size(pts, 1) == grid.params.iDim * grid.params.jDim
+            @test all(pts[:, 1] .>= gp.iMin)
+            @test all(pts[:, 1] .<= gp.iMax)
+            @test all(pts[:, 2] .>= gp.jMin)
+            @test all(pts[:, 2] .<= gp.jMax)
+        end
+
+        @testset "RZ getGridpoints" begin
+            kDim = 12
+            gp = SpringsteelGridParameters(
+                geometry  = "RZ",
+                num_cells = 6,
+                iMin = 0.0, iMax = 30.0,
+                kMin = 0.0, kMax = 15.0,
+                kDim = kDim,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+
+            @test size(pts, 2) == 2
+            @test size(pts, 1) == grid.params.iDim * grid.params.kDim
+            @test all(pts[:, 1] .>= gp.iMin)
+            @test all(pts[:, 1] .<= gp.iMax)
+        end
+
+        @testset "RR Spline×Spline roundtrip (quadratic)" begin
+            # f(x,y) = (x/xmax)^2 * (y/ymax)  — polynomial, spline-exact
+            num_cells = 8
+            xmax = 40.0; ymax = 40.0
+            gp = SpringsteelGridParameters(
+                geometry  = "RR",
+                num_cells = num_cells,
+                iMin = 0.0, iMax = xmax,
+                jMin = 0.0, jMax = ymax,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            for r in 1:iDim
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:jDim
+                    y = grid.jbasis.data[r, 1].mishPoints[l]
+                    grid.physical[(r-1)*jDim + l, 1, 1] = (x/xmax)^2 * (y/ymax)
+                end
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10  # non-trivial
+
+            gridTransform!(grid)
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-3
+
+            # ∂/∂i and ∂/∂j should be non-trivial
+            @test maximum(abs.(grid.physical[:, 1, 2])) > 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 4])) > 1e-10
+        end
+
+        @testset "RR multi-variable roundtrip" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RR",
+                num_cells = 6,
+                iMin = 0.0, iMax = 20.0,
+                jMin = 0.0, jMax = 20.0,
+                vars = Dict("u" => 1, "v" => 2),
+                BCL = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            for r in 1:iDim
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:jDim
+                    y = grid.jbasis.data[r, 1].mishPoints[l]
+                    idx = (r-1)*jDim + l
+                    grid.physical[idx, 1, 1] = x / 20.0
+                    grid.physical[idx, 2, 1] = y / 20.0
+                end
+            end
+            orig_u = copy(grid.physical[:, 1, 1])
+            orig_v = copy(grid.physical[:, 2, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            @test maximum(abs.(grid.physical[:, 1, 1] .- orig_u)) < 1e-3
+            @test maximum(abs.(grid.physical[:, 2, 1] .- orig_v)) < 1e-3
+        end
+
+        @testset "RR derivative accuracy ∂/∂i of f(x,y)=x" begin
+            # f(x,y) = x/xmax  →  ∂f/∂i = 1/xmax everywhere; ∂f/∂j = 0
+            xmax = 30.0
+            gp = SpringsteelGridParameters(
+                geometry  = "RR",
+                num_cells = 10,
+                iMin = 0.0, iMax = xmax,
+                jMin = 0.0, jMax = xmax,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            for r in 1:iDim
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:jDim
+                    grid.physical[(r-1)*jDim + l, 1, 1] = x / xmax
+                end
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # ∂f/∂i ≈ 1/xmax at interior points
+            @test maximum(abs.(grid.physical[:, 1, 2] .- (1.0/xmax))) < 0.05
+            # ∂f/∂j ≈ 0
+            @test maximum(abs.(grid.physical[:, 1, 4])) < 0.05
+        end
+
+        @testset "RR derivative accuracy ∂/∂j of f(x,y)=y" begin
+            # f(x,y) = y/ymax  →  ∂f/∂j = 1/ymax; ∂f/∂i = 0
+            ymax = 30.0
+            gp = SpringsteelGridParameters(
+                geometry  = "RR",
+                num_cells = 10,
+                iMin = 0.0, iMax = ymax,
+                jMin = 0.0, jMax = ymax,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            for r in 1:iDim
+                for l in 1:jDim
+                    y = grid.jbasis.data[r, 1].mishPoints[l]
+                    grid.physical[(r-1)*jDim + l, 1, 1] = y / ymax
+                end
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # ∂f/∂j ≈ 1/ymax
+            @test maximum(abs.(grid.physical[:, 1, 4] .- (1.0/ymax))) < 0.05
+            # ∂f/∂i ≈ 0
+            @test maximum(abs.(grid.physical[:, 1, 2])) < 0.05
+        end
+
+        @testset "RZ Spline×Chebyshev roundtrip (quadratic)" begin
+            # f(x,z) = (x/xmax)^2 * (z/zmax)
+            num_cells = 8
+            kDim = 15
+            xmax = 40.0; zmax = 20.0
+            gp = SpringsteelGridParameters(
+                geometry  = "RZ",
+                num_cells = num_cells,
+                iMin = 0.0, iMax = xmax,
+                kMin = 0.0, kMax = zmax,
+                kDim = kDim,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            for r in 1:iDim
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                for z in 1:kDim
+                    zp = grid.kbasis.data[1].mishPoints[z]
+                    grid.physical[(r-1)*kDim + z, 1, 1] = (x/xmax)^2 * (zp/zmax)
+                end
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10  # non-trivial
+
+            gridTransform!(grid)
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-3
+
+            # ∂/∂i and ∂/∂k should be non-trivial
+            @test maximum(abs.(grid.physical[:, 1, 2])) > 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 4])) > 1e-10
+        end
+
+        @testset "RZ multi-variable roundtrip" begin
+            kDim = 12
+            gp = SpringsteelGridParameters(
+                geometry  = "RZ",
+                num_cells = 6,
+                iMin = 0.0, iMax = 30.0,
+                kMin = 0.0, kMax = 15.0,
+                kDim = kDim,
+                vars = Dict("u" => 1, "v" => 2),
+                BCL = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0, "v" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0, "v" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            for r in 1:iDim
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                for z in 1:kDim
+                    zp = grid.kbasis.data[1].mishPoints[z]
+                    idx = (r-1)*kDim + z
+                    grid.physical[idx, 1, 1] = x / 30.0
+                    grid.physical[idx, 2, 1] = zp / 15.0
+                end
+            end
+            orig_u = copy(grid.physical[:, 1, 1])
+            orig_v = copy(grid.physical[:, 2, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            @test maximum(abs.(grid.physical[:, 1, 1] .- orig_u)) < 1e-3
+            @test maximum(abs.(grid.physical[:, 2, 1] .- orig_v)) < 1e-3
+        end
+
+        @testset "RZ derivative accuracy ∂/∂i of f(x,z)=x" begin
+            # f(x,z) = x/xmax  →  ∂f/∂i = 1/xmax; ∂f/∂k = 0
+            xmax = 30.0
+            kDim = 15
+            gp = SpringsteelGridParameters(
+                geometry  = "RZ",
+                num_cells = 10,
+                iMin = 0.0, iMax = xmax,
+                kMin = 0.0, kMax = 15.0,
+                kDim = kDim,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            iDim = grid.params.iDim
+            for r in 1:iDim
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                for z in 1:kDim
+                    grid.physical[(r-1)*kDim + z, 1, 1] = x / xmax
+                end
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            @test maximum(abs.(grid.physical[:, 1, 2] .- (1.0/xmax))) < 0.05
+            @test maximum(abs.(grid.physical[:, 1, 4])) < 0.05
+        end
+
+        @testset "RZ derivative accuracy ∂/∂k of f(x,z)=z" begin
+            # f(x,z) = z/zmax  →  ∂f/∂k = 1/zmax; ∂f/∂i = 0
+            zmax = 15.0
+            kDim = 15
+            gp = SpringsteelGridParameters(
+                geometry  = "RZ",
+                num_cells = 8,
+                iMin = 0.0, iMax = 30.0,
+                kMin = 0.0, kMax = zmax,
+                kDim = kDim,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            iDim = grid.params.iDim
+            for r in 1:iDim
+                for z in 1:kDim
+                    zp = grid.kbasis.data[1].mishPoints[z]
+                    grid.physical[(r-1)*kDim + z, 1, 1] = zp / zmax
+                end
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            @test maximum(abs.(grid.physical[:, 1, 4] .- (1.0/zmax))) < 0.05
+            @test maximum(abs.(grid.physical[:, 1, 2])) < 0.05
+        end
+
+    end  # 2D Cartesian Transforms
+
+    # ── Phase 5: 2D Cylindrical Transforms ─────────────────────────────────
+    @testset "2D Cylindrical Transforms" begin
+
+        @testset "RL roundtrip — wavenumber-0 (f(r,λ) = r)" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RL",
+                num_cells = 10,
+                iMin = 0.0, iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            # f(r, λ) = r  — only wavenumber 0, constant in λ
+            iDim = grid.params.iDim
+            l2 = 0
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                l1 = l2 + 1
+                l2 = l1 + lpoints - 1
+                x  = grid.ibasis.data[1, 1].mishPoints[r]
+                grid.physical[l1:l2, 1, 1] .= x
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10   # non-trivial
+
+            gridTransform!(grid)
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-3
+
+            # Radial derivative of f(r)=r should be ≈ 1
+            @test maximum(abs.(grid.physical[:, 1, 2] .- 1.0)) < 0.05
+            # Second radial derivative ≈ 0
+            @test maximum(abs.(grid.physical[:, 1, 3])) < 0.05
+        end
+
+        @testset "RL roundtrip — wavenumber-1 (f(r,λ) = r·cos λ)" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RL",
+                num_cells = 10,
+                iMin = 0.0, iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            # f(r, λ) = r * cos(λ) — wavenumber-1 mode
+            iDim = grid.params.iDim
+            l2 = 0
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                l1 = l2 + 1
+                l2 = l1 + lpoints - 1
+                x  = grid.ibasis.data[1, 1].mishPoints[r]
+                λs = grid.jbasis.data[r, 1].mishPoints
+                grid.physical[l1:l2, 1, 1] .= x .* cos.(λs)
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-2
+
+            # Azimuthal derivative ∂/∂λ of r·cos(λ) = -r·sin(λ) — non-trivial
+            @test maximum(abs.(grid.physical[:, 1, 4])) > 1e-6
+        end
+
+        @testset "RL multi-variable roundtrip" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RL",
+                num_cells = 8,
+                iMin = 0.0, iMax = 80.0,
+                vars = Dict("u" => 1, "v" => 2),
+                BCL  = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            l2 = 0
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                l1 = l2 + 1
+                l2 = l1 + lpoints - 1
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                grid.physical[l1:l2, 1, 1] .= x
+                grid.physical[l1:l2, 2, 1] .= x .* 2.0
+            end
+            orig_u = copy(grid.physical[:, 1, 1])
+            orig_v = copy(grid.physical[:, 2, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            @test maximum(abs.(grid.physical[:, 1, 1] .- orig_u)) < 1e-3
+            @test maximum(abs.(grid.physical[:, 2, 1] .- orig_v)) < 1e-3
+        end
+
+        @testset "RL derivative accuracy ∂/∂i of f(r,λ) = r" begin
+            # ∂(r)/∂r = 1; ∂²(r)/∂r² = 0; ∂(r)/∂λ = 0
+            gp = SpringsteelGridParameters(
+                geometry  = "RL",
+                num_cells = 12,
+                iMin = 0.0, iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            l2 = 0
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                l1 = l2 + 1
+                l2 = l1 + lpoints - 1
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                grid.physical[l1:l2, 1, 1] .= x / 100.0
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # ∂f/∂r = 1/100
+            @test maximum(abs.(grid.physical[:, 1, 2] .- 1.0/100.0)) < 0.05
+            # ∂f/∂λ = 0
+            @test maximum(abs.(grid.physical[:, 1, 4])) < 0.05
+        end
+
+    end  # 2D Cylindrical Transforms
+
+    # ── Phase 6: 3D Transforms ─────────────────────────────────────────────
+    @testset "3D Transforms" begin
+
+        # ── 3D Cartesian Spline×Spline×Spline (RRR) ──────────────────────────
+        @testset "RRR roundtrip f(x,y,z) = x²·y·z" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RRR",
+                num_cells = 4,
+                iMin = 0.0, iMax = 50.0,
+                jMin = 0.0, jMax = 50.0,
+                kMin = 0.0, kMax = 50.0,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCU  = Dict("u" => CubicBSpline.R0),
+                BCD  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R0),
+                BCT  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            kDim = grid.params.kDim
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                xi = grid.ibasis.data[1, 1, 1].mishPoints[r]
+                yj = grid.jbasis.data[r, 1, 1].mishPoints[l]
+                zk = grid.kbasis.data[r, l, 1].mishPoints[z]
+                flat = (r-1)*jDim*kDim + (l-1)*kDim + z
+                grid.physical[flat, 1, 1] = xi^2 * yj * zk
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10
+            gridTransform!(grid)
+
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-2
+        end
+
+        @testset "RRR derivative accuracy — BUG-2 and BUG-3 regression" begin
+            # Bug-2: derivative slot 4 (∂/∂j) was dimension-mismatch
+            # Bug-3: splineBuffer_l stale across r loop
+            # Test with f(x,y,z) = y² so ∂f/∂j = 2y, ∂²f/∂j² = 2, and ∂f/∂i = ∂f/∂k = 0
+            gp = SpringsteelGridParameters(
+                geometry  = "RRR",
+                num_cells = 4,
+                iMin = 0.0, iMax = 50.0,
+                jMin = 0.0, jMax = 50.0,
+                kMin = 0.0, kMax = 50.0,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCU  = Dict("u" => CubicBSpline.R0),
+                BCD  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R0),
+                BCT  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            kDim = grid.params.kDim
+
+            # f = y² — only y-dependence
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                yj   = grid.jbasis.data[r, 1, 1].mishPoints[l]
+                flat = (r-1)*jDim*kDim + (l-1)*kDim + z
+                grid.physical[flat, 1, 1] = yj^2
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # ∂f/∂i = 0  (slot 2)
+            @test maximum(abs.(grid.physical[:, 1, 2])) < 0.1
+            # ∂f/∂j = 2y  (slot 4)  — BUG-2 fix test
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                yj   = grid.jbasis.data[r, 1, 1].mishPoints[l]
+                flat = (r-1)*jDim*kDim + (l-1)*kDim + z
+                @test abs(grid.physical[flat, 1, 4] - 2.0*yj) < 0.2
+            end
+            # ∂f/∂k = 0  (slot 6)
+            @test maximum(abs.(grid.physical[:, 1, 6])) < 0.1
+        end
+
+        @testset "RRR BUG-3 regression — radial variation preserved" begin
+            # BUG-3: splineBuffer_l was overwritten per r, so only last r survived.
+            # Test with f(x,y,z) = x·y·z so values at r=1 must differ from r=rDim.
+            gp = SpringsteelGridParameters(
+                geometry  = "RRR",
+                num_cells = 4,
+                iMin = 1.0, iMax = 50.0,
+                jMin = 1.0, jMax = 50.0,
+                kMin = 1.0, kMax = 50.0,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCU  = Dict("u" => CubicBSpline.R0),
+                BCD  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R0),
+                BCT  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            kDim = grid.params.kDim
+
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                xi   = grid.ibasis.data[1, 1, 1].mishPoints[r]
+                yj   = grid.jbasis.data[r, 1, 1].mishPoints[l]
+                zk   = grid.kbasis.data[r, l, 1].mishPoints[z]
+                flat = (r-1)*jDim*kDim + (l-1)*kDim + z
+                grid.physical[flat, 1, 1] = xi * yj * zk
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # Values at r=1 and r=iDim must differ (BUG-3 caused them to be identical)
+            r1_val = grid.physical[1*jDim*kDim - jDim*kDim + 1, 1, 1]  # r=1, l=1, z=1
+            rN_val = grid.physical[(iDim-1)*jDim*kDim + 1, 1, 1]        # r=iDim, l=1, z=1
+            @test abs(r1_val - rN_val) > 1.0   # must differ significantly
+
+            # Also check roundtrip accuracy
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-2
+        end
+
+        # ── 3D Cylindrical Spline×Fourier×Chebyshev (RLZ) ────────────────────
+        @testset "RLZ roundtrip f(r,λ,z) = r·cos(λ)·z" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RLZ",
+                num_cells = 4,
+                iMin = 0.0, iMax = 60.0,
+                kMin = 0.0, kMax = 10.0,
+                kDim = 8,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => Chebyshev.R0),
+                BCT  = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            @test typeof(grid) == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi   = 1
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m     = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    l_m = grid.jbasis.data[r, 1].mishPoints[l]
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = r_m * cos(l_m) * z_m
+                    end
+                end
+                zi += lpoints * kDim
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10
+            gridTransform!(grid)
+
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-2
+        end
+
+        @testset "RLZ BUG-1 regression — patchOffsetL kDim fix" begin
+            # BUG-1: gridTransform used kDim = iDim (wrong) instead of iDim + patchOffsetL.
+            # With spectralIndexL=2 (patchOffsetL=3), z > 1 levels are read from wrong
+            # spectral offsets. Verify roundtrip with Chebyshev z-variation.
+            gp = SpringsteelGridParameters(
+                geometry       = "RLZ",
+                num_cells      = 4,
+                spectralIndexL = 2,   # → patchOffsetL = 3
+                iMin = 0.0, iMax = 40.0,
+                kMin = 0.0, kMax = 10.0,
+                kDim = 8,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => Chebyshev.R0),
+                BCT  = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            @test grid.params.patchOffsetL == 3   # confirm setup
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi   = 1
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m     = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    l_m = grid.jbasis.data[r, 1].mishPoints[l]
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = r_m * z_m
+                    end
+                end
+                zi += lpoints * kDim
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # Without BUG-1 fix, z-dependent values would be wrong for patchOffsetL > 0
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-2
+        end
+
+        @testset "RLZ radial derivative ∂f/∂r" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RLZ",
+                num_cells = 6,
+                iMin = 0.0, iMax = 100.0,
+                kMin = 0.0, kMax = 20.0,
+                kDim = 10,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => Chebyshev.R0),
+                BCT  = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi   = 1
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m     = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    for z in 1:kDim
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = r_m / 100.0
+                    end
+                end
+                zi += lpoints * kDim
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # ∂f/∂r = 1/100
+            @test maximum(abs.(grid.physical[:, 1, 2] .- 1.0/100.0)) < 0.05
+            # ∂f/∂λ = 0
+            @test maximum(abs.(grid.physical[:, 1, 4])) < 0.05
+        end
+
+    end  # 3D Transforms
+
+    # ── Regular Grid Transforms (2D/3D) ──────────────────────────────────
+    @testset "Regular Grid Transforms" begin
+
+        # ── RL regularGridTransform ───────────────────────────────────────
+        @testset "RL getRegularGridpoints" begin
+            gp = SpringsteelGridParameters(
+                geometry="RL", num_cells=10, iMin=0.0, iMax=100.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            reg_pts = getRegularGridpoints(grid)
+
+            n_r = grid.params.i_regular_out
+            n_λ = grid.params.j_regular_out
+            @test size(reg_pts) == (n_r * n_λ, 2)
+            # r ranges from iMin to iMax
+            @test minimum(reg_pts[:, 1]) ≈ gp.iMin
+            @test maximum(reg_pts[:, 1]) ≈ gp.iMax
+            # λ ranges in [0, 2π)
+            @test minimum(reg_pts[:, 2]) ≈ 0.0
+            @test maximum(reg_pts[:, 2]) < 2π
+            # r-outer, λ-inner ordering: first n_λ points should have same r
+            @test all(reg_pts[1:n_λ, 1] .≈ reg_pts[1, 1])
+            # λ should be monotonically increasing within each r block
+            @test all(diff(reg_pts[1:n_λ, 2]) .> 0)
+        end
+
+        @testset "RL regularGridTransform — axisymmetric f(r,λ) = r" begin
+            gp = SpringsteelGridParameters(
+                geometry="RL", num_cells=10, iMin=0.0, iMax=100.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            # Fill with f(r,λ) = r (axisymmetric, only wavenumber 0)
+            iDim = grid.params.iDim
+            l2 = 0
+            for r in 1:iDim
+                ri = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                l1 = l2 + 1
+                l2 = l1 + lpoints - 1
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                grid.physical[l1:l2, 1, 1] .= x
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            # Output shape should be (n_r*n_λ, nvars, 5)
+            n_r = grid.params.i_regular_out
+            n_λ = grid.params.j_regular_out
+            @test size(reg_phys) == (n_r * n_λ, 1, 5)
+
+            # Values: f(r,λ) = r — compare against radial coordinate
+            max_err_val = 0.0
+            for i in 1:n_r
+                for j in 1:n_λ
+                    idx = (i-1)*n_λ + j
+                    r_val = reg_pts[idx, 1]
+                    max_err_val = max(max_err_val, abs(reg_phys[idx, 1, 1] - r_val))
+                end
+            end
+            @test max_err_val < 1e-3
+
+            # Radial derivative ∂f/∂r = 1 (slot 2)
+            @test maximum(abs.(reg_phys[:, 1, 2] .- 1.0)) < 0.05
+
+            # Second radial derivative ∂²f/∂r² = 0 (slot 3)
+            @test maximum(abs.(reg_phys[:, 1, 3])) < 0.05
+
+            # Azimuthal derivatives should be 0 for axisymmetric function (slots 4-5)
+            @test maximum(abs.(reg_phys[:, 1, 4])) < 1e-10
+            @test maximum(abs.(reg_phys[:, 1, 5])) < 1e-10
+        end
+
+        @testset "RL regularGridTransform — wavenumber-1 f(r,λ) = r·cos(λ)" begin
+            gp = SpringsteelGridParameters(
+                geometry="RL", num_cells=10, iMin=0.0, iMax=100.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            # Fill with f(r,λ) = r·cos(λ) — wavenumber-1 mode
+            iDim = grid.params.iDim
+            l2 = 0
+            for r in 1:iDim
+                ri = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                l1 = l2 + 1
+                l2 = l1 + lpoints - 1
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                λs = grid.jbasis.data[r, 1].mishPoints
+                grid.physical[l1:l2, 1, 1] .= x .* cos.(λs)
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            # Values: f(r,λ) = r·cos(λ)
+            analytic_vals = [reg_pts[i, 1] * cos(reg_pts[i, 2]) for i in 1:size(reg_pts, 1)]
+            max_err_val = maximum(abs.(reg_phys[:, 1, 1] .- analytic_vals))
+            @test max_err_val < 1e-2
+
+            # ∂f/∂r = cos(λ) (slot 2)
+            analytic_dr = [cos(reg_pts[i, 2]) for i in 1:size(reg_pts, 1)]
+            max_err_dr = maximum(abs.(reg_phys[:, 1, 2] .- analytic_dr))
+            @test max_err_dr < 0.05
+
+            # ∂f/∂λ = -r·sin(λ) (slot 4)
+            analytic_dl = [-reg_pts[i, 1] * sin(reg_pts[i, 2]) for i in 1:size(reg_pts, 1)]
+            max_err_dl = maximum(abs.(reg_phys[:, 1, 4] .- analytic_dl))
+            @test max_err_dl < 1e-2
+
+            # ∂²f/∂λ² = -r·cos(λ) (slot 5)
+            analytic_dll = [-reg_pts[i, 1] * cos(reg_pts[i, 2]) for i in 1:size(reg_pts, 1)]
+            max_err_dll = maximum(abs.(reg_phys[:, 1, 5] .- analytic_dll))
+            @test max_err_dll < 1e-2
+        end
+
+        @testset "RL regularGridTransform — matrix-input wrapper" begin
+            gp = SpringsteelGridParameters(
+                geometry="RL", num_cells=8, iMin=0.0, iMax=80.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            # Fill with f(r,λ) = r
+            iDim = grid.params.iDim
+            l2 = 0
+            for r in 1:iDim
+                ri = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                l1 = l2 + 1
+                l2 = l1 + lpoints - 1
+                x = grid.ibasis.data[1, 1].mishPoints[r]
+                grid.physical[l1:l2, 1, 1] .= x
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+
+            # Call with matrix input — should produce same result as vector input
+            phys_matrix = regularGridTransform(grid, reg_pts)
+            r_pts = sort(unique(reg_pts[:, 1]))
+            n_λ = div(size(reg_pts, 1), length(r_pts))
+            λ_pts = reg_pts[1:n_λ, 2]
+            phys_vectors = regularGridTransform(grid, r_pts, λ_pts)
+            @test phys_matrix ≈ phys_vectors
+        end
+
+        # ── RLZ regularGridTransform ──────────────────────────────────────
+        @testset "RLZ getRegularGridpoints" begin
+            gp = SpringsteelGridParameters(
+                geometry="RLZ", num_cells=4, iMin=0.0, iMax=60.0,
+                kMin=0.0, kMax=10.0, kDim=8,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => Chebyshev.R0),
+                BCT=Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            reg_pts = getRegularGridpoints(grid)
+
+            n_r = grid.params.i_regular_out
+            n_λ = grid.params.j_regular_out
+            n_z = grid.params.k_regular_out
+            @test size(reg_pts) == (n_r * n_λ * n_z, 3)
+            # r ranges from iMin to iMax
+            @test minimum(reg_pts[:, 1]) ≈ gp.iMin
+            @test maximum(reg_pts[:, 1]) ≈ gp.iMax
+            # λ in [0, 2π)
+            @test minimum(reg_pts[:, 2]) ≈ 0.0
+            @test maximum(reg_pts[:, 2]) < 2π
+            # z ranges from kMin to kMax
+            @test minimum(reg_pts[:, 3]) ≈ gp.kMin
+            @test maximum(reg_pts[:, 3]) ≈ gp.kMax
+        end
+
+        @testset "RLZ regularGridTransform — axisymmetric f(r,λ,z) = r·z" begin
+            gp = SpringsteelGridParameters(
+                geometry="RLZ", num_cells=4, iMin=0.0, iMax=60.0,
+                kMin=0.0, kMax=10.0, kDim=8,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => Chebyshev.R0),
+                BCT=Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            # Fill with f(r,λ,z) = r·z (axisymmetric)
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi = 1
+            for r in 1:iDim
+                ri = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = r_m * z_m
+                    end
+                end
+                zi += lpoints * kDim
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            # Output shape: (n_r*n_λ*n_z, nvars, 7)
+            n_r = grid.params.i_regular_out
+            n_λ = grid.params.j_regular_out
+            n_z = grid.params.k_regular_out
+            @test size(reg_phys) == (n_r * n_λ * n_z, 1, 7)
+
+            # Values: f(r,λ,z) = r·z
+            analytic_vals = [reg_pts[i, 1] * reg_pts[i, 3] for i in 1:size(reg_pts, 1)]
+            max_err_val = maximum(abs.(reg_phys[:, 1, 1] .- analytic_vals))
+            @test max_err_val < 0.1
+
+            # ∂f/∂r = z (slot 2)
+            analytic_dr = [reg_pts[i, 3] for i in 1:size(reg_pts, 1)]
+            max_err_dr = maximum(abs.(reg_phys[:, 1, 2] .- analytic_dr))
+            @test max_err_dr < 0.1
+
+            # ∂f/∂λ = 0 (slot 4) — axisymmetric
+            @test maximum(abs.(reg_phys[:, 1, 4])) < 1e-6
+
+            # ∂f/∂z = r (slot 6) — excluding z endpoints where Chebyshev derivatives blow up
+            # Interior z-points only
+            interior_mask = (reg_pts[:, 3] .> gp.kMin + 0.1) .& (reg_pts[:, 3] .< gp.kMax - 0.1)
+            if any(interior_mask)
+                analytic_dz = [reg_pts[i, 1] for i in 1:size(reg_pts, 1)]
+                interior_err = maximum(abs.(reg_phys[interior_mask, 1, 6] .- analytic_dz[interior_mask]))
+                @test interior_err < 0.5
+            end
+        end
+
+        @testset "RLZ regularGridTransform — wavenumber-1 f(r,λ,z) = r·cos(λ)·z" begin
+            gp = SpringsteelGridParameters(
+                geometry="RLZ", num_cells=4, iMin=0.0, iMax=60.0,
+                kMin=0.0, kMax=10.0, kDim=8,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => Chebyshev.R0),
+                BCT=Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi = 1
+            for r in 1:iDim
+                ri = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    l_m = grid.jbasis.data[r, 1].mishPoints[l]
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = r_m * cos(l_m) * z_m
+                    end
+                end
+                zi += lpoints * kDim
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            # Values: f(r,λ,z) = r·cos(λ)·z
+            analytic_vals = [reg_pts[i, 1] * cos(reg_pts[i, 2]) * reg_pts[i, 3]
+                             for i in 1:size(reg_pts, 1)]
+            max_err_val = maximum(abs.(reg_phys[:, 1, 1] .- analytic_vals))
+            @test max_err_val < 0.5
+
+            # ∂f/∂λ = -r·sin(λ)·z (slot 4)
+            analytic_dl = [-reg_pts[i, 1] * sin(reg_pts[i, 2]) * reg_pts[i, 3]
+                           for i in 1:size(reg_pts, 1)]
+            max_err_dl = maximum(abs.(reg_phys[:, 1, 4] .- analytic_dl))
+            @test max_err_dl < 0.5
+        end
+
+        @testset "RLZ regularGridTransform — matrix-input wrapper" begin
+            gp = SpringsteelGridParameters(
+                geometry="RLZ", num_cells=4, iMin=0.0, iMax=60.0,
+                kMin=0.0, kMax=10.0, kDim=8,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => Chebyshev.R0),
+                BCT=Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            # Fill with f(r,λ,z) = r
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi = 1
+            for r in 1:iDim
+                ri = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    for z in 1:kDim
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = r_m
+                    end
+                end
+                zi += lpoints * kDim
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+
+            # Call with matrix input
+            phys_matrix = regularGridTransform(grid, reg_pts)
+            # Call with separate vectors
+            r_pts = sort(unique(reg_pts[:, 1]))
+            λ_pts = sort(unique(reg_pts[:, 2]))
+            z_pts = sort(unique(reg_pts[:, 3]))
+            phys_vectors = regularGridTransform(grid, r_pts, λ_pts, z_pts)
+            @test phys_matrix ≈ phys_vectors
+        end
+
+        # ── RRR regularGridTransform ──────────────────────────────────────
+        @testset "RRR getRegularGridpoints" begin
+            gp = SpringsteelGridParameters(
+                geometry="RRR", num_cells=4,
+                iMin=0.0, iMax=50.0,
+                jMin=0.0, jMax=50.0,
+                kMin=0.0, kMax=50.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCU=Dict("u" => CubicBSpline.R0),
+                BCD=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            reg_pts = getRegularGridpoints(grid)
+
+            n_x = grid.params.i_regular_out
+            n_y = grid.params.j_regular_out
+            n_z = grid.params.k_regular_out
+            @test size(reg_pts) == (n_x * n_y * n_z, 3)
+            @test minimum(reg_pts[:, 1]) ≈ gp.iMin
+            @test maximum(reg_pts[:, 1]) ≈ gp.iMax
+            @test minimum(reg_pts[:, 2]) ≈ gp.jMin
+            @test maximum(reg_pts[:, 2]) ≈ gp.jMax
+            @test minimum(reg_pts[:, 3]) ≈ gp.kMin
+            @test maximum(reg_pts[:, 3]) ≈ gp.kMax
+        end
+
+        @testset "RRR regularGridTransform — f(x,y,z) = x²·y·z" begin
+            gp = SpringsteelGridParameters(
+                geometry="RRR", num_cells=4,
+                iMin=1.0, iMax=50.0,
+                jMin=1.0, jMax=50.0,
+                kMin=1.0, kMax=50.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCU=Dict("u" => CubicBSpline.R0),
+                BCD=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            kDim = grid.params.kDim
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                xi = grid.ibasis.data[1, 1, 1].mishPoints[r]
+                yj = grid.jbasis.data[r, 1, 1].mishPoints[l]
+                zk = grid.kbasis.data[r, l, 1].mishPoints[z]
+                flat = (r-1)*jDim*kDim + (l-1)*kDim + z
+                grid.physical[flat, 1, 1] = xi^2 * yj * zk
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            n_x = grid.params.i_regular_out
+            n_y = grid.params.j_regular_out
+            n_z = grid.params.k_regular_out
+            @test size(reg_phys) == (n_x * n_y * n_z, 1, 7)
+
+            # Values: f(x,y,z) = x²·y·z
+            analytic_vals = [reg_pts[i, 1]^2 * reg_pts[i, 2] * reg_pts[i, 3]
+                             for i in 1:size(reg_pts, 1)]
+            max_err_val = maximum(abs.(reg_phys[:, 1, 1] .- analytic_vals))
+            @test max_err_val < 1.0   # 3D polynomial, relaxed tolerance
+
+            # ∂f/∂x = 2x·y·z (slot 2)
+            analytic_dx = [2.0 * reg_pts[i, 1] * reg_pts[i, 2] * reg_pts[i, 3]
+                           for i in 1:size(reg_pts, 1)]
+            max_err_dx = maximum(abs.(reg_phys[:, 1, 2] .- analytic_dx))
+            @test max_err_dx < 1.0
+
+            # ∂f/∂y = x²·z (slot 4)
+            analytic_dy = [reg_pts[i, 1]^2 * reg_pts[i, 3]
+                           for i in 1:size(reg_pts, 1)]
+            max_err_dy = maximum(abs.(reg_phys[:, 1, 4] .- analytic_dy))
+            @test max_err_dy < 1.0
+
+            # ∂f/∂z = x²·y (slot 6)
+            analytic_dz = [reg_pts[i, 1]^2 * reg_pts[i, 2]
+                           for i in 1:size(reg_pts, 1)]
+            max_err_dz = maximum(abs.(reg_phys[:, 1, 6] .- analytic_dz))
+            @test max_err_dz < 1.0
+        end
+
+        @testset "RRR regularGridTransform — f(x,y,z) = y² (derivative slots)" begin
+            gp = SpringsteelGridParameters(
+                geometry="RRR", num_cells=4,
+                iMin=0.0, iMax=50.0,
+                jMin=0.0, jMax=50.0,
+                kMin=0.0, kMax=50.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCU=Dict("u" => CubicBSpline.R0),
+                BCD=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            kDim = grid.params.kDim
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                yj = grid.jbasis.data[r, 1, 1].mishPoints[l]
+                flat = (r-1)*jDim*kDim + (l-1)*kDim + z
+                grid.physical[flat, 1, 1] = yj^2
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            # ∂f/∂x = 0 (slot 2)
+            @test maximum(abs.(reg_phys[:, 1, 2])) < 0.2
+
+            # ∂f/∂y = 2y (slot 4)
+            analytic_dy = [2.0 * reg_pts[i, 2] for i in 1:size(reg_pts, 1)]
+            max_err_dy = maximum(abs.(reg_phys[:, 1, 4] .- analytic_dy))
+            @test max_err_dy < 0.5
+
+            # ∂²f/∂y² = 2 (slot 5)
+            max_err_dyy = maximum(abs.(reg_phys[:, 1, 5] .- 2.0))
+            @test max_err_dyy < 0.5
+
+            # ∂f/∂z = 0 (slot 6)
+            @test maximum(abs.(reg_phys[:, 1, 6])) < 0.2
+        end
+
+        @testset "RRR regularGridTransform — matrix-input wrapper" begin
+            gp = SpringsteelGridParameters(
+                geometry="RRR", num_cells=4,
+                iMin=1.0, iMax=50.0,
+                jMin=1.0, jMax=50.0,
+                kMin=1.0, kMax=50.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCU=Dict("u" => CubicBSpline.R0),
+                BCD=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            kDim = grid.params.kDim
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                xi = grid.ibasis.data[1, 1, 1].mishPoints[r]
+                flat = (r-1)*jDim*kDim + (l-1)*kDim + z
+                grid.physical[flat, 1, 1] = xi
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+
+            phys_matrix = regularGridTransform(grid, reg_pts)
+            x_pts = sort(unique(reg_pts[:, 1]))
+            y_pts = sort(unique(reg_pts[:, 2]))
+            z_pts = sort(unique(reg_pts[:, 3]))
+            phys_vectors = regularGridTransform(grid, x_pts, y_pts, z_pts)
+            @test phys_matrix ≈ phys_vectors
+        end
+
+    end  # Regular Grid Transforms
+
+    # ── Phase 7: Spherical Transforms ─────────────────────────────────────
+    @testset "Spherical Transforms" begin
+
+        @testset "2D Spherical roundtrip f(θ,λ)=sin(θ)cos(λ)" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "SL",
+                num_cells = 10,
+                iMin      = 0.0,
+                iMax      = Float64(π),
+                vars      = Dict("u" => 1),
+                BCL       = Dict("u" => CubicBSpline.R0),
+                BCR       = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+            @test size(pts, 2) == 2
+            @test size(pts, 1) == grid.params.jDim
+            npts = size(pts, 1)
+            # f(θ, λ) = sin(θ) * cos(λ) — vanishes at poles, representable exactly
+            for n in 1:npts
+                theta = pts[n, 1]; lam = pts[n, 2]
+                grid.physical[n, 1, 1] = sin(theta) * cos(lam)
+            end
+            spectralTransform!(grid)
+            gridTransform!(grid)
+            err = maximum(abs.(grid.physical[1:npts, 1, 1] .-
+                               [sin(pts[n,1])*cos(pts[n,2]) for n in 1:npts]))
+            @test err < 1e-2
+        end
+
+        @testset "2D Spherical pole values vanish" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "SL",
+                num_cells = 8,
+                iMin      = 0.0,
+                iMax      = Float64(π),
+                vars      = Dict("u" => 1),
+                BCL       = Dict("u" => CubicBSpline.R0),
+                BCR       = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+            npts = size(pts, 1)
+            # f = sin(θ)*cos(λ) → values near poles ≈ 0 (BC enforced)
+            for n in 1:npts
+                grid.physical[n, 1, 1] = sin(pts[n,1]) * cos(pts[n,2])
+            end
+            spectralTransform!(grid)
+            gridTransform!(grid)
+            # Check that spline BC forces field to 0 at iMin and iMax
+            # (gridpoints near 0 and π should have small values)
+            min_theta = minimum(pts[:, 1])
+            max_theta = maximum(pts[:, 1])
+            near_pole_min = [n for n in 1:npts if abs(pts[n,1] - min_theta) < 0.01]
+            near_pole_max = [n for n in 1:npts if abs(pts[n,1] - max_theta) < 0.01]
+            if !isempty(near_pole_min)
+                @test maximum(abs.(grid.physical[near_pole_min, 1, 1])) < 0.5
+            end
+            if !isempty(near_pole_max)
+                @test maximum(abs.(grid.physical[near_pole_max, 1, 1])) < 0.5
+            end
+        end
+
+        @testset "3D Spherical roundtrip f(θ,λ,z)=sin(θ)cos(λ)z" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "SLZ",
+                num_cells = 10,
+                kDim      = 8,
+                iMin      = 0.0,
+                iMax      = Float64(π),
+                kMin      = 0.0,
+                kMax      = 20.0,
+                vars      = Dict("u" => 1),
+                BCL       = Dict("u" => CubicBSpline.R0),
+                BCR       = Dict("u" => CubicBSpline.R0),
+                BCB       = Dict("u" => Chebyshev.R0),
+                BCT       = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+            @test size(pts, 2) == 3
+            npts = size(pts, 1)
+            for n in 1:npts
+                theta = pts[n, 1]; lam = pts[n, 2]; z = pts[n, 3]
+                grid.physical[n, 1, 1] = sin(theta) * cos(lam) * z
+            end
+            spectralTransform!(grid)
+            gridTransform!(grid)
+            err = maximum(abs.(grid.physical[1:npts, 1, 1] .-
+                               [sin(pts[n,1])*cos(pts[n,2])*pts[n,3] for n in 1:npts]))
+            @test err < 1e-2
+        end
+
+        @testset "3D Spherical radial derivative ∂f/∂θ" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "SLZ",
+                num_cells = 10,
+                kDim      = 6,
+                iMin      = 0.0,
+                iMax      = Float64(π),
+                kMin      = 1.0,
+                kMax      = 10.0,
+                vars      = Dict("u" => 1),
+                BCL       = Dict("u" => CubicBSpline.R0),
+                BCR       = Dict("u" => CubicBSpline.R0),
+                BCB       = Dict("u" => Chebyshev.R0),
+                BCT       = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+            pts  = getGridpoints(grid)
+            npts = size(pts, 1)
+            # f = cos(θ)*z → ∂f/∂θ = -sin(θ)*z
+            for n in 1:npts
+                theta = pts[n,1]; z = pts[n,3]
+                grid.physical[n, 1, 1] = cos(theta) * z
+            end
+            spectralTransform!(grid)
+            gridTransform!(grid)
+            # check slot 2 = ∂f/∂θ
+            err = 0.0
+            for n in 1:npts
+                theta = pts[n,1]; z = pts[n,3]
+                err = max(err, abs(grid.physical[n,1,2] - (-sin(theta)*z)))
+            end
+            @test err < 0.1
+        end
+
+    end  # Spherical Transforms
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Phase 8a: SpringsteelGrid Tiling
+    # ────────────────────────────────────────────────────────────────────────
+
+    @testset "SpringsteelGrid Tiling" begin
+
+        @testset "1D Cartesian tiling" begin
+            # Use geometry="R" which routes to SpringsteelGrid{CartesianGeometry, ...}
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 12,
+                iMin = 0.0, iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            patch = createGrid(gp)
+            @test patch isa SpringsteelGrid
+
+            # ── calcTileSizes ───────────────────────────────────────────────
+            tiles = calcTileSizes(patch, 4)
+            @test length(tiles) == 4
+
+            # Each tile has ≥ 3 cells (≥ 9 gridpoints)
+            for tile in tiles
+                @test tile.params.num_cells >= 3
+                @test tile.params.iDim >= 9
+            end
+
+            # Tile boundaries cover full domain
+            @test tiles[1].params.iMin ≈ patch.params.iMin
+            @test tiles[end].params.iMax ≈ patch.params.iMax
+
+            # Cell counts sum to patch total
+            @test sum(t.params.num_cells for t in tiles) == patch.params.num_cells
+
+            # spectralIndexL continuity
+            @test tiles[1].params.spectralIndexL == 1
+            for i in 1:length(tiles)-1
+                @test tiles[i+1].params.spectralIndexL ==
+                      tiles[i].params.spectralIndexL + tiles[i].params.num_cells
+            end
+
+            # Too many tiles should throw DomainError (12 cells, 5 tiles → some tile < 9 gridpoints)
+            @test_throws DomainError calcTileSizes(patch, 5)
+
+            # ── calcPatchMap ────────────────────────────────────────────────
+            patchMap = calcPatchMap(patch, tiles[1])
+            @test patchMap isa SparseMatrixCSC
+
+            siL = tiles[1].params.spectralIndexL
+            siR_inner = tiles[1].params.spectralIndexR - 3   # inner (non-halo) end
+            # patch map marks the inner region only
+            @test count(!iszero, patchMap) == (siR_inner - siL + 1) * length(tiles[1].params.vars)
+
+            # ── calcHaloMap ─────────────────────────────────────────────────
+            haloMap = calcHaloMap(patch, tiles[1], tiles[2])
+            @test haloMap isa SparseMatrixCSC
+            @test count(!iszero, haloMap) == 3   # 3-row halo for 1 variable
+
+            # ── num_columns ─────────────────────────────────────────────────
+            @test num_columns(patch) >= 1
+
+            # ── allocateSplineBuffer ─────────────────────────────────────────
+            buf = allocateSplineBuffer(tiles[1])
+            @test isa(buf, Array)
+            @test length(buf) > 0
+
+            # ── getBorderSpectral ────────────────────────────────────────────
+            border = getBorderSpectral(tiles[1])
+            @test border isa SparseMatrixCSC
+
+            biL = tiles[1].params.spectralIndexR - 2
+            biR = tiles[1].params.spectralIndexR
+            # With sentinel spectral values, verify halo extraction
+            tiles[1].spectral[:, 1] .= collect(1.0:tiles[1].params.b_iDim)
+            border2 = getBorderSpectral(tiles[1])
+            @test nnz(border2) == 3   # exactly 3 non-zeros for 1 variable
+            tiL = tiles[1].params.b_iDim - 2
+            @test Vector(border2[biL:biR, 1]) ≈ collect(Float64, tiL:tiles[1].params.b_iDim)
+
+            # ── sumSpectralTile! ─────────────────────────────────────────────
+            tiles[1].spectral .= 1.0
+            patch.spectral .= 0.0
+            sumSpectralTile!(patch, tiles[1])
+            sR = tiles[1].params.spectralIndexR
+            @test all(patch.spectral[siL:sR, :] .== 1.0)
+            @test all(patch.spectral[sR+1:end, :] .== 0.0)
+
+            # ── setSpectralTile! ─────────────────────────────────────────────
+            patch.spectral .= 99.0
+            tiles[1].spectral .= 2.0
+            setSpectralTile!(patch, tiles[1])
+            @test all(patch.spectral[siL:sR, :] .== 2.0)
+            @test all(patch.spectral[1:siL-1, :] .== 0.0)
+            @test all(patch.spectral[sR+1:end, :] .== 0.0)
+
+            # ── gridTransform! on tile ───────────────────────────────────────
+            # Use patch spectral to populate tile: let tile inherit patch spectral slice
+            gp2 = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 3,
+                iMin = 0.0, iMax = 25.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            tile_grid = createGrid(gp2)
+            @test tile_grid isa SpringsteelGrid
+            gridTransform!(tile_grid)   # should not error on zero spectral
+            @test size(tile_grid.physical, 1) == tile_grid.params.iDim
+        end
+
+        @testset "2D Cylindrical tiling (RL)" begin
+            gp = SpringsteelGridParameters(
+                geometry = "RL",
+                num_cells = 12,
+                iMin = 0.0, iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            patch = createGrid(gp)
+
+            tiles = calcTileSizes(patch, 4)
+            @test length(tiles) == 4
+
+            for tile in tiles
+                @test tile.params.num_cells >= 3
+                @test tile.params.iDim >= 9
+            end
+
+            @test tiles[1].params.iMin ≈ patch.params.iMin
+            @test tiles[end].params.iMax ≈ patch.params.iMax
+            @test sum(t.params.num_cells for t in tiles) == patch.params.num_cells
+
+            # calcPatchMap / calcHaloMap
+            patchMap = calcPatchMap(patch, tiles[1])
+            @test patchMap isa SparseMatrixCSC
+
+            haloMap = calcHaloMap(patch, tiles[1], tiles[2])
+            @test haloMap isa SparseMatrixCSC
+            @test count(!iszero, haloMap) >= 1   # at least some non-zeros
+
+            # num_columns / allocateSplineBuffer
+            @test num_columns(patch) >= 0
+            buf = allocateSplineBuffer(tiles[1])
+            @test isa(buf, Array)
+            @test length(buf) > 0
+
+            # getBorderSpectral should not error
+            border = getBorderSpectral(tiles[1])
+            @test border isa SparseMatrixCSC
+
+            # Too many tiles
+            @test_throws DomainError calcTileSizes(patch, 5)
+        end
+
+        @testset "2D Spherical tiling (SL)" begin
+            gp = SpringsteelGridParameters(
+                geometry = "SL",
+                num_cells = 12,
+                iMin = 0.0, iMax = Float64(π),
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            patch = createGrid(gp)
+
+            tiles = calcTileSizes(patch, 2)
+            @test length(tiles) == 2
+
+            for tile in tiles
+                @test tile.params.num_cells >= 3
+            end
+
+            @test tiles[1].params.iMin ≈ patch.params.iMin
+            @test tiles[end].params.iMax ≈ patch.params.iMax
+            @test sum(t.params.num_cells for t in tiles) == patch.params.num_cells
+
+            buf = allocateSplineBuffer(tiles[1])
+            @test isa(buf, Array)
+            @test length(buf) > 0
+        end
+
+        @testset "Fallback: calcTileSizes for non-Spline-i-basis" begin
+            # For now check that fallback for any SpringsteelGrid returns the grid itself for num_tiles=1
+            gp = SpringsteelGridParameters(
+                geometry = "R",
+                num_cells = 6,
+                iMin = 0.0, iMax = 10.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            single_tile = calcTileSizes(grid, 1)
+            @test length(single_tile) == 1
+        end
+
+        # ── Phase 8b: Multi-Dimensional Tiling ──────────────────────────────
+        @testset "Multi-dim tiling" begin
+
+            # ── 2D tiling on RR_Grid (3 i-tiles × 2 j-tiles = 6 tiles) ──────
+            gp_rr = SpringsteelGridParameters(
+                geometry  = "RR", num_cells = 12,
+                iMin = 0.0, iMax = 100.0,
+                jMin = 0.0, jMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0))
+            patch_rr = createGrid(gp_rr)
+            tiles_rr = calcTileSizes(patch_rr, (i=3, j=2))
+            @test length(tiles_rr) == 6  # 3 × 2
+
+            # Each tile has valid physical dimensions
+            for tile in tiles_rr
+                @test tile.params.num_cells >= 3     # ≥ 3 i-cells
+                @test tile.params.iDim >= 9          # ≥ 9 i-gridpoints
+                @test tile.params.jDim > 0           # j-dimension set
+                @test tile.params.b_jDim >= 6        # ≥ 3 j-cells → b_jDim = nc_j+3 ≥ 6
+            end
+
+            # i-cell counts sum to patch total (pick one j-strip: tiles at j=1)
+            nc_i_strip = [tiles_rr[(ti-1)*2 + 1].params.num_cells for ti in 1:3]
+            @test sum(nc_i_strip) == patch_rr.params.num_cells
+
+            # spectralIndexL sequence is correct for each i-strip
+            @test tiles_rr[1].params.spectralIndexL == 1
+            @test tiles_rr[3].params.spectralIndexL == tiles_rr[1].params.num_cells + 1
+            @test tiles_rr[5].params.spectralIndexL == tiles_rr[3].params.spectralIndexL + tiles_rr[3].params.num_cells
+
+            # ── 3D tiling on RRR_Grid (2×2×2 = 8 tiles) ─────────────────────
+            gp_rrr = SpringsteelGridParameters(
+                geometry  = "RRR", num_cells = 6,
+                iMin = 0.0, iMax = 50.0,
+                jMin = 0.0, jMax = 50.0,
+                kMin = 0.0, kMax = 50.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0),
+                BCD = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            patch_rrr = createGrid(gp_rrr)
+            tiles_rrr = calcTileSizes(patch_rrr, (i=2, j=2, k=2))
+            @test length(tiles_rrr) == 8  # 2 × 2 × 2
+
+            for tile in tiles_rrr
+                @test tile.params.num_cells >= 3
+                @test tile.params.jDim > 0
+                @test tile.params.kDim > 0
+            end
+
+            # ── Tiling non-Spline j-dimension should throw DomainError ────────
+            gp_rl = SpringsteelGridParameters(
+                geometry = "RL", num_cells = 10,
+                iMin = 0.0, iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            patch_rl = createGrid(gp_rl)
+            @test_throws DomainError calcTileSizes(patch_rl, (i=2, j=2))
+
+            # ── 1-D NamedTuple delegation (i=N on a 1D R_Grid) ───────────────
+            gp_r = SpringsteelGridParameters(
+                geometry = "R", num_cells = 12,
+                iMin = 0.0, iMax = 100.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            patch_r = createGrid(gp_r)
+            tiles_r = calcTileSizes(patch_r, (i=4,))
+            @test length(tiles_r) == 4
+
+            # ── calcPatchMap_multidim / calcHaloMap_multidim ─────────────────
+            pm = calcPatchMap_multidim(patch_rr, tiles_rr[1])
+            @test pm isa SparseMatrixCSC
+
+            hm = calcHaloMap_multidim(patch_rr, tiles_rr[1], tiles_rr[3])  # adjacent in i
+            @test hm isa SparseMatrixCSC
+
+        end  # Multi-dim tiling
+
+    end  # SpringsteelGrid Tiling
+
+    # ── Phase 9: I/O ─────────────────────────────────────────────────────────
+    @testset "SpringsteelGrid I/O" begin
+        using DataFrames
+
+        @testset "Gridpoints" begin
+            # 1D
+            gp1d = SpringsteelGridParameters(
+                geometry="R", num_cells=10,
+                iMin=0.0, iMax=100.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid1d = createGrid(gp1d)
+            pts = getGridpoints(grid1d)
+            @test length(pts) == grid1d.params.iDim
+            @test pts[1] >= gp1d.iMin
+            @test pts[end] <= gp1d.iMax
+            @test all(diff(pts) .> 0)  # monotonically increasing
+        end
+
+        @testset "getRegularGridpoints" begin
+            gp = SpringsteelGridParameters(
+                geometry="R", num_cells=10,
+                iMin=0.0, iMax=100.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            reg_pts = getRegularGridpoints(grid)
+            @test length(reg_pts) == grid.params.i_regular_out
+            @test reg_pts[1] ≈ gp.iMin
+            @test reg_pts[end] ≈ gp.iMax
+            @test all(diff(reg_pts) .> 0)
+        end
+
+        @testset "regularGridTransform roundtrip" begin
+            gp = SpringsteelGridParameters(
+                geometry="R", num_cells=60,
+                iMin=0.0, iMax=10.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.PERIODIC),
+                BCR=Dict("u" => CubicBSpline.PERIODIC))
+            grid = createGrid(gp)
+            pts = getGridpoints(grid)
+            L = gp.iMax - gp.iMin
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = sin(2π * pts[i] / L)
+            end
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+            # Values at regular points should match sin function closely
+            # (tolerance matches the Spline1D_Grid regularGridTransform tests: 1e-5)
+            max_err = maximum(abs.(reg_phys[:, 1, 1] .- sin.(2π .* reg_pts ./ L)))
+            @test max_err < 1e-5
+        end
+
+        @testset "Write/read roundtrip" begin
+            gp = SpringsteelGridParameters(
+                geometry="R", num_cells=10,
+                iMin=0.0, iMax=100.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            # Initialize physical with known values
+            grid.physical[:, 1, 1] .= 1.0
+
+            # Write to temp directory
+            tmpdir = mktempdir()
+            write_grid(grid, tmpdir, "test")
+            # Verify files exist
+            @test isfile(joinpath(tmpdir, "test_physical.csv"))
+            @test isfile(joinpath(tmpdir, "test_spectral.csv"))
+            @test isfile(joinpath(tmpdir, "test_gridded.csv"))
+        end
+
+        @testset "check_grid_dims" begin
+            gp = SpringsteelGridParameters(
+                geometry="R", num_cells=10,
+                iMin=0.0, iMax=100.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            # Test with correct-sized DataFrame
+            df_good = DataFrame(u = zeros(grid.params.iDim))
+            @test check_grid_dims(df_good, grid) === nothing
+
+            # Test with wrong-sized DataFrame
+            df_bad = DataFrame(u = zeros(5))
+            @test_throws DomainError check_grid_dims(df_bad, grid)
+        end
+
+        @testset "check_grid_dims 2D RL" begin
+            gp = SpringsteelGridParameters(
+                geometry="RL", num_cells=5,
+                iMin=0.0, iMax=50.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            df_good = DataFrame(u = zeros(size(grid.physical, 1)))
+            @test check_grid_dims(df_good, grid) === nothing
+            df_bad  = DataFrame(u = zeros(3))
+            @test_throws DomainError check_grid_dims(df_bad, grid)
+        end
+
+        @testset "write_grid 2D RL produces files" begin
+            gp = SpringsteelGridParameters(
+                geometry="RL", num_cells=5,
+                iMin=0.0, iMax=50.0,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            tmpdir = mktempdir()
+            write_grid(grid, tmpdir, "rl_test")
+            @test isfile(joinpath(tmpdir, "rl_test_physical.csv"))
+            @test isfile(joinpath(tmpdir, "rl_test_spectral.csv"))
+        end
+
+    end  # SpringsteelGrid I/O
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 10: Backward Compatibility
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "Backward Compatibility" begin
+
+        @testset "Old type aliases resolve to parametric types" begin
+            @test R_Grid       == SpringsteelGrid{CartesianGeometry,   SplineBasisArray, NoBasisArray,      NoBasisArray}
+            @test Spline1D_Grid == R_Grid
+            @test RZ_Grid      == SpringsteelGrid{CartesianGeometry,   SplineBasisArray, NoBasisArray,      ChebyshevBasisArray}
+            @test RL_Grid      == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+            @test RR_Grid      == SpringsteelGrid{CartesianGeometry,   SplineBasisArray, SplineBasisArray,  NoBasisArray}
+            @test Spline2D_Grid == RR_Grid
+            @test RLZ_Grid     == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+            @test RRR_Grid     == SpringsteelGrid{CartesianGeometry,   SplineBasisArray, SplineBasisArray,  SplineBasisArray}
+            @test SL_Grid      == SpringsteelGrid{SphericalGeometry,   SplineBasisArray, FourierBasisArray, NoBasisArray}
+            @test SLZ_Grid     == SpringsteelGrid{SphericalGeometry,   SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+        end
+
+        @testset "GridParameters forwarding produces SpringsteelGrid" begin
+            gp = GridParameters(
+                geometry = "R",
+                xmin = 0.0, xmax = 10.0, num_cells = 10,
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            @test grid isa R_Grid
+            @test grid isa SpringsteelGrid
+            @test grid.params.iDim == 30
+            @test grid.params.b_iDim == 13
+        end
+
+        @testset "GridParameters RL forwarding" begin
+            gp = GridParameters(
+                geometry = "RL",
+                xmin = 0.0, xmax = 50.0, num_cells = 5,
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            @test grid isa RL_Grid
+            @test grid isa SpringsteelGrid
+        end
+
+        @testset "GridParameters RZ forwarding" begin
+            gp = GridParameters(
+                geometry = "RZ",
+                xmin = 0.0, xmax = 10.0, num_cells = 4,
+                zmin = 0.0, zmax = 5.0, zDim = 10,
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            @test grid isa RZ_Grid
+            @test grid isa SpringsteelGrid
+        end
+
+    end  # Backward Compatibility
+
 end

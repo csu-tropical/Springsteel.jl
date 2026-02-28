@@ -25,31 +25,78 @@ const ONESIXTH = 1.0/6.0
 const FOURSIXTH = 4.0/6.0
 const sqrt35 = sqrt(3.0/5.0)
 
-# Homogeneous boundary conditions.
-# Inhomogeneous conditions are not yet implemented.
+# Homogeneous boundary conditions following Ooyama (2002).
+# The *rank* r is the number of independent constraints imposed at the boundary,
+# which removes r border coefficients from the spectral solve via the
+# base-folding operator Γ.  The *type* t identifies which derivative is
+# constrained (T0 = value, T1 = first derivative, T2 = second derivative).
+# Inhomogeneous conditions (R3X) are not yet implemented.
 
-"""Pinned boundary condition: value is zero at the boundary (`u = 0`)."""
+"""
+Rank-0 boundary condition (Ooyama 2002, Eq. 3.2a): **no constraint** at the
+boundary. All border spline coefficients remain free variational parameters. Use
+when no physical condition needs to be enforced at the domain edge (e.g. open
+or internal boundaries in nested-domain applications).
+"""
 const R0 = Dict("R0" => 0)
 
-"""Robin BC type 0: `α₁·u + β₁·u' = 0` with α₁ = -4, β₁ = -1 (free-slip near wall)."""
+"""
+Rank-1, type-0 boundary condition (Ooyama 2002, Eq. 3.2b): **zero field value**
+at the boundary, ``u(x_0) = 0`` (homogeneous Dirichlet). Removes one border
+coefficient via the base-folding operator. Base-folding coefficients
+(Ooyama 2002, Table 1): ``\\alpha_1 = -4``, ``\\beta_1 = -1``.
+"""
 const R1T0 = Dict("α1" => -4.0, "β1" => -1.0)
 
-"""Robin BC type 1: zero first derivative at boundary (`u' = 0`, Neumann condition)."""
+"""
+Rank-1, type-1 boundary condition (Ooyama 2002, Eq. 3.2c): **zero first
+derivative** at the boundary, ``u'(x_0) = 0`` (homogeneous Neumann). Removes
+one border coefficient. Sufficient to enforce symmetry at a reflecting boundary.
+Base-folding coefficients (Table 1): ``\\alpha_1 = 0``, ``\\beta_1 = 1``.
+"""
 const R1T1 = Dict("α1" =>  0.0, "β1" =>  1.0)
 
-"""Robin BC type 2: `α₁·u + β₁·u' = 0` with α₁ = 2, β₁ = -1."""
+"""
+Rank-1, type-2 boundary condition (Ooyama 2002, Eq. 3.2d): **zero second
+derivative** at the boundary, ``u''(x_0) = 0``. Removes one border coefficient.
+Base-folding coefficients (Table 1): ``\\alpha_1 = 2``, ``\\beta_1 = -1``.
+"""
 const R1T2 = Dict("α1" =>  2.0, "β1" => -1.0)
 
-"""Rank-2 Robin BC type 1–0: `α₂·u + β₂·u'' = 0` with α₂ = 1, β₂ = -0.5."""
+"""
+Rank-2, type-1-0 boundary condition (Ooyama 2002, Eq. 3.2f): **zero value and
+zero first derivative** at the boundary, ``u(x_0) = u'(x_0) = 0``. Removes two
+border coefficients. Appropriate for a symmetrically reflecting boundary.
+Base-folding coefficients (Table 1): ``\\alpha_2 = 1``, ``\\beta_2 = -0.5``.
+"""
 const R2T10 = Dict("α2" => 1.0, "β2" => -0.5)
 
-"""Rank-2 Robin BC type 2–0: `α₂·u + β₂·u'' = 0` with α₂ = -1, β₂ = 0."""
+"""
+Rank-2, type-2-0 boundary condition (Ooyama 2002, Eq. 3.2g): **zero value and
+zero second derivative** at the boundary, ``u(x_0) = u''(x_0) = 0``. Removes
+two border coefficients. Forces the field to be **antisymmetric** with respect
+to the boundary (the implicit field on the other side has opposite sign).
+Base-folding coefficients (Table 1): ``\\alpha_2 = -1``, ``\\beta_2 = 0``.
+"""
 const R2T20 = Dict("α2" => -1.0, "β2" => 0.0)
 
-"""Rank-3 boundary condition: eliminates three edge coefficients (not commonly used)."""
+"""
+Rank-3 boundary condition (Ooyama 2002, Eq. 3.2h): **zero value, zero first
+derivative, and zero second derivative** at the boundary,
+``u(x_0) = u'(x_0) = u''(x_0) = 0``. Eliminates all three border
+coefficients. The inhomogeneous variant R3X (where the three conditions carry
+external data from an adjacent domain) is the primary tool for domain nesting
+and will be implemented in a future release.
+"""
 const R3 = Dict("R3" => 0)
 
-"""Periodic boundary condition: identifies left and right boundaries."""
+"""
+Periodic boundary condition (Ooyama 2002, section 3e): couples the left and
+right domain boundaries to simulate a cyclically continuous space. The border
+basis functions are folded onto the interior so that the domain has exactly
+`num_cells` independent coefficients. This is the only BC option for the
+[`Fourier`](@ref Fourier_module) module and is also available for B-splines.
+"""
 const PERIODIC = Dict("PERIODIC" => 0)
 
 # Fix the mish to 3 points

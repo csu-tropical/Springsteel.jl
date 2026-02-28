@@ -15,8 +15,13 @@ const real = Float64
 const int = Int64
 const uint = UInt64
 
-# Only one boundary condition allowed for Fourier
-"""Periodic boundary condition: the only valid BC for Fourier basis functions."""
+# Only one boundary condition is meaningful for Fourier: periodic.
+"""
+Periodic boundary condition (Ooyama 2002, section 3e): the **only** valid BC
+for the Fourier basis. Couples the left and right ends of the azimuthal domain
+to simulate a cyclically continuous ring. All Fourier rings use this BC
+automatically; it need not be specified explicitly in most APIs.
+"""
 const PERIODIC = Dict("PERIODIC" => 0)
 
 # Define the ring parameters

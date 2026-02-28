@@ -1,6 +1,6 @@
 #Functions for Spline2D Grid
 
-struct Spline2D_Grid <: SpringsteelGrid
+struct Spline2D_Grid <: AbstractSpringsteelGrid
     params::SpringsteelGridParameters
     splines::Array{Spline1D}
     rings::Array{Spline1D}

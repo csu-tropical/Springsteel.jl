@@ -15,27 +15,59 @@ const real = Float64
 const int = Int64
 const uint = UInt64
 
-# Define homogeneous boundary conditions
-# Inhomgoneous conditions to be implemented later
-"""Dirichlet (zero-value) boundary condition: field value is zero at the boundary."""
+# Homogeneous boundary conditions following Ooyama (2002) rank/type nomenclature.
+# The *rank* r is the number of constraints imposed at the boundary.
+# The *type* t identifies which derivative is constrained
+# (T0 = value, T1 = first derivative, T2 = second derivative).
+# Not all B-spline BCs are available for Chebyshev; only R0 through R2 variants
+# and R3 are supported. Inhomogeneous conditions are not yet implemented.
+
+"""
+Rank-0 boundary condition (Ooyama 2002, Eq. 3.2a): **no constraint** at the
+boundary. All Chebyshev coefficients remain free. Use when no physical
+condition needs to be enforced at the domain edge.
+"""
 const R0 = Dict("R0" => 0)
 
-"""Neumann (zero first-derivative) BC via the global affine method (bottom/interior anchor)."""
+"""
+Rank-1, type-0 boundary condition (Ooyama 2002, Eq. 3.2b): **zero field value**
+at the boundary, ``u(z_0) = 0`` (homogeneous Dirichlet). Implemented via the
+global affine (bottom-anchor) method.
+"""
 const R1T0 = Dict("α0" =>  0.0)
 
-"""Neumann (zero first-derivative) BC via the Wang et al. (1993) global coefficient method."""
-const R1T1 = Dict("α1" =>  0.0) 
+"""
+Rank-1, type-1 boundary condition (Ooyama 2002, Eq. 3.2c): **zero first
+derivative** at the boundary, ``u'(z_0) = 0`` (homogeneous Neumann).
+Implemented via the Wang et al. (1993) global-coefficient method.
+"""
+const R1T1 = Dict("α1" =>  0.0)
 
-"""Alternate Neumann (zero first-derivative) BC formulation."""
+"""
+Rank-1, type-2 boundary condition (Ooyama 2002, Eq. 3.2d): **zero second
+derivative** at the boundary, ``u''(z_0) = 0``.
+"""
 const R1T2 = Dict("α2" =>  0.0)
 
-"""Rank-2 combination boundary condition variant 1 (β₁, β₂ coefficients)."""
+"""
+Rank-2, type-1-0 boundary condition (Ooyama 2002, Eq. 3.2f): **zero value and
+zero first derivative** at the boundary, ``u(z_0) = u'(z_0) = 0``.
+Appropriate for a symmetrically reflecting boundary.
+"""
 const R2T10 = Dict("β1" => 0.0, "β2" => 0.0)
 
-"""Rank-2 combination boundary condition variant 2 (β₁, β₂ coefficients)."""
+"""
+Rank-2, type-2-0 boundary condition (Ooyama 2002, Eq. 3.2g): **zero value and
+zero second derivative** at the boundary, ``u(z_0) = u''(z_0) = 0``.
+Forces the field to be **antisymmetric** with respect to the boundary.
+"""
 const R2T20 = Dict("β1" => 0.0, "β2" => 0.0)
 
-"""Rank-3 boundary condition (removes three degrees of freedom at each end)."""
+"""
+Rank-3 boundary condition (Ooyama 2002, Eq. 3.2h): **zero value, zero first
+derivative, and zero second derivative** at the boundary,
+``u(z_0) = u'(z_0) = u''(z_0) = 0``. Eliminates all three border
+coefficients. Relevant for domain-nesting inhomogeneous BCs (future work)."""
 const R3 = Dict("R3" => 0)
 
 """

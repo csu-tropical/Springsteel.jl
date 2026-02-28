@@ -2,7 +2,6 @@ module Springsteel
 
 # Functions to define a spectral grid
 abstract type AbstractGrid end
-abstract type SpringsteelGrid end
 
 using CSV
 using DataFrames
@@ -38,10 +37,26 @@ export CBxtransform, CIxtransform, CIxxtransform, CIInttransform
 
 export SplineParameters, Spline1D
 export createGrid, getGridpoints, calcTileSizes
-export read_physical_grid, write_grid
+export read_physical_grid, write_grid, check_grid_dims
 export calcPatchMap, calcHaloMap, allocateSplineBuffer, num_columns
+export calcPatchMap_multidim, calcHaloMap_multidim
+export sumSpectralTile!, setSpectralTile!, getBorderSpectral, sumSharedSpectral
 export spectralTransform!, splineTransform!, tileTransform!, gridTransform!
 export regularGridTransform, getRegularGridpoints
+
+# New Phase-1 type system exports
+export AbstractGeometry, CartesianGeometry, CylindricalGeometry, SphericalGeometry
+export AbstractBasisType, SplineBasisType, FourierBasisType, ChebyshevBasisType, NoBasisType
+export SplineBasisArray, FourierBasisArray, ChebyshevBasisArray, NoBasisArray
+export SL_Grid, SLZ_Grid
+export R_Grid, RL_Grid, RZ_Grid, RR_Grid, RLZ_Grid, RRR_Grid, Spline1D_Grid, Spline2D_Grid
+
+# Phase 2 exports
+export parse_geometry, compute_derived_params, convert_to_springsteel_params
+export num_deriv_slots
+
+# New Phase-1 basis interface exports
+export gridpoints, spectral_dim, physical_dim
 
 """
     GridParameters
@@ -201,6 +216,32 @@ Base.@kwdef struct SpringsteelGridParameters
     k_regular_out::int = kDim + 1
 end
 
+# ── New unified type system (Phase 1) ────────────────────────────────────────
+# Must be included after SpringsteelGridParameters (used as field type in SpringsteelGrid)
+include("types.jl")
+include("basis_interface.jl")
+
+# ── Phase 2: grid factory ─────────────────────────────────────────────────────
+# Must be included after types.jl (uses geometry/basis sentinel types)
+include("factory.jl")
+# deprecated.jl included below (after GridParameters is defined)
+
+# ── Phase 3: 1D Cartesian transforms ─────────────────────────────────────────
+# Must be included after factory.jl (uses _1DCartesianGrid alias → SpringsteelGrid{...})
+include("transforms_cartesian.jl")
+
+# ── Phase 5: 2D Cylindrical transforms ───────────────────────────────────────
+# Must be included after factory.jl (uses _RLGrid alias → SpringsteelGrid{...})
+include("transforms_cylindrical.jl")
+
+# Must be included after transforms_cylindrical.jl (shares spectral layout conventions)
+include("transforms_spherical.jl")
+
+# ── Phase 8a: 1D Tiling ──────────────────────────────────────────────────────
+# Must be included after transforms_*.jl (uses num_columns from Cylindrical/Spherical files)
+include("tiling.jl")
+
+
 """
     GridParameters
 
@@ -260,209 +301,11 @@ Base.@kwdef struct GridParameters
     z_regular_out::int = zDim + 1
 end
 
-# Include functions for implemented grids
-include("r_grid.jl")
-include("spline1D_grid.jl")
-include("rz_grid.jl")
-include("rl_grid.jl")
-include("rr_grid.jl")
-include("spline2D_grid.jl")
-include("rlz_grid.jl")
-include("rrr_grid.jl")
-
-# Not yet implemented
-struct Z_Grid <: AbstractGrid
-    params::GridParameters
-    columns::Array{Chebyshev1D}
-    spectral::Array{Float64}
-    physical::Array{Float64}
-end
+# Backward-compatibility helpers (require GridParameters to be defined)
+include("deprecated.jl")
 
 # I/O routines
 include("io.jl")
-
-"""
-    createGrid(gp::GridParameters) -> AbstractGrid
-
-Factory function to create a spectral grid based on geometry specification.
-
-# Arguments
-- `gp::GridParameters`: Grid configuration specifying geometry, domain, resolution, and boundary conditions
-
-# Returns
-- `AbstractGrid`: Concrete grid type based on `gp.geometry`:
-  - `"R"` → [`R_Grid`](@ref): 1D radial grid with cubic B-splines
-  - `"RZ"` → `RZ_Grid`: 2D cylindrical grid (B-splines × Chebyshev)
-  - `"RL"` → `RL_Grid`: 2D cylindrical grid (B-splines × Fourier)
-  - `"RR"` → `RR_Grid`: 2D grid with B-splines in both directions
-  - `"RLZ"` → `RLZ_Grid`: 3D cylindrical grid (B-splines × Fourier × Chebyshev)
-  - `"RRR"` → `RRR_Grid`: 3D Cartesian grid with B-splines in all directions
-
-# Throws
-- `DomainError`: If `gp.geometry` is `"Z"` (not yet implemented) or unrecognized
-
-# Description
-This is the primary entry point for creating spectral grids in Springsteel. The function
-dispatches to specialized constructors based on the geometry type, each implementing the
-appropriate combination of basis functions:
-
-- **Cubic B-splines**: Used for smooth, compact support in physical space
-- **Fourier**: Used for periodic azimuthal direction
-- **Chebyshev**: Used for non-periodic vertical direction with spectral accuracy
-
-All grids support multiple variables, spectral transforms, derivative computation,
-and domain tiling for parallel/distributed computing.
-
-# Example: 1D Grid
-```julia
-gp = GridParameters(
-    geometry = "R",
-    xmin = 0.0,
-    xmax = 10.0,
-    num_cells = 30,
-    BCL = Dict("u" => CubicBSpline.R0),
-    BCR = Dict("u" => CubicBSpline.R0),
-    vars = Dict("u" => 1)
-)
-grid = createGrid(gp)
-```
-
-# Example: 2D Grid with B-splines
-```julia
-gp = GridParameters(
-    geometry = "RR",
-    xmin = 1.0,
-    xmax = 5.0,
-    num_cells = 40,
-    ymin = 0.0,
-    ymax = 8.0,
-    BCL = Dict("vorticity" => CubicBSpline.R0),
-    BCR = Dict("vorticity" => CubicBSpline.R1),
-    vars = Dict("vorticity" => 1)
-)
-grid = createGrid(gp)
-```
-
-# Example: 3D Grid
-```julia
-gp = GridParameters(
-    geometry = "RRR",
-    xmin = -5e5,
-    xmax = 5e5,
-    num_cells = 50,
-    ymin = -5e5,
-    ymax = 5e5,
-    zmin = 0.0,
-    zmax = 2e4,
-    BCL = Dict("w" => CubicBSpline.R0),
-    BCR = Dict("w" => CubicBSpline.R0),
-    vars = Dict("w" => 1)
-)
-grid = createGrid(gp)
-```
-
-See also: [`GridParameters`](@ref), [`R_Grid`](@ref)
-"""
-function createGrid(gp::GridParameters)
-
-    # Call the respective grid factory
-    if gp.geometry == "R"
-        # R grid
-        grid = create_R_Grid(gp)
-        return grid
-
-    elseif gp.geometry == "Spline1D"
-        # Spline1D grid
-        grid = create_Spline1D_Grid(gp)
-        return grid
-
-    elseif gp.geometry == "RZ"
-        # RZ grid
-        grid = create_RZ_Grid(gp)
-        return grid
-
-    elseif gp.geometry == "RL"
-        # RL grid
-        grid = create_RL_Grid(gp)
-        return grid
-
-    elseif gp.geometry == "RR"
-        # RR grid
-        grid = create_RR_Grid(gp)
-        return grid
-
-    elseif gp.geometry == "RLZ"
-        # RLZ grid
-        grid = create_RLZ_Grid(gp)
-        return grid
-        
-    elseif gp.geometry == "RRR"
-        # RRR grid
-        grid = create_RRR_Grid(gp)
-        return grid
-
-    elseif gp.geometry == "Z"
-        # Z grid
-        throw(DomainError(0, "Z column model not implemented yet"))
-    else
-        # Unknown grid
-        throw(DomainError(0, "Unknown geometry"))
-    end
-    
-end
-
-"""
-    createGrid(gp::SpringsteelGridParameters) -> SpringsteelGrid
-
-Factory function to create a spectral grid using the new SpringsteelGridParameters type.
-
-# Arguments
-- `gp::SpringsteelGridParameters`: Grid configuration for generalized geometries
-
-# Returns
-- `SpringsteelGrid`: Concrete grid type based on `gp.geometry`:
-  - `"Spline1D"` → [`Spline1D_Grid`](@ref): 1D grid with cubic B-splines
-
-# Description
-This overload of `createGrid` accepts the newer `SpringsteelGridParameters` type which uses
-generalized coordinate names (i, j, k) instead of geometry-specific names (r, l, z).
-This allows for more flexible grid definitions that aren't tied to specific physical interpretations.
-
-# Example
-```julia
-gp = SpringsteelGridParameters(
-    geometry = "Spline1D",
-    iMin = 0.0,
-    iMax = 10.0,
-    num_cells = 30,
-    BCL = Dict("u" => CubicBSpline.R0),
-    BCR = Dict("u" => CubicBSpline.R0),
-    vars = Dict("u" => 1)
-)
-grid = createGrid(gp)
-```
-
-See also: [`SpringsteelGridParameters`](@ref), [`Spline1D_Grid`](@ref), [`createGrid(::GridParameters)`](@ref)
-"""
-function createGrid(gp::SpringsteelGridParameters)
-
-    # Call the respective grid factory
-    if gp.geometry == "Spline1D"
-        # Spline1D grid
-        grid = create_Spline1D_Grid(gp)
-        return grid
-    
-    elseif gp.geometry == "Spline2D"
-        # Spline2D grid
-        grid = create_Spline2D_Grid(gp)
-        return grid
-    
-    else
-        # Unknown geometry for SpringsteelGridParameters
-        throw(DomainError(0, "Unknown geometry for SpringsteelGridParameters: $(gp.geometry)"))
-    end
-    
-end
 
 # Module end
 end

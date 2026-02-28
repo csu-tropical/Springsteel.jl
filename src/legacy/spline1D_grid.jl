@@ -56,7 +56,7 @@ second_derivatives = grid.physical[:, 1, 3]
 
 See also: [`create_Spline1D_Grid`](@ref), [`SpringsteelGridParameters`](@ref), [`spectralTransform!`](@ref), [`gridTransform!`](@ref)
 """
-struct Spline1D_Grid <: SpringsteelGrid
+struct Spline1D_Grid <: AbstractSpringsteelGrid
     params::SpringsteelGridParameters
     splines::Array{Spline1D}
     spectral::Array{Float64}
