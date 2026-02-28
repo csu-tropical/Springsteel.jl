@@ -4,7 +4,7 @@ CurrentModule = Springsteel
 
 # Tutorial
 
-This tutorial demonstrates Springsteel's core workflow through four examples of
+This tutorial demonstrates Springsteel's core workflow through six examples of
 increasing complexity. Each example creates a grid, fills it with a Gaussian
 function, performs a forward (physical → spectral) and inverse (spectral → physical)
 round-trip transform, and examines the results.
@@ -162,11 +162,9 @@ representation on a uniform (r, λ) grid — ideal for plotting or
 intercomparison:
 
 ```julia
-# Default regular grid (uses mish-point radii, uniform λ per ring)
-reg_pts = getRegularGridpoints(grid_rl)   # (N, 2) → columns [r, λ]
-
-# Evaluate all variables and derivatives on that grid
-reg_vals = regularGridTransform(grid_rl)  # (N, num_vars, 5)
+# Default regular grid (uniform r × λ tensor-product grid)
+reg_pts  = getRegularGridpoints(grid_rl)         # (N, 2) → columns [r, λ]
+reg_vals = regularGridTransform(grid_rl, reg_pts) # (N, num_vars, 5)
 
 # Or specify custom output points:
 r_out = collect(range(0.0, 100.0, length=50))
@@ -176,6 +174,28 @@ custom_vals = regularGridTransform(grid_rl, r_out, λ_out)
 
 The returned array has the same derivative slots as `physical`:
 `[f, ∂f/∂r, ∂²f/∂r², ∂f/∂λ, ∂²f/∂λ²]`.
+
+**Reshape note**: Output is stored with λ varying fastest.  To obtain a
+`(n_r × n_λ)` matrix `M` such that `M[i,j] = f(r_i, λ_j)`, use Julia's
+column-major reshape:
+```julia
+n_r = grid_rl.params.i_regular_out
+n_λ = grid_rl.params.j_regular_out
+f_matrix = permutedims(reshape(reg_vals[:, 1, 1], n_λ, n_r))  # (n_r × n_λ)
+```
+
+This matrix can then be passed directly to `contourf` for scientific figures:
+```julia
+r_reg = collect(LinRange(gp_rl.iMin, gp_rl.iMax, n_r))
+λ_reg = [2π*(j-1)/n_λ for j in 1:n_λ]
+contourf(ax, r_reg, λ_reg, f_matrix; colormap=:viridis, levels=12)
+```
+
+See the [companion notebook](https://github.com/mmbell/Springsteel.jl/blob/main/notebooks/Springsteel_tutorial.ipynb)
+for complete visualization examples including saved figures.
+
+![2D Polar contourf](figures/fig_rl_contourf.png)
+*Left: field values f(r,λ) on the regular grid. Right: radial derivative ∂f/∂r.*
 
 ---
 
@@ -247,8 +267,8 @@ max_error = maximum(abs.(grid_rlz.physical[:, 1, 1] .- original))
 ### Evaluating on a regular grid
 
 ```julia
-reg_pts = getRegularGridpoints(grid_rlz)   # (N, 3) → columns [r, λ, z]
-reg_vals = regularGridTransform(grid_rlz)  # (N, num_vars, 7)
+reg_pts  = getRegularGridpoints(grid_rlz)          # (N, 3) → columns [r, λ, z]
+reg_vals = regularGridTransform(grid_rlz, reg_pts)  # (N, num_vars, 7)
 
 # Custom output grid
 r_out = collect(range(0.0, 80.0, length=40))
@@ -259,6 +279,22 @@ custom_vals = regularGridTransform(grid_rlz, r_out, λ_out, z_out)
 
 The returned array has 7 derivative slots:
 `[f, ∂f/∂r, ∂²f/∂r², ∂f/∂λ, ∂²f/∂λ², ∂f/∂z, ∂²f/∂z²]`.
+
+To extract an `(r, z)` cross-section at a fixed `λ`-index for contour plotting:
+```julia
+n_r = grid_rlz.params.i_regular_out
+n_λ = grid_rlz.params.j_regular_out
+n_z = grid_rlz.params.k_regular_out
+# λ_idx = 1 (first point, λ = 0)
+# flat = (ri-1)*n_λ*n_z + (λ_idx-1)*n_z + zi
+f_rz = [reg_vals[(ri-1)*n_λ*n_z + zi, 1, 1] for ri in 1:n_r, zi in 1:n_z]
+r_reg = collect(LinRange(gp_rlz.iMin, gp_rlz.iMax, n_r))
+z_reg = collect(LinRange(gp_rlz.kMin, gp_rlz.kMax, n_z))
+contourf(ax, r_reg, z_reg, f_rz; colormap=:inferno, levels=12)
+```
+
+![3D Cylindrical r-z cross-section](figures/fig_rlz_contourf.png)
+*Left: f(r,z) at λ=0. Right: vertical derivative ∂f/∂z.*
 
 ---
 
@@ -327,18 +363,223 @@ operate on all variables in a single call.
 
 ### Evaluating on a regular grid
 
-```julia
-reg_pts = getRegularGridpoints(grid_rrr)   # (N, 3) → columns [x, y, z]
-reg_vals = regularGridTransform(grid_rrr)  # (N, num_vars, 7)
+For Cartesian grids, pass explicit output vectors directly — this gives a
+clean symmetric grid independent of the internal mish-point density:
 
-# Custom output points
-x_out = collect(range(-30.0, 30.0, length=50))
-y_out = collect(range(-30.0, 30.0, length=50))
-z_out = collect(range(-30.0, 30.0, length=50))
-custom_vals = regularGridTransform(grid_rrr, x_out, y_out, z_out)
+```julia
+# Pass explicit output vectors (cleaner than getRegularGridpoints for Cartesian)
+n_out = 20
+x_out = collect(LinRange(gp_rrr.iMin, gp_rrr.iMax, n_out))
+y_out = collect(LinRange(gp_rrr.jMin, gp_rrr.jMax, n_out))
+z_out = collect(LinRange(gp_rrr.kMin, gp_rrr.kMax, n_out))
+reg_vals = regularGridTransform(grid_rrr, x_out, y_out, z_out)  # (n_out³, 2, 7)
 ```
 
 All variables are evaluated simultaneously — both `u` and `v` appear in the output.
+
+To extract an `(x, y)` slice at a fixed `z`-index for contourf:
+```julia
+# z varies fastest → flat = (xi-1)*n_out² + (yj-1)*n_out + zi
+k_mid = div(n_out, 2) + 1
+u_xy = [reg_vals[(xi-1)*n_out^2 + (yj-1)*n_out + k_mid, 1, 1]
+        for xi in 1:n_out, yj in 1:n_out]
+contourf(ax, x_out, y_out, u_xy; colormap=:viridis, levels=12)
+```
+
+![3D Cartesian x-y slice](figures/fig_rrr_contourf.png)
+*Both variables on the regular grid x-y slice at z≈0.*
+
+---
+
+## Example 5 — 2D Spherical Shell Grid (Spline × Fourier)
+
+The **SphericalShell** (`"SL"`) grid uses B-splines in the colatitude (θ) direction
+and Fourier series in longitude (λ).
+
+### Key features
+- The colatitude domain is `[iMin, iMax]` in radians (e.g. `0.01π` to `0.99π` to
+  exclude the poles where the Fourier ring collapses).
+- **Variable azimuthal resolution**: like the `RL` grid, each colatitude ring
+  has `lpoints = k*2` Fourier points where `k` is the ring's radial index.
+- Coordinate convention: `i` = colatitude θ ∈ (0, π), `j` = longitude λ ∈ [0, 2π).
+- The physical array has **5 derivative slots**: `[f, ∂f/∂θ, ∂²f/∂θ², ∂f/∂λ, ∂²f/∂λ²]`.
+
+### Grid creation
+
+```julia
+gp_sl = SpringsteelGridParameters(
+    geometry  = "SphericalShell",   # or "SL"
+    iMin      = 0.01 * π,           # south-polar exclusion zone
+    iMax      = 0.99 * π,           # north-polar exclusion zone
+    num_cells = 12,
+    vars      = Dict("gauss" => 1),
+    BCL       = Dict("gauss" => CubicBSpline.R0),
+    BCR       = Dict("gauss" => CubicBSpline.R0)
+)
+
+grid_sl = createGrid(gp_sl)  # SL_Grid / SphericalShell_Grid
+```
+
+### Filling the grid
+
+[`getGridpoints`](@ref) returns an `(N, 2)` matrix with columns `[θ, λ]`:
+
+```julia
+σ_θ = π / 4   # Gaussian half-width in colatitude
+pts_sl = getGridpoints(grid_sl)
+for i in 1:size(pts_sl, 1)
+    θ = pts_sl[i, 1]
+    grid_sl.physical[i, 1, 1] = exp(-((θ - π/2) / σ_θ)^2)
+end
+```
+
+### Round-trip
+
+```julia
+original_sl = copy(grid_sl.physical[:, 1, 1])
+spectralTransform!(grid_sl)
+gridTransform!(grid_sl)
+max_error_sl = maximum(abs.(grid_sl.physical[:, 1, 1] .- original_sl))
+# max_error_sl ≈ 8e-4 for 12 cells
+```
+
+### Evaluating on a regular grid
+
+Use [`regularGridTransform`](@ref) + [`getRegularGridpoints`](@ref) to obtain a
+uniform (θ × λ) tensor-product grid:
+
+```julia
+reg_pts_sl  = getRegularGridpoints(grid_sl)             # (N, 2) → [θ, λ]
+reg_phys_sl = regularGridTransform(grid_sl, reg_pts_sl) # (N, 1, 5)
+```
+
+**Reshape note**: output is stored with λ varying fastest. A `(n_λ × n_θ)` matrix
+suitable for GeoMakie `surface!` is:
+```julia
+n_θ_sl = grid_sl.params.i_regular_out
+n_λ_sl = grid_sl.params.j_regular_out
+f_mat_sl = reshape(reg_phys_sl[:, 1, 1], n_λ_sl, n_θ_sl)  # (n_λ × n_θ)
+```
+
+For **GeoMakie** Mollweide projections, latitudes must be in ascending order:
+```julia
+using GeoMakie, CairoMakie
+lon_sl = λ_reg_sl .* (180/π) .- 180.0          # → [-180, 180)
+lat_sl = 90.0 .- θ_reg_sl .* (180/π)           # colatitude → latitude
+perm   = sortperm(lat_sl)
+fig = Figure()
+ga  = GeoAxis(fig[1,1]; dest = "+proj=moll", title = "SphericalShell Gaussian")
+surface!(ga, lon_sl, lat_sl[perm], f_mat_sl[:, perm];
+         colormap = :viridis, shading = NoShading)
+lines!(ga, GeoMakie.coastlines(); color = :white, linewidth = 0.5)
+Colorbar(fig[1, 2], label = "f")
+```
+
+![SphericalShell GeoMakie surface](figures/fig_sl_geomakie.png)
+*Spherical shell Gaussian on a Mollweide projection. Coastlines are overlaid as a
+geographic reference.*
+
+---
+
+## Example 6 — 3D Sphere Grid (Spline × Fourier × Chebyshev)
+
+The **Sphere** (`"SLZ"`) grid adds a Chebyshev dimension in the radial/depth direction
+to the spherical shell, giving a fully 3D spectral representation.
+
+### Key features
+- `iMin`/`iMax` — colatitude bounds; `kMin`/`kMax`/`kDim` — vertical (z) domain.
+- The physical array has **7 derivative slots**:
+  `[f, ∂f/∂θ, ∂²f/∂θ², ∂f/∂λ, ∂²f/∂λ², ∂f/∂z, ∂²f/∂z²]`.
+- Physical indexing: z varies fastest, then λ, then θ.
+
+### Grid creation
+
+```julia
+gp_slz = SpringsteelGridParameters(
+    geometry  = "Sphere",       # or "SLZ"
+    iMin      = 0.01 * π,
+    iMax      = 0.99 * π,
+    num_cells = 6,
+    kMin      = 0.0,
+    kMax      = 10.0,
+    kDim      = 8,
+    vars      = Dict("gauss" => 1),
+    BCL = Dict("gauss" => CubicBSpline.R0),
+    BCR = Dict("gauss" => CubicBSpline.R0),
+    BCB = Dict("gauss" => Chebyshev.R0),
+    BCT = Dict("gauss" => Chebyshev.R0)
+)
+
+grid_slz = createGrid(gp_slz)  # SLZ_Grid / Sphere_Grid
+```
+
+### Filling the grid
+
+[`getGridpoints`](@ref) returns an `(N, 3)` matrix with columns `[θ, λ, z]`:
+
+```julia
+σ_θ_slz = π / 4;  σ_z_slz = 3.0;  z₀_slz = 5.0
+pts_slz = getGridpoints(grid_slz)
+for i in 1:size(pts_slz, 1)
+    θ, λ, z = pts_slz[i, 1], pts_slz[i, 2], pts_slz[i, 3]
+    grid_slz.physical[i, 1, 1] = exp(-((θ - π/2)/σ_θ_slz)^2 - ((z - z₀_slz)/σ_z_slz)^2)
+end
+```
+
+### Round-trip
+
+```julia
+original_slz = copy(grid_slz.physical[:, 1, 1])
+spectralTransform!(grid_slz)
+gridTransform!(grid_slz)
+max_error_slz = maximum(abs.(grid_slz.physical[:, 1, 1] .- original_slz))
+# max_error_slz ≈ 8e-3 for 6 cells
+```
+
+### Evaluating on a regular grid
+
+```julia
+reg_pts_slz  = getRegularGridpoints(grid_slz)              # (N, 3) → [θ, λ, z]
+reg_phys_slz = regularGridTransform(grid_slz, reg_pts_slz) # (N, 1, 7)
+```
+
+The output layout is: **z fastest, λ second, θ outer** (same as `RLZ`).
+Flat index: `flat = (ti-1)*n_λ*n_z + (li-1)*n_z + zi`.
+
+To extract a **(θ, z) cross-section** at `λ = 0` for contourf:
+```julia
+n_θ_slz = grid_slz.params.i_regular_out
+n_λ_slz = grid_slz.params.j_regular_out
+n_z_slz = grid_slz.params.k_regular_out
+θ_reg = collect(LinRange(gp_slz.iMin, gp_slz.iMax, n_θ_slz))
+z_reg = collect(LinRange(gp_slz.kMin, gp_slz.kMax, n_z_slz))
+# λ-index 1 (λ = 0): flat = (ti-1)*n_λ_slz*n_z_slz + zi
+f_tz  = [reg_phys_slz[(ti-1)*n_λ_slz*n_z_slz + zi, 1, 1]
+         for ti in 1:n_θ_slz, zi in 1:n_z_slz]
+lat_reg = 90.0 .- θ_reg .* (180/π)
+contourf(ax, lat_reg, z_reg, f_tz; colormap = :inferno, levels = 12)
+```
+
+To produce a **GeoMakie surface at a fixed z-level**:
+```julia
+k_mid = div(n_z_slz, 2) + 1
+f_surf = [reg_phys_slz[(ti-1)*n_λ_slz*n_z_slz + (li-1)*n_z_slz + k_mid, 1, 1]
+          for li in 1:n_λ_slz, ti in 1:n_θ_slz]   # (n_λ × n_θ)
+lon_slz = [2π*(j-1)/n_λ_slz for j in 1:n_λ_slz] .* (180/π) .- 180.0
+lat_slz = 90.0 .- θ_reg .* (180/π)
+perm_slz = sortperm(lat_slz)
+fig = Figure()
+ga  = GeoAxis(fig[1,1]; dest = "+proj=moll")
+surface!(ga, lon_slz, lat_slz[perm_slz], f_surf[:, perm_slz];
+         colormap = :inferno, shading = NoShading)
+lines!(ga, GeoMakie.coastlines(); color = :white, linewidth = 0.5)
+```
+
+![Sphere θ-z cross-section](figures/fig_slz_contourf.png)
+*Left: f(θ,z) at λ=0. Right: vertical derivative ∂f/∂z.*
+
+![Sphere GeoMakie surface at mid-z](figures/fig_slz_geomakie.png)
+*Gaussian on the sphere at z = z_mid, Mollweide projection.*
 
 ---
 
@@ -361,8 +602,23 @@ spectralTransform!(grid)
 gridTransform!(grid)
 
 # 6. (Optional) Evaluate on a regular output grid
-reg_vals = regularGridTransform(grid)
+reg_pts  = getRegularGridpoints(grid)            # uniform tensor-product grid
+reg_vals = regularGridTransform(grid, reg_pts)   # or pass r_pts, λ_pts, z_pts directly
 ```
 
-All legacy type names (`R_Grid`, `RL_Grid`, `RZ_Grid`, `RR_Grid`, `RLZ_Grid`, `RRR_Grid`)
+All legacy type names (`R_Grid`, `RL_Grid`, `RZ_Grid`, `RR_Grid`, `RLZ_Grid`, `RRR_Grid`,
+`SL_Grid`, `SphericalShell_Grid`, `SLZ_Grid`, `Sphere_Grid`)
 remain available as type aliases for full backward compatibility.
+
+### Supported grid geometries
+
+| Geometry string | Basis functions | Type alias |
+|:---|:---|:---|
+| `"R"` / `"Spline1D"` | Spline | `R_Grid` / `Spline1D_Grid` |
+| `"RL"` | Spline × Fourier | `RL_Grid` |
+| `"RZ"` | Spline × Chebyshev | `RZ_Grid` |
+| `"RR"` / `"Spline2D"` | Spline × Spline | `RR_Grid` / `Spline2D_Grid` |
+| `"RLZ"` | Spline × Fourier × Chebyshev | `RLZ_Grid` |
+| `"RRR"` | Spline × Spline × Spline | `RRR_Grid` |
+| `"SL"` / `"SphericalShell"` | Spline × Fourier | `SL_Grid` / `SphericalShell_Grid` |
+| `"SLZ"` / `"Sphere"` | Spline × Fourier × Chebyshev | `SLZ_Grid` / `Sphere_Grid` |

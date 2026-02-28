@@ -3,9 +3,8 @@
 # Provides:
 #   • convert_to_springsteel_params(gp::GridParameters) -> SpringsteelGridParameters
 #
-# The legacy createGrid(::GridParameters) method that returns old grid types (R_Grid, etc.)
-# is kept in Springsteel.jl and the old *_grid.jl files for the transition period.
-# It will be removed in Phase 10 once the type aliases are activated.
+# The legacy createGrid(::GridParameters) method that accepts old GridParameters structs
+# delegates to the unified SpringsteelGridParameters path via convert_to_springsteel_params.
 
 """
     convert_to_springsteel_params(gp::GridParameters) -> SpringsteelGridParameters

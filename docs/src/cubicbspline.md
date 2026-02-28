@@ -132,6 +132,7 @@ CubicBSpline.Spline1D(::CubicBSpline.SplineParameters)
 CubicBSpline.basis
 CubicBSpline.calcGammaBC
 CubicBSpline.calcPQfactor
+CubicBSpline.calcP1factor
 CubicBSpline.calcMishPoints
 CubicBSpline.setMishValues
 ```
@@ -146,6 +147,8 @@ CubicBSpline.SItransform
 CubicBSpline.SItransform_matrix
 CubicBSpline.SIxtransform
 CubicBSpline.SIxxtransform
+CubicBSpline.SIIntcoefficients
+CubicBSpline.SIInttransform
 ```
 
 ## Generic Wrappers
@@ -163,4 +166,5 @@ CubicBSpline.Itransform!
 CubicBSpline.Itransform
 CubicBSpline.Ixtransform
 CubicBSpline.Ixxtransform
+CubicBSpline.IInttransform
 ```

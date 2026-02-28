@@ -240,9 +240,14 @@ Tolerance for derivative accuracy with ~30 cells: `< 0.01` for first and second 
 Test that **every exported BC constant** can be used to construct a `Spline1D` and produce a finite round-trip. The BC constants for CubicBSpline are:
 `R0`, `R1T0`, `R1T1`, `R1T2`, `R2T10`, `R2T20`, `R3`, `PERIODIC`
 
-Strategy: use a function that vanishes at both boundaries (e.g., `sin(π*x/L)`) to avoid BC mismatch issues. Check `all(isfinite.(a))` after the SA transform. Also test:
-- `R3` on both sides (removes 6 DOF, so use ≥6 cells)
-- `R1T0` on both sides with a function whose derivative vanishes at the boundaries
+Match each test function to its BC:
+- **`R0`** (no constraint) — any smooth function works; confirm `all(isfinite.(a))` after SA transform.
+- **`R1T0`** (Dirichlet, `u = 0`) — use a function that *vanishes* at both boundaries (e.g., `sin(π*x/L)`) so the physical BC is naturally satisfied.
+- **`R1T1`** (Neumann, `u' = 0`) — use a function whose *first derivative vanishes* at both boundaries (e.g., `cos(π*x/L)` on `[0,L]`).
+- **`R1T2`** (zero second derivative) — use a function whose second derivative vanishes at the boundaries.
+- **`R2T10`**, **`R2T20`** — use functions satisfying both conditions simultaneously; the vanishing-value `sin(π*x/L)` with ≥2-cell padding works.
+- **`R3`** on both sides — removes 6 DOF total, so use ≥6 cells.
+- **`PERIODIC`** — use a smooth periodic function (e.g., `sin(x)` on `[0, 2π]`).
 
 ---
 
@@ -290,9 +295,9 @@ max_error = maximum(abs.(reconstructed .- original))
 @test max_error < 1e-4
 ```
 
-Use R0 BCs and a cubic polynomial (`x^3 - 2x^2 + x + 1`):
+Use `R0` (free boundary, no constraint) BCs and a cubic polynomial (`x^3 - 2x^2 + x + 1`):
 ```julia
-@test max_error < 1e-3   # slightly relaxed — BC boundary distortion
+@test max_error < 1e-3   # slightly relaxed — border coefficients are unconstrained, so edge accuracy is lower
 ```
 
 ### 3.4 Derivative Tests
@@ -303,10 +308,35 @@ Use PERIODIC BCs with `sin(x)` (30+ cells):
 
 ### 3.5 Boundary Condition Test
 
-Use R0 BCs with `sin(π*(x - xmin)/(xmax - xmin))`:
+Use `R1T0` (Dirichlet, zero-value) BCs with `sin(π*(x - xmin)/(xmax - xmin))`,
+which vanishes at both endpoints by construction.
+
+**Important**: `grid.physical[1]` and `grid.physical[end]` are inner mish-points, not
+the domain boundary — they are the first and last Gauss–Legendre quadrature nodes, located
+a fraction of `DX` inside the domain. To verify the BC is actually enforced, evaluate the
+spline *exactly at* `xmin` and `xmax` using `regularGridTransform`:
+
 ```julia
-@test abs(grid.physical[1, 1, 1]) < 0.1
-@test abs(grid.physical[end, 1, 1]) < 0.1
+spectralTransform!(grid)
+gridTransform!(grid)
+
+# Evaluate AT the boundary endpoints to confirm R1T0 enforcement
+boundary_vals = regularGridTransform(grid, [gp.xmin, gp.xmax])
+@test abs(boundary_vals[1, 1, 1]) < 1e-10  # u(xmin) = 0 (exactly, by BC)
+@test abs(boundary_vals[2, 1, 1]) < 1e-10  # u(xmax) = 0 (exactly, by BC)
+```
+
+Do **not** use `R0` (free boundary, no constraint) for this test — `R0` imposes no
+condition on endpoint values, so boundary zeros would only hold accidentally for
+functions that happen to vanish there.
+
+For `R1T1` (Neumann, zero first derivative), use `cos(π*(x-xmin)/(xmax-xmin))` and
+verify that the first derivative at the boundary is near zero:
+
+```julia
+boundary_derivs = regularGridTransform(grid_r1t1, [gp.xmin, gp.xmax])
+@test abs(boundary_derivs[1, 1, 2]) < 1e-6  # u'(xmin) ≈ 0
+@test abs(boundary_derivs[2, 1, 2]) < 1e-6  # u'(xmax) ≈ 0
 ```
 
 ### 3.6 Variable-Specific Filter Length Test
@@ -424,8 +454,8 @@ Use these analytic test cases consistently across all basis modules:
 ### Round-trip accuracy (tolerances scale with resolution)
 | Test function | BC type | Expected max error |
 |---------------|---------|--------------------|
-| `sin(2π*x/L)` | PERIODIC | `< 1e-4` with 20 cells |
-| `x^3 - 2x^2 + x + 1` | R0 | `< 1e-3` with 10 cells |
+| `sin(2π*x/L)` | `PERIODIC` | `< 1e-4` with 20 cells |
+| `x^3 - 2x^2 + x + 1` | `R0` (free boundary, no constraint) | `< 1e-3` with 10 cells |
 
 ### Derivative accuracy
 | Test function | Derivatives | BC type | Tolerance |
@@ -467,11 +497,11 @@ The Gaussian is ideal because it has analytic derivatives of all orders, is non-
    - `ChebyshevParameters` struct fields
    - `Chebyshev1D` construction
    - `CBtransform`, `CAtransform!`, `CItransform`, `CIxtransform`, `CIxxtransform`, `CIInttransform` (integration transform)
-   - BC types: `R0` and any others defined
+   - BC types: `R0` (free boundary), `R1T0` (Dirichlet, zero value), `R1T1` (Neumann, zero first derivative), `R1T2` (zero second derivative), `R2T10`, `R2T20`, `R3`
 
 2. **Grid tests** (`RZ_Grid Tests` testset):
    - Grid creation: both radial (B-spline) and vertical (Chebyshev) dimensions
-   - `physical` array has 3rd dimension = 5 or more (value, dr, dz, drr, dzz)
+   - `physical` array has 3rd dimension = 5 (value, ∂/∂r, ∂²/∂r², ∂/∂z, ∂²/∂z²); physical indexing is r-outer/z-inner: `flat = (r-1)*zDim + z`
    - Round-trip with 2D function `sin(r) * cos(z)`
    - Derivative tests in both r and z directions
    - `num_columns` returns `zDim` (number of Chebyshev columns)

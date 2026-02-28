@@ -23,6 +23,7 @@ makedocs(;
         "Chebyshev" => "chebyshev.md",
         "Testing Guide" => "testing_guide.md",
         "Documentation Guide" => "documentation_guide.md",
+        "Developer Notes" => "developer_notes.md",
     ],
 )
 

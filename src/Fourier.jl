@@ -4,10 +4,10 @@ using LinearAlgebra
 using FFTW
 
 export FourierParameters, Fourier1D
-export FBtransform, FBtransform!, FAtransform!, FItransform!
+export FBtransform, FBtransform!, FAtransform, FAtransform!, FItransform!
 export FBxtransform, FIxtransform, FIxxtransform
 # Generic (no-prefix) wrappers for abstract 1D basis dispatch
-export Btransform!, Atransform!, Itransform!
+export Btransform, Btransform!, Atransform, Atransform!, Itransform, Itransform!
 export Ixtransform, Ixxtransform, IInttransform
 
 #Define some convenient aliases
@@ -272,6 +272,7 @@ end
 
 """
     FBtransform(fp::FourierParameters, fftPlan, phasefilter::Matrix{Float64}, uMish::Vector{Float64}) -> Vector{Float64}
+    FBtransform(ring::Fourier1D, uMish::Vector{Float64}) -> Vector{Float64}
     FBtransform!(ring::Fourier1D)
 
 Compute the forward Fourier transform (physical → filtered B-coefficients).
@@ -286,6 +287,7 @@ producing a compact `bDim`-length coefficient vector.
 # Variants
 - `FBtransform(fp, fftPlan, phasefilter, uMish)` — allocates; requires explicit plan and
   filter objects (useful when constructing per-radius rings with varying parameters)
+- `FBtransform(ring, uMish)` — allocates using the `ring`'s cached plan and phase-filter
 - `FBtransform!(ring)` — in-place; reads `ring.uMish`, writes `ring.b`
 
 # Arguments
@@ -295,7 +297,7 @@ producing a compact `bDim`-length coefficient vector.
 - `uMish::Vector{Float64}`: Physical field values at the `yDim` ring points
 
 # Returns
-- `Vector{Float64}`: Filtered B-coefficient vector of length `bDim` (allocating variant)
+- `Vector{Float64}`: Filtered B-coefficient vector of length `bDim` (allocating variants)
 
 See also: [`FAtransform`](@ref), [`FItransform`](@ref)
 """
@@ -307,6 +309,11 @@ function FBtransform(fp::FourierParameters, fftPlan, phasefilter::Matrix{real}, 
     return bfilter
 end
 
+function FBtransform(ring::Fourier1D, uMish::Vector{real})
+    b = (ring.fftPlan * uMish) ./ ring.params.yDim
+    return (b' * ring.phasefilter)'
+end
+
 function FBtransform!(ring::Fourier1D)
 
     # Do the forward Fourier transform, scale, and filter in place for a ring object
@@ -316,6 +323,7 @@ end
 
 """
     FAtransform(fp::FourierParameters, invphasefilter::Matrix{Float64}, b::Vector{Float64}) -> Vector{Float64}
+    FAtransform(ring::Fourier1D, b::AbstractVector) -> Vector{Float64}
     FAtransform!(ring::Fourier1D)
 
 Compute the FA transform: convert filtered B-coefficients to zero-padded A-coefficients
@@ -328,11 +336,12 @@ Applies the inverse phase-shift to undo the azimuthal offset introduced in
 (with zeros for wavenumbers above `kmax`).
 
 # Variants
-- `FAtransform(fp, invphasefilter, b)` — allocates and returns `a`
+- `FAtransform(fp, invphasefilter, b)` — allocates; requires explicit inverse-filter object
+- `FAtransform(ring, b)` — allocates using the `ring`'s cached `invphasefilter`
 - `FAtransform!(ring)` — in-place; reads `ring.b`, writes `ring.a`
 
 # Returns
-- `Vector{Float64}`: Zero-padded A-coefficients of length `yDim` (allocating variant)
+- `Vector{Float64}`: Zero-padded A-coefficients of length `yDim` (allocating variants)
 
 See also: [`FBtransform`](@ref), [`FItransform`](@ref)
 """
@@ -341,6 +350,10 @@ function FAtransform(fp::FourierParameters, invphasefilter::Matrix{real}, b::Vec
     # Apply the inverse phasefilter to get padded Fourier coefficients for inverse FFT
     a = (b' * invphasefilter)'
     return a
+end
+
+function FAtransform(ring::Fourier1D, b::AbstractVector)
+    return (b' * ring.invphasefilter)'
 end
 
 function FAtransform!(ring::Fourier1D)
@@ -558,14 +571,26 @@ end
 # without needing to know the underlying basis type.
 # ---------------------------------------------------------------------------
 
+"""Generic B-transform wrapper for `Fourier1D` (allocating). Delegates to [`FBtransform`](@ref)."""
+Btransform(ring::Fourier1D, uMish::Vector{real}) = FBtransform(ring, uMish)
+
 """Generic in-place B-transform wrapper for `Fourier1D`. Delegates to `FBtransform!`."""
 Btransform!(ring::Fourier1D) = FBtransform!(ring)
+
+"""Generic A-transform wrapper for `Fourier1D` (allocating). Delegates to [`FAtransform`](@ref)."""
+Atransform(ring::Fourier1D, b::AbstractVector) = FAtransform(ring, b)
 
 """Generic in-place A-transform wrapper for `Fourier1D`. Delegates to `FAtransform!`."""
 Atransform!(ring::Fourier1D) = FAtransform!(ring)
 
 """Generic in-place I-transform wrapper for `Fourier1D`. Delegates to `FItransform!`."""
 Itransform!(ring::Fourier1D) = FItransform!(ring)
+
+"""Generic I-transform wrapper for `Fourier1D` (in-place output). Performs inverse FFT from `ring.a` and writes into `u`."""
+function Itransform(ring::Fourier1D, u::AbstractVector)
+    u .= ring.ifftPlan * ring.a
+    return u
+end
 
 """Generic Ix-transform wrapper for `Fourier1D` (allocating). Delegates to [`FIxtransform`](@ref)."""
 Ixtransform(ring::Fourier1D) = FIxtransform(ring)

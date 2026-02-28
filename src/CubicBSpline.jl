@@ -11,11 +11,12 @@ export SplineParameters, Spline1D
 #export R0, R1T0, R1T1, R1T2, R2T10, R2T20, R3, PERIODIC
 export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
+export SIIntcoefficients, SIInttransform
 export setMishValues
 # Generic (no-prefix) wrappers for abstract 1D basis dispatch
 export Btransform, Btransform!, Bxtransform
 export Atransform, Atransform!
-export Itransform, Itransform!, Ixtransform, Ixxtransform
+export Itransform, Itransform!, Ixtransform, Ixxtransform, IInttransform
 
 #Define some convenient aliases
 const real = Float64
@@ -117,6 +118,8 @@ Immutable parameter struct (using `@kwdef`) for a 1D cubic B-spline basis.
 - `BCR::Dict`: Right boundary condition (same options as `BCL`)
 - `DX::Float64`: Cell width, computed as `(xmax - xmin) / num_cells`
 - `DXrecip::Float64`: Reciprocal of `DX`, precomputed for efficiency
+- `bDim::Int64`: Number of spectral coefficients, computed as `num_cells + 3`
+- `mishDim::Int64`: Total physical (mish) gridpoints, computed as `num_cells * mubar`
 
 # Example
 ```julia
@@ -141,6 +144,8 @@ Base.@kwdef struct SplineParameters
     BCR::Dict = R0
     DX::real = (xmax - xmin) / num_cells
     DXrecip::real = 1.0/DX
+    bDim::int = num_cells + 3
+    mishDim::int = num_cells * mubar
 end
 
 """
@@ -153,8 +158,8 @@ One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParame
 - `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix (maps interior to full coefficient space)
 - `pq`: Full `(P + Q)` matrix used in the least-squares / variational solve
 - `pqFactor::SuiteSparse.CHOLMOD.Factor{Float64}`: Sparse Cholesky factorisation of the open-form `(P + Q)` matrix for fast solves
-- `mishDim::Int64`: Number of Gaussian quadrature (mish) points = `num_cells * mubar`
-- `bDim::Int64`: Number of spectral coefficients = `num_cells + 3`
+- `p1`: Full `(P⁽¹⁾ + Q)` matrix for the integral variational solve (same Q as `pq`, but P uses first-derivative basis ``\varphi'_m``; see [`calcP1factor`](@ref))
+- `p1Factor::SuiteSparse.CHOLMOD.Factor{Float64}`: Sparse Cholesky factorisation of the open-form `(P⁽¹⁾ + Q)` matrix, used by [`SIIntcoefficients`](@ref) for fast integration solves
 - `mishPoints::Vector{Float64}`: Physical locations of the mish points
 - `uMish::Vector{Float64}`: Physical field values at mish points (mutable working buffer)
 - `b::Vector{Float64}`: B-vector (result of SB transform, inner products ⟨φₘ, u⟩)
@@ -172,8 +177,8 @@ struct Spline1D
     gammaBC::Matrix{real}
     pq
     pqFactor::SuiteSparse.CHOLMOD.Factor{Float64}
-    mishDim::int
-    bDim::int
+    p1
+    p1Factor::SuiteSparse.CHOLMOD.Factor{Float64}
     mishPoints::Vector{real}
     uMish::Vector{real}
     b::Vector{real}
@@ -396,6 +401,79 @@ function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
 end
 
 """
+    calcP1factor(sp::SplineParameters, gammaBC::Matrix{Float64}) -> (Matrix{Float64}, SuiteSparse.CHOLMOD.Factor)
+
+Build the integral variational `(P⁽¹⁾ + Q)` matrix and return its sparse Cholesky factorisation.
+
+Follows Ooyama (2002) Eq. 4.24. Like [`calcPQfactor`](@ref), but the P matrix inner products
+use the **first derivative** of the basis function rather than the function itself:
+
+``P^{(1)}_{m_1 m_2} = \\sum_{\\text{cells}} \\Delta x \\sum_\\mu w_\\mu \\varphi'_{m_1}(x_\\mu)\\,\\varphi'_{m_2}(x_\\mu)``
+
+The Q (smoothing) matrix is identical to the one in [`calcPQfactor`](@ref).  The factorised
+system is used by [`SIIntcoefficients`](@ref) to find spectral coefficients of the
+indefinite integral.
+
+# Arguments
+- `sp::SplineParameters`: Spline parameters (domain, cells, filter length `l_q`)
+- `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix from [`calcGammaBC`](@ref)
+
+# Returns
+- `(p1q::Matrix{Float64}, p1qFactor)`: Full `(P⁽¹⁾ + Q)` matrix and its Cholesky factor
+
+See also: [`calcPQfactor`](@ref), [`SIIntcoefficients`](@ref)
+"""
+function calcP1factor(sp::SplineParameters, gammaBC::Matrix{real})
+    eps_q = ((sp.l_q*sp.DX)/(2*π))^6
+    Mdim = sp.num_cells + 3
+
+    # Create the P1 matrix (first-derivative inner products) and Q matrix (same as calcPQfactor)
+    P1 = zeros(real, Mdim, Mdim)
+    Q = zeros(real, Mdim, Mdim)
+
+    for mi1 = 1:Mdim
+        for mi2 = 1:Mdim
+            if abs(mi1 - mi2) > 3
+                continue
+            end
+            m1 = mi1 - 2
+            m2 = mi2 - 2
+            for mc = 0:(sp.num_cells-1)
+                if (mc < (m1 - 2)) || (mc > (m1 + 1))
+                    continue
+                end
+                if (mc < (m2 - 2)) || (mc > (m2 + 1))
+                    continue
+                end
+                for mu = 1:mubar
+                    i = mu + (mubar * mc)
+                    x = sp.xmin + (mc * sp.DX) + sp.DX * ((mu/2.0 - 1.0) * sqrt35) + sp.DX * 0.5
+                    pm1 = basis(sp, m1, x, 1)  # first derivative of basis
+                    pm2 = basis(sp, m2, x, 1)  # first derivative of basis
+                    qm1 = basis(sp, m1, x, 3)
+                    qm2 = basis(sp, m2, x, 3)
+                    P1[mi1,mi2] += sp.DX * gaussweight[mu] * pm1 * pm2
+                    Q[mi1,mi2]  += sp.DX * gaussweight[mu] * eps_q * qm1 * qm2
+                end
+            end
+        end
+    end
+
+    # Fold in the BCs to get open form.
+    # A small Tikhonov regularization (eps_lambda * I) is added to handle the null space of P1:
+    # the constant function lies in null(P1) and null(Q) when BCs impose no constraint
+    # (e.g. R0). This null space corresponds to the free constant of integration (C0), which
+    # is set by the caller. The regularization does not affect the non-constant modes.
+    eps_lambda = 1e-10
+    P1Q = Symmetric(P1 + Q)
+    P1Qopen = Symmetric((gammaBC * P1 * gammaBC') + (gammaBC * Q * gammaBC'))
+    n = size(P1Qopen, 1)
+    P1Qsparse = sparse(P1Qopen) + eps_lambda * sparse(I, n, n)
+    P1Qfactor = cholesky(Symmetric(P1Qsparse))
+    return P1Q, P1Qfactor
+end
+
+"""
     calcMishPoints(sp::SplineParameters) -> Vector{Float64}
 
 Compute the Gaussian quadrature ("mish") point locations.
@@ -460,16 +538,15 @@ See also: [`SBtransform`](@ref), [`SAtransform`](@ref), [`SItransform`](@ref)
 function Spline1D(sp::SplineParameters)
     gammaBC = calcGammaBC(sp)
     pq, pqFactor = calcPQfactor(sp, gammaBC)
+    p1, p1Factor = calcP1factor(sp, gammaBC)
 
-    mishDim = sp.num_cells*mubar
     mishPoints = calcMishPoints(sp)
-    uMish = zeros(real,sp.num_cells*mubar)
+    uMish = zeros(real,sp.mishDim)
 
-    bDim = sp.num_cells + 3
-    b = zeros(real,bDim)
-    a = zeros(real,bDim)
+    b = zeros(real,sp.bDim)
+    a = zeros(real,sp.bDim)
 
-    spline = Spline1D(sp,gammaBC,pq,pqFactor,mishDim,bDim,mishPoints,uMish,b,a)
+    spline = Spline1D(sp,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,uMish,b,a)
     return spline
 end
 
@@ -601,6 +678,88 @@ function SBxtransform(spline::Spline1D, uMish::Vector{real}, BCL::real, BCR::rea
 
     bx = SBxtransform(spline.params, uMish, BCL, BCR)
     return bx
+end
+
+"""
+    SIIntcoefficients(sp::SplineParameters, gammaBC::Matrix{Float64}, p1Factor, uMish::Vector{Float64}) -> Vector{Float64}
+    SIIntcoefficients(spline::Spline1D, uMish::Vector{Float64}) -> Vector{Float64}
+
+Compute the **integral spectral coefficients** of the indefinite integral of `uMish`.
+
+Follows Ooyama (2002) Eqs. 4.23–4.25.  Builds the right-hand side vector
+``r_m = \\int \\varphi'_m(x)\\, f(x)\\,dx`` via quadrature, then solves the variational
+system using the pre-factored ``(P^{(1)} + Q)`` matrix:
+
+``\\hat{a}^{\\text{int}} = \\Gamma^T \\Bigl[(\\Gamma\\,(P^{(1)}+Q)\\,\\Gamma^T)^{-1}\\,\\Gamma\\, r\\Bigr]``
+
+where ``P^{(1)}_{m_1 m_2} = \\int \\varphi'_{m_1}\\varphi'_{m_2}\\,dx``.
+
+Note: ``r_m = -\\text{SBxtransform}(f, 0, 0)`` — the raw derivative-basis inner product without
+boundary correction.  Boundary values of ``f`` are not required; the constant of integration
+is applied separately via `C0` in [`SIInttransform`](@ref).
+
+# Variants
+- `SIIntcoefficients(sp, gammaBC, p1Factor, uMish)` — lowest-level; all components explicit
+- `SIIntcoefficients(spline, uMish)` — convenience form using cached `spline` internals
+
+# Arguments
+- `sp` / `spline`: Spline parameters or a constructed `Spline1D`
+- `uMish::Vector{Float64}`: Field values at the mish points (the function to be integrated)
+
+# Returns
+- `Vector{Float64}`: Spectral coefficient vector `aInt` of length `num_cells + 3`
+
+See also: [`SIInttransform`](@ref), [`SBxtransform`](@ref), [`calcP1factor`](@ref)
+"""
+function SIIntcoefficients(sp::SplineParameters, gammaBC::Matrix{real}, p1Factor, uMish::Vector{real})
+    # RHS = ∫ φ'_m f dx = -SBxtransform(f, 0, 0)
+    bx = SBxtransform(sp, uMish, 0.0, 0.0)
+    aInt = gammaBC' * (p1Factor \ (gammaBC * (-bx)))
+    return aInt
+end
+
+function SIIntcoefficients(spline::Spline1D, uMish::Vector{real})
+    # RHS = ∫ φ'_m f dx = -SBxtransform(f, 0, 0)
+    bx = SBxtransform(spline.params, uMish, 0.0, 0.0)
+    aInt = spline.gammaBC' * (spline.p1Factor \ (spline.gammaBC * (-bx)))
+    return aInt
+end
+
+"""
+    SIInttransform(sp::SplineParameters, gammaBC::Matrix{Float64}, p1Factor, uMish::Vector{Float64}, C0::Float64 = 0.0) -> Vector{Float64}
+    SIInttransform(spline::Spline1D, uMish::Vector{Float64}, C0::Float64 = 0.0) -> Vector{Float64}
+
+Compute the **indefinite integral** of the B-spline expansion in physical space.
+
+Applies [`SIIntcoefficients`](@ref) (Ooyama 2002, Eqs. 4.23–4.25) to obtain the spectral
+coefficients of the antiderivative, then evaluates the expansion at the mish points via
+[`SItransform`](@ref).  The optional constant of integration `C0` is added uniformly to
+every physical output value.
+
+# Variants
+- `SIInttransform(sp, gammaBC, p1Factor, uMish, C0)` — lowest-level call; all components explicit
+- `SIInttransform(spline, uMish, C0)` — convenience form using cached `spline` internals
+
+# Arguments
+- `sp` / `spline`: Spline parameters or a constructed `Spline1D`
+- `uMish::Vector{Float64}`: Field values at the mish points (the function to be integrated)
+- `C0::Float64`: Constant of integration (default `0.0`); added uniformly to the output
+
+# Returns
+- `Vector{Float64}`: Integral field values of length `num_cells * 3` at the mish points
+
+See also: [`SIIntcoefficients`](@ref), [`SItransform`](@ref), [`SIxtransform`](@ref)
+"""
+function SIInttransform(sp::SplineParameters, gammaBC::Matrix{real}, p1Factor, uMish::Vector{real}, C0::real = 0.0)
+    aInt = SIIntcoefficients(sp, gammaBC, p1Factor, uMish)
+    uInt = SItransform(sp, aInt)
+    return uInt .+ C0
+end
+
+function SIInttransform(spline::Spline1D, uMish::Vector{real}, C0::real = 0.0)
+    aInt = SIIntcoefficients(spline, uMish)
+    uInt = SItransform(spline.params, aInt)
+    return uInt .+ C0
 end
 
 """
@@ -791,7 +950,7 @@ See also: [`SItransform`](@ref)
 """
 function SItransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64 = 0)
     sp = spline.params
-    u = zeros(Float64,sp.num_cells*mubar,spline.bDim)
+    u = zeros(Float64,sp.num_cells*mubar,spline.params.bDim)
     for i in eachindex(points)
         xm = ceil(Int64,(points[i] - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
         for m = xm:(xm + 3)
@@ -947,6 +1106,10 @@ Ixxtransform(spline::Spline1D, uprime2::AbstractVector) = SIxxtransform(spline, 
 """Generic Ixx-transform wrapper for `Spline1D` (custom points, in-place output). Delegates to [`SIxxtransform`](@ref)."""
 Ixxtransform(spline::Spline1D, points::Vector{real}, uprime2::AbstractVector) =
     SIxxtransform(spline, points, uprime2)
+
+"""Generic indefinite-integral transform wrapper for `Spline1D`. Delegates to [`SIInttransform`](@ref)."""
+IInttransform(spline::Spline1D, uMish::Vector{real}, C0::real = 0.0) =
+    SIInttransform(spline, uMish, C0)
 
 #Module end
 end

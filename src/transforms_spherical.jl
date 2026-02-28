@@ -1,6 +1,6 @@
 # transforms_spherical.jl — Spectral ↔ physical transforms for Spherical SpringsteelGrids
 #
-# Phase 7: Spherical geometry transforms
+# Spherical geometry transforms
 #   • SL_Grid  = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
 #   • SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
 #
@@ -19,7 +19,7 @@
 #      vs.            `r + patchOffsetL`          (cylindrical)
 # The spectral array layout (wavenumber-interleaved) and Fourier/Spline operations are
 # identical.  The RL/SL convention uses  p = k*2  for wavenumber offsets.
-# The RLZ/SLZ convention uses p = (k-1)*2  (TRAP-1 — see REFACTORING_PLAN.md §13.2).
+# The RLZ/SLZ convention uses p = (k-1)*2  (see Developer Notes §TRAP-1 for why this differs from RL/SL).
 #
 # Must be included AFTER types.jl, basis_interface.jl, and factory.jl.
 
@@ -401,7 +401,7 @@ Identical in structure to the cylindrical RLZ transform with sin(θ)-dependent r
 3. **Spline stage**: Wavenumber-interleaved `SBtransform!` per Chebyshev mode.
 
 **Spectral layout** (z-major, wavenumber-interleaved per z-level):
-Uses `p = (k-1)*2` for k ≥ 1 (SLZ/RLZ convention — see TRAP-1 in REFACTORING_PLAN.md §13.2).
+Uses `p = (k-1)*2` for k ≥ 1 (SLZ/RLZ convention — see Developer Notes §TRAP-1).
 
 **Ring sizes** follow sin(θ): `lpoints = ring.params.yDim`, `kmax_ring = ring.params.kmax`.
 
@@ -531,6 +531,7 @@ end
 function gridTransform(grid::_SLZGrid, physical::Array{real}, spectral::Array{real})
 
     kDim_wn = grid.params.iDim + grid.params.patchOffsetL
+
     kDim    = grid.params.kDim
     b_kDim  = grid.params.b_kDim
     iDim    = grid.params.iDim
@@ -663,4 +664,357 @@ function gridTransform(grid::_SLZGrid, physical::Array{real}, spectral::Array{re
     end  # for v
 
     return physical
+end
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Regular-grid output — 2D Spherical (SL)
+# ═══════════════════════════════════════════════════════════════════════════
+
+"""
+    getRegularGridpoints(grid::_SLGrid) -> Matrix{Float64}
+
+Return an `(n_θ × n_λ, 2)` matrix of uniformly-spaced `(θ, λ)` coordinates
+for a 2-D spherical (SL) grid.
+
+Unlike [`getGridpoints`](@ref), which returns the unevenly-spaced spherical mish
+points (with sin(θ)-dependent ring sizes), this function returns a regular
+tensor-product grid suitable for visualisation and file I/O.
+
+The output dimensions are controlled by [`SpringsteelGridParameters`](@ref) fields:
+- `i_regular_out` — colatitude points spanning `[iMin, iMax]`   (default `num_cells + 1`)
+- `j_regular_out` — longitude points spanning `[0, 2π)`          (default `iDim * 2 + 1`)
+
+Points are ordered θ-outer, λ-inner (λ varies fastest), matching the layout produced
+by [`regularGridTransform`](@ref).
+
+See also: [`regularGridTransform`](@ref), [`getGridpoints`](@ref)
+"""
+function getRegularGridpoints(grid::_SLGrid)
+    n_θ   = grid.params.i_regular_out
+    n_λ   = grid.params.j_regular_out
+    θ_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_θ))
+    λ_pts = [2π * (j - 1) / n_λ for j in 1:n_λ]
+    pts   = zeros(Float64, n_θ * n_λ, 2)
+    idx   = 1
+    for i in 1:n_θ
+        for j in 1:n_λ
+            pts[idx, 1] = θ_pts[i]
+            pts[idx, 2] = λ_pts[j]
+            idx += 1
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_SLGrid, θ_pts, λ_pts) -> Array{Float64}
+    regularGridTransform(grid::_SLGrid, gridpoints)   -> Array{Float64}
+
+Evaluate the SL spectral representation on a regular tensor-product `θ × λ` grid,
+returning field values and all five derivatives.
+
+Structurally identical to the cylindrical RL regular-grid transform with the
+SL/RL wavenumber convention `p = k*2`.
+
+`grid.spectral` must be populated (call [`spectralTransform!`](@ref) first).
+
+# Returns
+`Array{Float64}` of shape `(n_θ × n_λ, nvars, 5)` — λ varies fastest.  Derivative slots:
+- `[:,:,1]` — `f(θ, λ)`
+- `[:,:,2]` — `∂f/∂θ`
+- `[:,:,3]` — `∂²f/∂θ²`
+- `[:,:,4]` — `∂f/∂λ`
+- `[:,:,5]` — `∂²f/∂λ²`
+
+# Example
+```julia
+spectralTransform!(grid_sl)
+reg_pts  = getRegularGridpoints(grid_sl)
+reg_phys = regularGridTransform(grid_sl, reg_pts)
+```
+
+See also: [`getRegularGridpoints`](@ref), [`gridTransform!`](@ref)
+"""
+function regularGridTransform(grid::_SLGrid, θ_pts::AbstractVector{Float64}, λ_pts::AbstractVector{Float64})
+    gp     = grid.params
+    kDim   = gp.iDim + gp.patchOffsetL
+    b_iDim = gp.b_iDim
+    nvars  = length(gp.vars)
+    n_θ    = length(θ_pts)
+    n_λ    = length(λ_pts)
+    θ_vec  = collect(Float64, θ_pts)
+    λ_vec  = collect(Float64, λ_pts)
+
+    physical = zeros(Float64, n_θ * n_λ, nvars, 5)
+
+    for v in values(gp.vars)
+        # Per-wavenumber colatitudinal spline evaluation at θ_pts.
+        # Layout: ak[θ_out, k_slot] where k_slot=1 → k=0,
+        #   k_slot=2k → cos wavenumber k,  k_slot=2k+1 → sin wavenumber k.
+        ak    = zeros(Float64, n_θ, 2 * kDim + 1)
+        ak_r  = zeros(Float64, n_θ, 2 * kDim + 1)
+        ak_rr = zeros(Float64, n_θ, 2 * kDim + 1)
+
+        # Wavenumber 0 — SL spectral layout: b[1:b_iDim]
+        sp0 = grid.ibasis.data[1, v]
+        sp0.b .= view(grid.spectral, 1:b_iDim, v)
+        SAtransform!(sp0)
+        SItransform(sp0,   θ_vec, view(ak,    :, 1))
+        SIxtransform(sp0,  θ_vec, view(ak_r,  :, 1))
+        SIxxtransform(sp0, θ_vec, view(ak_rr, :, 1))
+
+        # Wavenumbers 1..kDim — SL/RL layout uses p = k*2 (see TRAP-1 note)
+        for k in 1:kDim
+            p   = k * 2
+            p1c = (p - 1) * b_iDim + 1;  p2c = p       * b_iDim   # cosine block
+            p1s =  p      * b_iDim + 1;  p2s = (p + 1) * b_iDim   # sine block
+
+            spc = grid.ibasis.data[2, v]
+            spc.b .= view(grid.spectral, p1c:p2c, v)
+            SAtransform!(spc)
+            SItransform(spc,   θ_vec, view(ak,    :, 2k))
+            SIxtransform(spc,  θ_vec, view(ak_r,  :, 2k))
+            SIxxtransform(spc, θ_vec, view(ak_rr, :, 2k))
+
+            sps = grid.ibasis.data[3, v]
+            sps.b .= view(grid.spectral, p1s:p2s, v)
+            SAtransform!(sps)
+            SItransform(sps,   θ_vec, view(ak,    :, 2k + 1))
+            SIxtransform(sps,  θ_vec, view(ak_r,  :, 2k + 1))
+            SIxxtransform(sps, θ_vec, view(ak_rr, :, 2k + 1))
+        end
+
+        # Reconstruct on regular (θ, λ) grid — λ varies fastest
+        # NOTE: Fourier B-coefficients from FBtransform use FFTW R2HC convention
+        # where k≥1 cosine/sine amplitudes are stored at half their physical-space
+        # amplitude (the inverse FFT in FItransform handles this automatically, but
+        # this analytical reconstruction must multiply k≥1 terms by 2).
+        idx = 1
+        for i in 1:n_θ
+            for j in 1:n_λ
+                λ   = λ_vec[j]
+                f   = ak[i, 1]
+                fr  = ak_r[i, 1]
+                frr = ak_rr[i, 1]
+                fλ  = 0.0
+                fλλ = 0.0
+                for k in 1:kDim
+                    ck   = cos(k * λ);  sk = sin(k * λ)
+                    rc   = ak[i, 2k];   rs = ak[i, 2k + 1]
+                    f   += 2.0 * (rc * ck + rs * sk)
+                    fr  += 2.0 * (ak_r[i, 2k] * ck + ak_r[i, 2k + 1] * sk)
+                    frr += 2.0 * (ak_rr[i, 2k] * ck + ak_rr[i, 2k + 1] * sk)
+                    fλ  += 2.0 * k * (-rc * sk + rs * ck)
+                    fλλ -= 2.0 * k^2 * (rc * ck + rs * sk)
+                end
+                physical[idx, v, 1] = f
+                physical[idx, v, 2] = fr
+                physical[idx, v, 3] = frr
+                physical[idx, v, 4] = fλ
+                physical[idx, v, 5] = fλλ
+                idx += 1
+            end
+        end
+    end
+
+    return physical
+end
+
+function regularGridTransform(grid::_SLGrid, gridpoints::AbstractMatrix{Float64})
+    θ_pts = sort(unique(gridpoints[:, 1]))
+    n_θ   = length(θ_pts)
+    n_λ   = div(size(gridpoints, 1), n_θ)
+    λ_pts = gridpoints[1:n_λ, 2]
+    return regularGridTransform(grid, θ_pts, λ_pts)
+end
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Regular-grid output — 3D Spherical (SLZ)
+# ═══════════════════════════════════════════════════════════════════════════
+
+"""
+    getRegularGridpoints(grid::_SLZGrid) -> Matrix{Float64}
+
+Return an `(n_θ × n_λ × n_z, 3)` matrix of uniformly-spaced `(θ, λ, z)` coordinates
+for a 3-D spherical (SLZ) grid.
+
+The output dimensions are controlled by [`SpringsteelGridParameters`](@ref) fields:
+- `i_regular_out` — colatitude points in `[iMin, iMax]`   (default `num_cells + 1`)
+- `j_regular_out` — longitude points in `[0, 2π)`          (default `iDim * 2 + 1`)
+- `k_regular_out` — vertical points in `[kMin, kMax]`      (default `kDim + 1`)
+
+Points are ordered θ-outer, λ-middle, z-inner (z varies fastest), matching the layout
+of [`regularGridTransform`](@ref).
+
+See also: [`regularGridTransform`](@ref), [`getGridpoints`](@ref)
+"""
+function getRegularGridpoints(grid::_SLZGrid)
+    n_θ   = grid.params.i_regular_out
+    n_λ   = grid.params.j_regular_out
+    n_z   = grid.params.k_regular_out
+    θ_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_θ))
+    λ_pts = [2π * (j - 1) / n_λ for j in 1:n_λ]
+    z_pts = collect(LinRange(grid.params.kMin, grid.params.kMax, n_z))
+    pts   = zeros(Float64, n_θ * n_λ * n_z, 3)
+    idx   = 1
+    for i in 1:n_θ
+        for j in 1:n_λ
+            for k in 1:n_z
+                pts[idx, 1] = θ_pts[i]
+                pts[idx, 2] = λ_pts[j]
+                pts[idx, 3] = z_pts[k]
+                idx += 1
+            end
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_SLZGrid, θ_pts, λ_pts, z_pts) -> Array{Float64}
+    regularGridTransform(grid::_SLZGrid, gridpoints)           -> Array{Float64}
+
+Evaluate the SLZ spectral representation on a regular tensor-product `θ × λ × z` grid.
+
+Structurally identical to the cylindrical RLZ regular-grid transform with the
+SLZ/RLZ wavenumber convention `p = (k-1)*2`.
+
+`grid.spectral` must be populated (call [`spectralTransform!`](@ref) first).
+
+# Returns
+`Array{Float64}` of shape `(n_θ × n_λ × n_z, nvars, 7)` — z varies fastest.  Slots:
+- `[:,:,1]` — `f`, `[:,:,2]` — `∂f/∂θ`, `[:,:,3]` — `∂²f/∂θ²`
+- `[:,:,4]` — `∂f/∂λ`, `[:,:,5]` — `∂²f/∂λ²`
+- `[:,:,6]` — `∂f/∂z`, `[:,:,7]` — `∂²f/∂z²`
+
+# Example
+```julia
+spectralTransform!(grid_slz)
+reg_pts  = getRegularGridpoints(grid_slz)
+reg_phys = regularGridTransform(grid_slz, reg_pts)
+```
+
+See also: [`getRegularGridpoints`](@ref), [`gridTransform!`](@ref)
+"""
+function regularGridTransform(grid::_SLZGrid, θ_pts::AbstractVector{Float64},
+                               λ_pts::AbstractVector{Float64}, z_pts::AbstractVector{Float64})
+    gp       = grid.params
+    kDim_wn  = gp.iDim + gp.patchOffsetL
+    b_iDim   = gp.b_iDim
+    b_kDim   = gp.b_kDim
+    nvars    = length(gp.vars)
+    n_θ      = length(θ_pts)
+    n_λ      = length(λ_pts)
+    n_z      = length(z_pts)
+    θ_vec    = collect(Float64, θ_pts)
+    λ_vec    = collect(Float64, λ_pts)
+    z_vec    = collect(Float64, z_pts)
+    n_kslots = 1 + 2 * kDim_wn   # k=0 + (cos + sin) for k = 1..kDim_wn
+
+    physical = zeros(Float64, n_θ * n_λ * n_z, nvars, 7)
+
+    for v in values(gp.vars)
+        for dr in 0:2
+            # ── Step 1: radial spline evaluation at θ_pts ────────────────────
+            # spline_vals[θ_out, z_b, k_slot]: k_slot=1→k=0, 2k→cos k, 2k+1→sin k
+            spline_vals = zeros(Float64, n_θ, b_kDim, n_kslots)
+
+            for z_b in 1:b_kDim
+                r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+                r2 = r1 + b_iDim - 1
+
+                # Use ibasis.data[1,v], [2,v], [3,v] as scratch splines.
+                # SLZ ibasis has shape [b_kDim, nvars]; indices 1..3 are always valid.
+                sp0 = grid.ibasis.data[1, v]
+                sp0.b .= view(grid.spectral, r1:r2, v)
+                SAtransform!(sp0)
+                if dr == 0; SItransform(sp0,   θ_vec, view(spline_vals, :, z_b, 1))
+                elseif dr == 1; SIxtransform(sp0,  θ_vec, view(spline_vals, :, z_b, 1))
+                else;           SIxxtransform(sp0, θ_vec, view(spline_vals, :, z_b, 1)); end
+
+                for k in 1:kDim_wn
+                    p  = (k - 1) * 2            # SLZ/RLZ convention: p = (k-1)*2
+                    p1 = r2 + 1 + p * b_iDim;  p2 = p1 + b_iDim - 1
+                    spc = grid.ibasis.data[2, v]
+                    spc.b .= view(grid.spectral, p1:p2, v)
+                    SAtransform!(spc)
+                    if dr == 0; SItransform(spc,   θ_vec, view(spline_vals, :, z_b, 2k))
+                    elseif dr == 1; SIxtransform(spc,  θ_vec, view(spline_vals, :, z_b, 2k))
+                    else;           SIxxtransform(spc, θ_vec, view(spline_vals, :, z_b, 2k)); end
+
+                    p1 = p2 + 1;  p2 = p1 + b_iDim - 1
+                    sps = grid.ibasis.data[3, v]
+                    sps.b .= view(grid.spectral, p1:p2, v)
+                    SAtransform!(sps)
+                    if dr == 0; SItransform(sps,   θ_vec, view(spline_vals, :, z_b, 2k + 1))
+                    elseif dr == 1; SIxtransform(sps,  θ_vec, view(spline_vals, :, z_b, 2k + 1))
+                    else;           SIxxtransform(sps, θ_vec, view(spline_vals, :, z_b, 2k + 1)); end
+                end
+            end
+
+            # ── Steps 2 & 3: Fourier sum + Chebyshev evaluation ──────────────
+            for dl in 0:2
+                if dr > 0 && dl > 0; continue; end   # no mixed θ-λ cross-derivatives
+
+                # NOTE: Fourier B-coefficients use FFTW R2HC convention where k≥1
+                # amplitudes are half the physical-space amplitude.
+                fourier_b = zeros(Float64, n_θ, n_λ, b_kDim)
+                for ti in 1:n_θ
+                    for j in 1:n_λ
+                        λ = λ_vec[j]
+                        for z_b in 1:b_kDim
+                            val = (dl == 0) ? spline_vals[ti, z_b, 1] : 0.0
+                            for k in 1:kDim_wn
+                                rc = spline_vals[ti, z_b, 2k]
+                                rs = spline_vals[ti, z_b, 2k + 1]
+                                ck = cos(k * λ);  sk = sin(k * λ)
+                                if dl == 0
+                                    val += 2.0 * (rc * ck + rs * sk)
+                                elseif dl == 1
+                                    val += 2.0 * k * (-rc * sk + rs * ck)
+                                else
+                                    val -= 2.0 * k^2 * (rc * ck + rs * sk)
+                                end
+                            end
+                            fourier_b[ti, j, z_b] = val
+                        end
+                    end
+                end
+
+                cheb_col = grid.kbasis.data[v]
+                for ti in 1:n_θ
+                    for j in 1:n_λ
+                        for z_b in 1:b_kDim
+                            cheb_col.b[z_b] = fourier_b[ti, j, z_b]
+                        end
+                        CAtransform!(cheb_col)
+                        flat = (ti - 1) * n_λ * n_z + (j - 1) * n_z + 1
+                        out  = view(physical, flat:flat + n_z - 1, v, :)
+                        if dr == 0 && dl == 0
+                            _cheb_eval_pts!(cheb_col, z_vec, view(out, :, 1))
+                            _cheb_dz_pts!(cheb_col,   z_vec, view(out, :, 6))
+                            _cheb_dzz_pts!(cheb_col,  z_vec, view(out, :, 7))
+                        elseif dr == 0 && dl == 1
+                            _cheb_eval_pts!(cheb_col, z_vec, view(out, :, 4))
+                        elseif dr == 0 && dl == 2
+                            _cheb_eval_pts!(cheb_col, z_vec, view(out, :, 5))
+                        elseif dr == 1
+                            _cheb_eval_pts!(cheb_col, z_vec, view(out, :, 2))
+                        else
+                            _cheb_eval_pts!(cheb_col, z_vec, view(out, :, 3))
+                        end
+                    end
+                end
+            end   # dl
+        end   # dr
+    end   # v
+
+    return physical
+end
+
+function regularGridTransform(grid::_SLZGrid, gridpoints::AbstractMatrix{Float64})
+    θ_pts = sort(unique(gridpoints[:, 1]))
+    λ_pts = sort(unique(gridpoints[:, 2]))
+    z_pts = sort(unique(gridpoints[:, 3]))
+    return regularGridTransform(grid, θ_pts, λ_pts, z_pts)
 end

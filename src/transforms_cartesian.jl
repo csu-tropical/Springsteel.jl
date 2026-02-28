@@ -1,6 +1,9 @@
 # transforms_cartesian.jl — Spectral ↔ physical transforms for Cartesian SpringsteelGrids
 #
-# Phase 3: 1D Cartesian (SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+# Covers:
+#   • 1D Cartesian (SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+#   • 2D Cartesian (Spline×Spline = RR_Grid, and Spline×Chebyshev = RZ_Grid)
+#   • 3D Cartesian (Spline×Spline×Spline = RRR_Grid)
 #
 # Provides:
 #   • getGridpoints          — physical mish-point locations
@@ -31,7 +34,7 @@ All variables share the same radial domain, so the mish-points from the first
 variable's `Spline1D` object are returned as the canonical gridpoint array.
 
 # Arguments
-- `grid`: A 1-D Cartesian [`SpringsteelGrid`](@ref) (type alias `R_Grid` once Phase 10 activates).
+- `grid`: A 1-D Cartesian [`SpringsteelGrid`](@ref) (type alias [`R_Grid`](@ref)).
 
 # Returns
 A `Vector{Float64}` of length `grid.params.iDim` containing the Gaussian quadrature
@@ -303,7 +306,7 @@ function gridTransform!(grid::_1DCartesianGrid)
 end
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase 4 — 2D Cartesian Transforms
+# 2D Cartesian Transforms
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Type aliases for brevity ──────────────────────────────────────────────
@@ -686,7 +689,7 @@ function gridTransform!(grid::_2DCartesianRZ)
 end
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase 6 — 3D Cartesian Transforms  (Spline×Spline×Spline = RRR)
+# 3D Cartesian Transforms  (Spline×Spline×Spline = RRR)
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Type alias for brevity ──────────────────────────────────────────────────

@@ -14,16 +14,34 @@
 """
     parse_geometry(geometry::String) -> Tuple
 
-    parse_geometry("R")        -> (CartesianGeometry(),   SplineBasisType(), NoBasisType(),      NoBasisType())
-    parse_geometry("Spline1D") -> (CartesianGeometry(),   SplineBasisType(), NoBasisType(),      NoBasisType())
-    parse_geometry("RZ")       -> (CartesianGeometry(),   SplineBasisType(), NoBasisType(),      ChebyshevBasisType())
-    parse_geometry("RL")       -> (CylindricalGeometry(), SplineBasisType(), FourierBasisType(), NoBasisType())
-    parse_geometry("RR")       -> (CartesianGeometry(),   SplineBasisType(), SplineBasisType(),  NoBasisType())
-    parse_geometry("Spline2D") -> (CartesianGeometry(),   SplineBasisType(), SplineBasisType(),  NoBasisType())
-    parse_geometry("RLZ")      -> (CylindricalGeometry(), SplineBasisType(), FourierBasisType(), ChebyshevBasisType())
-    parse_geometry("RRR")      -> (CartesianGeometry(),   SplineBasisType(), SplineBasisType(),  SplineBasisType())
-    parse_geometry("SL")       -> (SphericalGeometry(),   SplineBasisType(), FourierBasisType(), NoBasisType())
-    parse_geometry("SLZ")      -> (SphericalGeometry(),   SplineBasisType(), FourierBasisType(), ChebyshevBasisType())
+    parse_geometry("R")             -> (CartesianGeometry(),   SplineBasisType(),    NoBasisType(),        NoBasisType())
+    parse_geometry("Spline1D")      -> (CartesianGeometry(),   SplineBasisType(),    NoBasisType(),        NoBasisType())
+    parse_geometry("RZ")            -> (CartesianGeometry(),   SplineBasisType(),    NoBasisType(),        ChebyshevBasisType())
+    parse_geometry("RL")            -> (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType())
+    parse_geometry("Polar")         -> (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType())  # alias for RL
+    parse_geometry("RR")            -> (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    NoBasisType())
+    parse_geometry("Spline2D")      -> (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    NoBasisType())
+    parse_geometry("RLZ")           -> (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType())
+    parse_geometry("Cylindrical")   -> (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType())  # alias for RLZ
+    parse_geometry("RRR")           -> (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    SplineBasisType())
+    parse_geometry("Spline3D")      -> (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    SplineBasisType())  # alias for RRR
+    parse_geometry("Samurai")       -> (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    SplineBasisType())  # alias for RRR
+    parse_geometry("SL")            -> (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   NoBasisType())
+    parse_geometry("SphericalShell")-> (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   NoBasisType())  # alias for SL
+    parse_geometry("SLZ")           -> (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType())
+    parse_geometry("Sphere")        -> (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType())  # alias for SLZ
+    parse_geometry("L")             -> (CartesianGeometry(),   FourierBasisType(),   NoBasisType(),        NoBasisType())
+    parse_geometry("Ring1D")        -> (CartesianGeometry(),   FourierBasisType(),   NoBasisType(),        NoBasisType())  # alias for L
+    parse_geometry("LL")            -> (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   NoBasisType())
+    parse_geometry("Ring2D")        -> (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   NoBasisType())  # alias for LL
+    parse_geometry("LLZ")           -> (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   ChebyshevBasisType())
+    parse_geometry("DoublyPeriodic")-> (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   ChebyshevBasisType())  # alias for LLZ
+    parse_geometry("Z")             -> (CartesianGeometry(),   ChebyshevBasisType(), NoBasisType(),        NoBasisType())
+    parse_geometry("Column1D")      -> (CartesianGeometry(),   ChebyshevBasisType(), NoBasisType(),        NoBasisType())  # alias for Z
+    parse_geometry("ZZ")            -> (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), NoBasisType())
+    parse_geometry("Column2D")      -> (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), NoBasisType())  # alias for ZZ
+    parse_geometry("ZZZ")           -> (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), ChebyshevBasisType())
+    parse_geometry("Column3D")      -> (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), ChebyshevBasisType())  # alias for ZZZ
 
 Map a geometry string to a 4-tuple of sentinel type instances `(G, It, Jt, Kt)` used as
 type parameters of [`SpringsteelGrid`](@ref):
@@ -33,8 +51,12 @@ type parameters of [`SpringsteelGrid`](@ref):
 - `Kt` — k-dimension basis sentinel or `NoBasisType`
 
 # Arguments
-- `geometry::String`: Geometry identifier. Valid values: `"R"`, `"Spline1D"`, `"RZ"`, `"RL"`,
-  `"RR"`, `"Spline2D"`, `"RLZ"`, `"RRR"`, `"SL"`, `"SLZ"`.
+- `geometry::String`: Canonical geometry identifiers: `"R"`, `"Spline1D"`, `"RZ"`, `"RL"`,
+  `"RR"`, `"Spline2D"`, `"RLZ"`, `"RRR"`, `"SL"`, `"SLZ"`,
+  `"L"`, `"LL"`, `"LLZ"`, `"Z"`, `"ZZ"`, `"ZZZ"`.
+  Descriptive aliases: `"Polar"`, `"Cylindrical"`, `"Spline3D"`, `"Samurai"`,
+  `"SphericalShell"`, `"Sphere"`, `"Ring1D"`, `"Ring2D"`, `"DoublyPeriodic"`,
+  `"Column1D"`, `"Column2D"`, `"Column3D"`.
 
 # Returns
 A `Tuple{AbstractGeometry, AbstractBasisType, AbstractBasisType, AbstractBasisType}` of
@@ -54,21 +76,74 @@ See also: [`SpringsteelGrid`](@ref), [`createGrid`](@ref)
 """
 function parse_geometry(geometry::String)
     mapping = Dict(
-        "R"       => (CartesianGeometry(),   SplineBasisType(), NoBasisType(),      NoBasisType()),
-        "Spline1D"=> (CartesianGeometry(),   SplineBasisType(), NoBasisType(),      NoBasisType()),
-        "RZ"      => (CartesianGeometry(),   SplineBasisType(), NoBasisType(),      ChebyshevBasisType()),
-        "RL"      => (CylindricalGeometry(), SplineBasisType(), FourierBasisType(), NoBasisType()),
-        "RR"      => (CartesianGeometry(),   SplineBasisType(), SplineBasisType(),  NoBasisType()),
-        "Spline2D"=> (CartesianGeometry(),   SplineBasisType(), SplineBasisType(),  NoBasisType()),
-        "RLZ"     => (CylindricalGeometry(), SplineBasisType(), FourierBasisType(), ChebyshevBasisType()),
-        "RRR"     => (CartesianGeometry(),   SplineBasisType(), SplineBasisType(),  SplineBasisType()),
-        "SL"      => (SphericalGeometry(),   SplineBasisType(), FourierBasisType(), NoBasisType()),
-        "SLZ"     => (SphericalGeometry(),   SplineBasisType(), FourierBasisType(), ChebyshevBasisType()),
+        # ── Spline-based (original) ──────────────────────────────────────────────
+        "R"            => (CartesianGeometry(),   SplineBasisType(),    NoBasisType(),        NoBasisType()),
+        "Spline1D"     => (CartesianGeometry(),   SplineBasisType(),    NoBasisType(),        NoBasisType()),
+        "RZ"           => (CartesianGeometry(),   SplineBasisType(),    NoBasisType(),        ChebyshevBasisType()),
+        "RL"           => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType()),
+        "Polar"        => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType()),
+        "RR"           => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    NoBasisType()),
+        "Spline2D"     => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    NoBasisType()),
+        "RLZ"          => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
+        "Cylindrical"  => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
+        "RRR"          => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    SplineBasisType()),
+        "Spline3D"     => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    SplineBasisType()),
+        "Samurai"      => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    SplineBasisType()),
+        "SL"           => (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   NoBasisType()),
+        "SphericalShell" => (SphericalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType()),
+        "SLZ"          => (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
+        "Sphere"       => (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
+        # ── Fourier-based ────────────────────────────────────────────────────────
+        "L"            => (CartesianGeometry(),   FourierBasisType(),   NoBasisType(),        NoBasisType()),
+        "Ring1D"       => (CartesianGeometry(),   FourierBasisType(),   NoBasisType(),        NoBasisType()),
+        "Fourier1D"    => (CartesianGeometry(),   FourierBasisType(),   NoBasisType(),        NoBasisType()),
+        "LL"           => (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   NoBasisType()),
+        "Ring2D"       => (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   NoBasisType()),
+        "Fourier2D"    => (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   NoBasisType()),
+        "LLZ"          => (CartesianGeometry(),   FourierBasisType(),   FourierBasisType(),   ChebyshevBasisType()),
+        "DoublyPeriodic" => (CartesianGeometry(), FourierBasisType(),   FourierBasisType(),   ChebyshevBasisType()),
+        # ── Chebyshev-based ──────────────────────────────────────────────────────
+        "Z"            => (CartesianGeometry(),   ChebyshevBasisType(), NoBasisType(),        NoBasisType()),
+        "Column1D"     => (CartesianGeometry(),   ChebyshevBasisType(), NoBasisType(),        NoBasisType()),
+        "Chebyshev1D"  => (CartesianGeometry(),   ChebyshevBasisType(), NoBasisType(),        NoBasisType()),
+        "ZZ"           => (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), NoBasisType()),
+        "Column2D"     => (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), NoBasisType()),
+        "Chebyshev2D"  => (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), NoBasisType()),
+        "ZZZ"          => (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), ChebyshevBasisType()),
+        "Column3D"     => (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), ChebyshevBasisType()),
+        "Chebyshev3D"  => (CartesianGeometry(),   ChebyshevBasisType(), ChebyshevBasisType(), ChebyshevBasisType()),
     )
     haskey(mapping, geometry) ||
         throw(DomainError(geometry, "Unknown geometry for SpringsteelGrid: $geometry"))
     return mapping[geometry]
 end
+
+# ────────────────────────────────────────────────────────────────────────────
+# Geometry alias normalisation
+# ────────────────────────────────────────────────────────────────────────────
+
+# Maps alias strings to their canonical geometry name used in createGrid
+# and compute_derived_params dispatch.
+const _GEOMETRY_ALIASES = Dict{String,String}(
+    # ── Spline grid: descriptive name → canonical code ────────────────────────
+    "Polar"          => "RL",
+    "Cylindrical"    => "RLZ",
+    "Spline3D"       => "RRR",
+    "Samurai"        => "RRR",
+    "SphericalShell" => "SL",
+    "Sphere"         => "SLZ",
+    # ── Fourier grid: descriptive name → canonical code ──────────────────────
+    "Ring1D"         => "L",
+    "Ring2D"         => "LL",
+    "DoublyPeriodic" => "LLZ",
+    # ── Chebyshev grid: descriptive name → canonical code ────────────────────
+    "Column1D"       => "Z",
+    "Column2D"       => "ZZ",
+    "Column3D"       => "ZZZ",
+)
+
+"""Return the canonical geometry name, resolving any alias."""
+_normalize_geometry(g::String) = get(_GEOMETRY_ALIASES, g, g)
 
 # ────────────────────────────────────────────────────────────────────────────
 # Internal dimension helpers
@@ -207,7 +282,7 @@ domain-aspect-ratio-dependent j/k dimensions require recomputation.
 See also: [`parse_geometry`](@ref), [`createGrid`](@ref)
 """
 function compute_derived_params(gp::SpringsteelGridParameters)
-    geom = gp.geometry
+    geom = _normalize_geometry(gp.geometry)
 
     if geom in ("R", "Spline1D", "RZ")
         return gp   # nothing to derive
@@ -228,6 +303,14 @@ function compute_derived_params(gp::SpringsteelGridParameters)
         jDim, b_jDim = _cartesian_j_dims(gp)
         kDim, b_kDim = _cartesian_k_dims(gp)
         return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
+
+    # Fourier-based (user supplies iDim/b_iDim/jDim/b_jDim/kDim/b_kDim directly)
+    elseif geom in ("L", "LL", "LLZ")
+        return gp
+
+    # Chebyshev-based (user supplies iDim/b_iDim/jDim/b_jDim/kDim/b_kDim directly)
+    elseif geom in ("Z", "ZZ", "ZZZ")
+        return gp
 
     else
         return gp
@@ -527,7 +610,13 @@ function _create_spherical_2d_sl(gp::SpringsteelGridParameters)
     jbasis  = FourierBasisArray(rings)
     kbasis  = NoBasisArray()
 
-    spectral = zeros(Float64, gp.b_jDim, nvars)
+    # Spectral layout: wavenumber-interleaved uniform blocks of b_iDim coefficients.
+    # Total rows = b_iDim * (1 + 2*kDim) where kDim = iDim + patchOffsetL.
+    # (Using b_jDim — the sum of per-ring Fourier modes — would under-allocate for
+    # tiles near the poles where b_jDim < b_iDim*(1+2*kDim).)
+    kDim_fourier = gp.iDim + gp.patchOffsetL
+    spec_dim     = gp.b_iDim * (1 + 2 * kDim_fourier)
+    spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, gp.jDim, nvars, 5)
 
     grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}(
@@ -603,6 +692,224 @@ function _create_spherical_3d_slz(gp::SpringsteelGridParameters)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
+# Fourier-based and Chebyshev-based creation functions
+# ────────────────────────────────────────────────────────────────────────────
+
+# Helper: kmax for Fourier i-dimension (use max_wavenumber or derive from b_iDim)
+@inline function _fourier_kmax_i(gp::SpringsteelGridParameters, key)
+    kmax = get(gp.max_wavenumber, key, get(gp.max_wavenumber, "default", -1))
+    kmax < 0 && (kmax = (gp.b_iDim - 1) ÷ 2)
+    return kmax
+end
+
+# Helper: kmax for Fourier j-dimension
+@inline function _fourier_kmax_j(gp::SpringsteelGridParameters, key)
+    kmax = get(gp.max_wavenumber, string(key, "_j"), get(gp.max_wavenumber, "default", -1))
+    kmax < 0 && (kmax = (gp.b_jDim - 1) ÷ 2)
+    return kmax
+end
+
+# 1D Cartesian Fourier (L; aliases: Ring1D)
+function _create_cartesian_1d_fourier(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    rings   = Array{Fourier1D}(undef, nvars)
+    ibasis  = FourierBasisArray(rings)
+    jbasis  = NoBasisArray()
+    kbasis  = NoBasisArray()
+    spectral = zeros(Float64, gp.b_iDim, nvars)
+    physical = zeros(Float64, gp.iDim, nvars, 3)
+
+    grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, NoBasisArray, NoBasisArray}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    for key in keys(gp.vars)
+        v      = gp.vars[key]
+        kmax_i = _fourier_kmax_i(gp, key)
+        grid.ibasis.data[v] = Fourier1D(FourierParameters(
+            ymin = gp.iMin,
+            yDim = gp.iDim,
+            kmax = kmax_i,
+            bDim = 2 * kmax_i + 1))
+    end
+    return grid
+end
+
+# 2D Cartesian Fourier×Fourier (LL; aliases: Ring2D)
+function _create_cartesian_2d_fourier2d(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    i_rings = Array{Fourier1D}(undef, nvars)
+    j_rings = Array{Fourier1D}(undef, nvars)
+    ibasis  = FourierBasisArray(i_rings)
+    jbasis  = FourierBasisArray(j_rings)
+    kbasis  = NoBasisArray()
+    spectral = zeros(Float64, gp.b_iDim * gp.b_jDim, nvars)
+    physical = zeros(Float64, gp.iDim * gp.jDim, nvars, 5)
+
+    grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, NoBasisArray}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    for key in keys(gp.vars)
+        v      = gp.vars[key]
+        kmax_i = _fourier_kmax_i(gp, key)
+        kmax_j = _fourier_kmax_j(gp, key)
+        grid.ibasis.data[v] = Fourier1D(FourierParameters(
+            ymin = gp.iMin,
+            yDim = gp.iDim,
+            kmax = kmax_i,
+            bDim = 2 * kmax_i + 1))
+        grid.jbasis.data[v] = Fourier1D(FourierParameters(
+            ymin = gp.jMin,
+            yDim = gp.jDim,
+            kmax = kmax_j,
+            bDim = 2 * kmax_j + 1))
+    end
+    return grid
+end
+
+# 3D Cartesian Fourier×Fourier×Chebyshev (LLZ; aliases: DoublyPeriodic)
+function _create_cartesian_3d_doublyperiodic(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    i_rings = Array{Fourier1D}(undef, nvars)
+    j_rings = Array{Fourier1D}(undef, nvars)
+    columns = Array{Chebyshev1D}(undef, nvars)
+    ibasis  = FourierBasisArray(i_rings)
+    jbasis  = FourierBasisArray(j_rings)
+    kbasis  = ChebyshevBasisArray(columns)
+    spectral = zeros(Float64, gp.b_iDim * gp.b_jDim * gp.b_kDim, nvars)
+    physical = zeros(Float64, gp.iDim * gp.jDim * gp.kDim, nvars, 7)
+
+    grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, ChebyshevBasisArray}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    for key in keys(gp.vars)
+        v      = gp.vars[key]
+        kmax_i = _fourier_kmax_i(gp, key)
+        kmax_j = _fourier_kmax_j(gp, key)
+        grid.ibasis.data[v] = Fourier1D(FourierParameters(
+            ymin = gp.iMin,
+            yDim = gp.iDim,
+            kmax = kmax_i,
+            bDim = 2 * kmax_i + 1))
+        grid.jbasis.data[v] = Fourier1D(FourierParameters(
+            ymin = gp.jMin,
+            yDim = gp.jDim,
+            kmax = kmax_j,
+            bDim = 2 * kmax_j + 1))
+        grid.kbasis.data[v] = Chebyshev1D(ChebyshevParameters(
+            zmin = gp.kMin,
+            zmax = gp.kMax,
+            zDim = gp.kDim,
+            bDim = gp.b_kDim,
+            BCB  = gp.BCB[key],
+            BCT  = gp.BCT[key]))
+    end
+    return grid
+end
+
+# 1D Cartesian Chebyshev (Z; aliases: Column1D)
+# BCL/BCR map to bottom/top (zmin/zmax) boundary conditions.
+function _create_cartesian_1d_chebyshev(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    columns = Array{Chebyshev1D}(undef, nvars)
+    ibasis  = ChebyshevBasisArray(columns)
+    jbasis  = NoBasisArray()
+    kbasis  = NoBasisArray()
+    spectral = zeros(Float64, gp.b_iDim, nvars)
+    physical = zeros(Float64, gp.iDim, nvars, 3)
+
+    grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, NoBasisArray, NoBasisArray}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    for key in keys(gp.vars)
+        v = gp.vars[key]
+        grid.ibasis.data[v] = Chebyshev1D(ChebyshevParameters(
+            zmin = gp.iMin,
+            zmax = gp.iMax,
+            zDim = gp.iDim,
+            bDim = gp.b_iDim,
+            BCB  = gp.BCL[key],
+            BCT  = gp.BCR[key]))
+    end
+    return grid
+end
+
+# 2D Cartesian Chebyshev×Chebyshev (ZZ; aliases: Column2D)
+# i-dim BCs from BCL/BCR; j-dim BCs from BCU/BCD.
+function _create_cartesian_2d_chebyshev2d(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    # b_jDim i-columns per j spectral mode
+    i_cols  = Array{Chebyshev1D}(undef, gp.b_jDim, nvars)
+    j_cols  = Array{Chebyshev1D}(undef, nvars)
+    ibasis  = ChebyshevBasisArray(i_cols)
+    jbasis  = ChebyshevBasisArray(j_cols)
+    kbasis  = NoBasisArray()
+    spectral = zeros(Float64, gp.b_iDim * gp.b_jDim, nvars)
+    physical = zeros(Float64, gp.iDim * gp.jDim, nvars, 5)
+
+    grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, NoBasisArray}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    for key in keys(gp.vars)
+        v = gp.vars[key]
+        for j in 1:gp.b_jDim
+            grid.ibasis.data[j, v] = Chebyshev1D(ChebyshevParameters(
+                zmin = gp.iMin,
+                zmax = gp.iMax,
+                zDim = gp.iDim,
+                bDim = gp.b_iDim,
+                BCB  = gp.BCL[key],
+                BCT  = gp.BCR[key]))
+        end
+        grid.jbasis.data[v] = Chebyshev1D(ChebyshevParameters(
+            zmin = gp.jMin,
+            zmax = gp.jMax,
+            zDim = gp.jDim,
+            bDim = gp.b_jDim,
+            BCB  = gp.BCU[key],
+            BCT  = gp.BCD[key]))
+    end
+    return grid
+end
+
+# 3D Cartesian Chebyshev×Chebyshev×Chebyshev (ZZZ; aliases: Column3D)
+# i-dim BCs from BCL/BCR; j-dim from BCU/BCD; k-dim from BCB/BCT.
+function _create_cartesian_3d_chebyshev3d(gp::SpringsteelGridParameters)
+    nvars  = length(values(gp.vars))
+    i_cols = Array{Chebyshev1D}(undef, gp.b_jDim, gp.b_kDim, nvars)
+    j_cols = Array{Chebyshev1D}(undef, gp.b_kDim, nvars)
+    k_cols = Array{Chebyshev1D}(undef, nvars)
+    ibasis = ChebyshevBasisArray(i_cols)
+    jbasis = ChebyshevBasisArray(j_cols)
+    kbasis = ChebyshevBasisArray(k_cols)
+    spectral = zeros(Float64, gp.b_iDim * gp.b_jDim * gp.b_kDim, nvars)
+    physical = zeros(Float64, gp.iDim * gp.jDim * gp.kDim, nvars, 7)
+
+    grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, ChebyshevBasisArray}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    for key in keys(gp.vars)
+        v = gp.vars[key]
+        for j in 1:gp.b_jDim, z in 1:gp.b_kDim
+            grid.ibasis.data[j, z, v] = Chebyshev1D(ChebyshevParameters(
+                zmin = gp.iMin, zmax = gp.iMax,
+                zDim = gp.iDim, bDim = gp.b_iDim,
+                BCB  = gp.BCL[key], BCT = gp.BCR[key]))
+        end
+        for z in 1:gp.b_kDim
+            grid.jbasis.data[z, v] = Chebyshev1D(ChebyshevParameters(
+                zmin = gp.jMin, zmax = gp.jMax,
+                zDim = gp.jDim, bDim = gp.b_jDim,
+                BCB  = gp.BCU[key], BCT = gp.BCD[key]))
+        end
+        grid.kbasis.data[v] = Chebyshev1D(ChebyshevParameters(
+            zmin = gp.kMin, zmax = gp.kMax,
+            zDim = gp.kDim, bDim = gp.b_kDim,
+            BCB  = gp.BCB[key], BCT = gp.BCT[key]))
+    end
+    return grid
+end
+
+# ────────────────────────────────────────────────────────────────────────────
 # Unified public factory
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -643,8 +950,7 @@ gp = SpringsteelGridParameters(
     BCR = Dict("u" => CubicBSpline.R0))
 
 grid = createGrid(gp)
-# typeof(grid) == RL_Grid (once Phase 10 activates the alias)
-# typeof(grid) == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+# typeof(grid) == RL_Grid (a type alias for SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
 ```
 
 See also: [`SpringsteelGridParameters`](@ref), [`parse_geometry`](@ref),
@@ -652,8 +958,9 @@ See also: [`SpringsteelGridParameters`](@ref), [`parse_geometry`](@ref),
 """
 function createGrid(gp::SpringsteelGridParameters)
     gp_final = compute_derived_params(gp)
-    geom     = gp_final.geometry
+    geom     = _normalize_geometry(gp_final.geometry)
 
+    # ── Spline-based ─────────────────────────────────────────────────────────────
     if geom in ("R", "Spline1D")
         return _create_cartesian_1d(gp_final)
     elseif geom == "RZ"
@@ -670,6 +977,20 @@ function createGrid(gp::SpringsteelGridParameters)
         return _create_spherical_2d_sl(gp_final)
     elseif geom == "SLZ"
         return _create_spherical_3d_slz(gp_final)
+    # ── Fourier-based (canonical: L, LL, LLZ) ───────────────────────────────────
+    elseif geom == "L"
+        return _create_cartesian_1d_fourier(gp_final)
+    elseif geom == "LL"
+        return _create_cartesian_2d_fourier2d(gp_final)
+    elseif geom == "LLZ"
+        return _create_cartesian_3d_doublyperiodic(gp_final)
+    # ── Chebyshev-based (canonical: Z, ZZ, ZZZ) ─────────────────────────────────
+    elseif geom == "Z"
+        return _create_cartesian_1d_chebyshev(gp_final)
+    elseif geom == "ZZ"
+        return _create_cartesian_2d_chebyshev2d(gp_final)
+    elseif geom == "ZZZ"
+        return _create_cartesian_3d_chebyshev3d(gp_final)
     else
         throw(DomainError(gp.geometry,
             "Unknown geometry for SpringsteelGrid: $(gp.geometry)"))

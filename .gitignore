@@ -1,7 +1,9 @@
 src/.ipynb_checkpoints
+notebooks/.ipynb_checkpoints
 .DS_Store
 Manifest.toml
 docs/build/
+*.bk
 
 # Act (local GitHub Actions testing)
 .secrets

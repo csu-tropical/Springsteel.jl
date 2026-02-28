@@ -44,18 +44,26 @@ export sumSpectralTile!, setSpectralTile!, getBorderSpectral, sumSharedSpectral
 export spectralTransform!, splineTransform!, tileTransform!, gridTransform!
 export regularGridTransform, getRegularGridpoints
 
-# New Phase-1 type system exports
+# Unified type system exports
 export AbstractGeometry, CartesianGeometry, CylindricalGeometry, SphericalGeometry
 export AbstractBasisType, SplineBasisType, FourierBasisType, ChebyshevBasisType, NoBasisType
 export SplineBasisArray, FourierBasisArray, ChebyshevBasisArray, NoBasisArray
 export SL_Grid, SLZ_Grid
 export R_Grid, RL_Grid, RZ_Grid, RR_Grid, RLZ_Grid, RRR_Grid, Spline1D_Grid, Spline2D_Grid
+# Geometry-name aliases for spline grids
+export Polar_Grid, Cylindrical_Grid, Spline3D_Grid, Samurai_Grid, SphericalShell_Grid, Sphere_Grid
+# Fourier-based grids: canonical L / LL / LLZ, descriptive Ring1D / Ring2D / DoublyPeriodic
+export L_Grid, LL_Grid, LLZ_Grid
+export Ring1D_Grid, Ring2D_Grid, DoublyPeriodic_Grid
+# Chebyshev-based grids: canonical Z / ZZ / ZZZ, descriptive Column1D / Column2D / Column3D
+export Z_Grid, ZZ_Grid, ZZZ_Grid
+export Column1D_Grid, Column2D_Grid, Column3D_Grid
 
-# Phase 2 exports
+# Factory exports
 export parse_geometry, compute_derived_params, convert_to_springsteel_params
 export num_deriv_slots
 
-# New Phase-1 basis interface exports
+# Basis interface exports
 export gridpoints, spectral_dim, physical_dim
 
 """
@@ -216,28 +224,28 @@ Base.@kwdef struct SpringsteelGridParameters
     k_regular_out::int = kDim + 1
 end
 
-# ── New unified type system (Phase 1) ────────────────────────────────────────
+# ── Unified type system ────────────────────────────────────────────────────────────
 # Must be included after SpringsteelGridParameters (used as field type in SpringsteelGrid)
 include("types.jl")
 include("basis_interface.jl")
 
-# ── Phase 2: grid factory ─────────────────────────────────────────────────────
+# ── Grid factory ──────────────────────────────────────────────────────────────────
 # Must be included after types.jl (uses geometry/basis sentinel types)
 include("factory.jl")
 # deprecated.jl included below (after GridParameters is defined)
 
-# ── Phase 3: 1D Cartesian transforms ─────────────────────────────────────────
-# Must be included after factory.jl (uses _1DCartesianGrid alias → SpringsteelGrid{...})
+# ── Cartesian and Cylindrical/Spherical transforms ───────────────────────────
+# Must be included after factory.jl (uses _RLGrid and related aliases)
 include("transforms_cartesian.jl")
 
-# ── Phase 5: 2D Cylindrical transforms ───────────────────────────────────────
+
 # Must be included after factory.jl (uses _RLGrid alias → SpringsteelGrid{...})
 include("transforms_cylindrical.jl")
 
 # Must be included after transforms_cylindrical.jl (shares spectral layout conventions)
 include("transforms_spherical.jl")
 
-# ── Phase 8a: 1D Tiling ──────────────────────────────────────────────────────
+# ── 1D Tiling ───────────────────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses num_columns from Cylindrical/Spherical files)
 include("tiling.jl")
 

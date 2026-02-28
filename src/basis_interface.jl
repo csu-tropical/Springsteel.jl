@@ -50,7 +50,7 @@ gridpoints(obj::Chebyshev.Chebyshev1D) = obj.mishPoints
 """
     spectral_dim(obj) -> Int
 
-    spectral_dim(obj::CubicBSpline.Spline1D)   -> obj.bDim
+    spectral_dim(obj::CubicBSpline.Spline1D)   -> obj.params.bDim
     spectral_dim(obj::Fourier.Fourier1D)        -> obj.params.bDim
     spectral_dim(obj::Chebyshev.Chebyshev1D)   -> obj.params.bDim
 
@@ -73,7 +73,7 @@ nb = spectral_dim(grid.ibasis.data[var])   # number of spline coefficients
 
 See also: [`physical_dim`](@ref), [`gridpoints`](@ref)
 """
-spectral_dim(obj::CubicBSpline.Spline1D)  = obj.bDim          # direct field
+spectral_dim(obj::CubicBSpline.Spline1D)  = obj.params.bDim   # via params
 spectral_dim(obj::Fourier.Fourier1D)      = obj.params.bDim   # via params
 spectral_dim(obj::Chebyshev.Chebyshev1D) = obj.params.bDim   # via params
 
@@ -84,7 +84,7 @@ spectral_dim(obj::Chebyshev.Chebyshev1D) = obj.params.bDim   # via params
 """
     physical_dim(obj) -> Int
 
-    physical_dim(obj::CubicBSpline.Spline1D)   -> obj.mishDim
+    physical_dim(obj::CubicBSpline.Spline1D)   -> obj.params.mishDim
     physical_dim(obj::Fourier.Fourier1D)        -> obj.params.yDim
     physical_dim(obj::Chebyshev.Chebyshev1D)   -> obj.params.zDim
 
@@ -107,6 +107,6 @@ np = physical_dim(grid.ibasis.data[var])   # number of radial gridpoints
 
 See also: [`spectral_dim`](@ref), [`gridpoints`](@ref)
 """
-physical_dim(obj::CubicBSpline.Spline1D)  = obj.mishDim        # direct field
-physical_dim(obj::Fourier.Fourier1D)      = obj.params.yDim   # via params
-physical_dim(obj::Chebyshev.Chebyshev1D) = obj.params.zDim   # via params
+physical_dim(obj::CubicBSpline.Spline1D)  = obj.params.mishDim  # via params
+physical_dim(obj::Fourier.Fourier1D)      = obj.params.yDim     # via params
+physical_dim(obj::Chebyshev.Chebyshev1D) = obj.params.zDim     # via params

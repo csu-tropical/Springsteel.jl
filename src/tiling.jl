@@ -1,6 +1,6 @@
 # tiling.jl — 1-D tiling (i-dimension) for SpringsteelGrid
 #
-# Phase 8a: generic i-dimension tiling for all geometry types.
+# Generic i-dimension tiling for all geometry types.
 #
 # Provides:
 #   • calcTileSizes     — split a patch into tile sub-grids (Cartesian, Cylindrical, Spherical, fallback)
@@ -19,7 +19,7 @@
 #   transforms_cylindrical.jl, and transforms_spherical.jl.
 #
 # ────────────────────────────────────────────────────────────────────────────────
-# CONCURRENCY WARNINGS (see REFACTORING_PLAN.md §13.3):
+# CONCURRENCY WARNINGS (see Developer Notes for full details):
 #
 #   RACE-1: sumSharedSpectral writes to SharedArray halo zones non-atomically.
 #            Callers must serialize halo-zone writes across workers.
@@ -569,6 +569,42 @@ function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArr
     return map_arr
 end
 
+# SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
+function calcPatchMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
+                       tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    kDim        = tile.params.iDim + tile.params.patchOffsetL
+    siL         = tile.params.spectralIndexL
+    patchStride = patch.params.b_iDim
+    tileShare   = tile.params.b_iDim - 4   # inner rows (excluding 3-row halo)
+
+    map_arr = spzeros(Float64, n, nvars)
+
+    # Wavenumber 0
+    p2 = siL + tileShare
+    if p2 <= n
+        map_arr[siL:p2, :] .= 1.0
+    end
+
+    for k in 1:kDim
+        i = k * 2
+        # Real part
+        p1 = ((i-1)*patchStride) + siL
+        p2 = p1 + tileShare
+        if p1 >= 1 && p2 <= n
+            map_arr[p1:p2, :] .= 1.0
+        end
+        # Imaginary part
+        p1 = (i*patchStride) + siL
+        p2 = p1 + tileShare
+        if p1 >= 1 && p2 <= n
+            map_arr[p1:p2, :] .= 1.0
+        end
+    end
+    return map_arr
+end
+
 # Generic fallback (1-D slice approach for any unspecialized SpringsteelGrid)
 function calcPatchMap(patch::SpringsteelGrid, tile::SpringsteelGrid)
     n          = size(patch.spectral, 1)
@@ -594,7 +630,7 @@ of `tile1` within the `patch` spectral array.
 
 The halo rows `spectralIndexR-2 : spectralIndexR` of `tile1` overlap with the first 3
 spectral rows contributed by the adjacent `tile2`.  These rows must be **summed** (not
-exclusively written) during distributed transforms.  See REFACTORING_PLAN.md §13.3 TRAP-2
+exclusively written) during distributed transforms.  See Developer Notes §TRAP-2
 for the off-by-one derivation (`-4` vs `-3`).
 
 For cylindrical/spherical grids the same 3-row halo applies independently to every
@@ -664,6 +700,41 @@ function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArra
     return map_arr
 end
 
+# SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
+function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
+                      tile1::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
+                      tile2::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    kDim        = tile1.params.iDim + tile1.params.patchOffsetL
+    siL         = tile1.params.spectralIndexL
+    patchStride = patch.params.b_iDim
+    tileShare   = tile1.params.b_iDim - 3   # first halo index within tile block
+
+    map_arr = spzeros(Float64, n, nvars)
+
+    # Wavenumber 0 halo (3 rows)
+    p1 = siL + tileShare
+    if p1 >= 1 && p1+2 <= n
+        map_arr[p1:p1+2, :] .= 1.0
+    end
+
+    for k in 1:kDim
+        i = k * 2
+        # Real part halo
+        p1 = ((i-1)*patchStride) + siL + tileShare
+        if p1 >= 1 && p1+2 <= n
+            map_arr[p1:p1+2, :] .= 1.0
+        end
+        # Imaginary part halo
+        p1 = (i*patchStride) + siL + tileShare
+        if p1 >= 1 && p1+2 <= n
+            map_arr[p1:p1+2, :] .= 1.0
+        end
+    end
+    return map_arr
+end
+
 # Generic fallback (1-D halo approach)
 function calcHaloMap(patch::SpringsteelGrid, tile1::SpringsteelGrid, tile2::SpringsteelGrid)
     n     = size(patch.spectral, 1)
@@ -701,7 +772,7 @@ spectral array is consistent.
 
 # Concurrency note
 Do NOT call this function concurrently from multiple threads/processes writing to
-overlapping spectral rows. See REFACTORING_PLAN.md §13.3 RACE-1.
+overlapping spectral rows. See RACE-1 in Developer Notes.
 
 See also: [`setSpectralTile!`](@ref), [`sumSharedSpectral`](@ref)
 """
@@ -738,7 +809,32 @@ function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasi
     return patch.spectral
 end
 
-# Generic fallback (all other Cartesian grid types, Spherical, etc.)
+# SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
+function sumSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+    kDim = tile.params.iDim + tile.params.patchOffsetL
+    siL  = tile.params.spectralIndexL
+    siR  = tile.params.spectralIndexR
+
+    # Wavenumber 0 block
+    patch.spectral[siL:siR, :] .+= tile.spectral[1:tile.params.b_iDim, :]
+
+    for k in 1:kDim
+        p = k * 2
+        t = k * 2
+        # Real part
+        pp1 = ((p-1)*patch.params.b_iDim) + siL
+        tp1 = ((t-1)*tile.params.b_iDim) + 1
+        patch.spectral[pp1:pp1+tile.params.b_iDim-1, :] .+= tile.spectral[tp1:tp1+tile.params.b_iDim-1, :]
+        # Imaginary part
+        pp1 = (p*patch.params.b_iDim) + siL
+        tp1 = (t*tile.params.b_iDim) + 1
+        patch.spectral[pp1:pp1+tile.params.b_iDim-1, :] .+= tile.spectral[tp1:tp1+tile.params.b_iDim-1, :]
+    end
+    return patch.spectral
+end
+
+# Generic fallback (all other Cartesian grid types, Spherical+Chebyshev, etc.)
 function sumSpectralTile!(patch::SpringsteelGrid, tile::SpringsteelGrid)
     siL = tile.params.spectralIndexL
     siR = tile.params.spectralIndexR
@@ -798,7 +894,33 @@ function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasi
     return patch.spectral
 end
 
-# Generic fallback
+# SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
+function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+    patch.spectral[:] .= 0.0
+    kDim = tile.params.iDim + tile.params.patchOffsetL
+    siL  = tile.params.spectralIndexL
+    siR  = tile.params.spectralIndexR
+
+    # Wavenumber 0 block
+    patch.spectral[siL:siR, :] .= tile.spectral[1:tile.params.b_iDim, :]
+
+    for k in 1:kDim
+        p = k * 2
+        t = k * 2
+        # Real part
+        pp1 = ((p-1)*patch.params.b_iDim) + siL
+        tp1 = ((t-1)*tile.params.b_iDim) + 1
+        patch.spectral[pp1:pp1+tile.params.b_iDim-1, :] .= tile.spectral[tp1:tp1+tile.params.b_iDim-1, :]
+        # Imaginary part
+        pp1 = (p*patch.params.b_iDim) + siL
+        tp1 = (t*tile.params.b_iDim) + 1
+        patch.spectral[pp1:pp1+tile.params.b_iDim-1, :] .= tile.spectral[tp1:tp1+tile.params.b_iDim-1, :]
+    end
+    return patch.spectral
+end
+
+# Generic fallback (SLZ, RLZ, etc.)
 function setSpectralTile!(patch::SpringsteelGrid, tile::SpringsteelGrid)
     patch.spectral[:] .= 0.0
     siL = tile.params.spectralIndexL
@@ -910,7 +1032,7 @@ Populates:
 # Thread safety (RACE-2)
 Safe to parallelise over variables `v` because `ibasis.data[1, v]` and
 `physical[:, v, :]` are fully independent per `v`.  Do **not** share basis objects
-across variables without reviewing this invariant (see REFACTORING_PLAN.md §13.3 RACE-2).
+across variables without reviewing this invariant. See RACE-2 in Developer Notes.
 
 # Arguments
 - `sharedSpectral::SharedArray{Float64}`: Shared memory (not used directly; included for API uniformity)
@@ -935,7 +1057,7 @@ function tileTransform!(sharedSpectral::SharedArray{real},
 end
 
 # ════════════════════════════════════════════════════════════════════════════
-# Phase 10: Convenience wrappers / backward-compat helpers
+# Convenience wrappers / backward-compat helpers
 # ════════════════════════════════════════════════════════════════════════════
 
 """
@@ -1051,7 +1173,7 @@ function setSpectralTile(dest::Array{real}, patchParams::SpringsteelGridParamete
 end
 
 # ════════════════════════════════════════════════════════════════════════════
-# Phase 8b: Multi-Dimensional Tiling
+# Multi-Dimensional Tiling
 # ════════════════════════════════════════════════════════════════════════════
 #
 # Extends tiling to Cartesian Spline×Spline (RR) and Spline×Spline×Spline
@@ -1452,7 +1574,7 @@ with nonzero value 1.0 at each halo (row, var) entry.
 
 Corner halos (where two or three tiled dimensions overlap) require calling this function
 per face and intersecting the results — or using dedicated corner-halo logic for
-performance.  See REFACTORING_PLAN.md §6 for the full multi-dim halo design.
+performance.  See Developer Notes §12 (Multi-Dimensional Tiling) for the full multi-dim halo design.
 
 # Arguments
 - `patch`: Full-domain patch grid (provides spectral layout)

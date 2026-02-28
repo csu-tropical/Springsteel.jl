@@ -4,10 +4,10 @@ using LinearAlgebra
 using FFTW
 
 export ChebyshevParameters, Chebyshev1D
-export CBtransform, CBtransform!, CAtransform!, CItransform!
+export CBtransform, CBtransform!, CAtransform, CAtransform!, CItransform!
 export CBxtransform, CIxtransform, CIxxtransform, CIInttransform
 # Generic (no-prefix) wrappers for abstract 1D basis dispatch
-export Btransform!, Atransform!, Itransform!
+export Btransform, Btransform!, Atransform, Atransform!, Itransform, Itransform!
 export Ixtransform, Ixxtransform, IInttransform
 
 #Define some convenient aliases
@@ -349,6 +349,7 @@ end
 
 """
     CAtransform(cp::ChebyshevParameters, gammaBC, b::Vector{Float64}) -> Vector{Float64}
+    CAtransform(column::Chebyshev1D, b::AbstractVector) -> Vector{Float64}
     CAtransform!(column::Chebyshev1D)
 
 Apply boundary conditions and zero-pad B-coefficients to produce A-coefficients.
@@ -362,11 +363,12 @@ operator handles both vector and matrix `gammaBC` transparently.
 The resulting `a` has length `zDim` and is ready for the inverse DCT in [`CItransform`](@ref).
 
 # Variants
-- `CAtransform(cp, gammaBC, b)` — allocates and returns `a`
+- `CAtransform(cp, gammaBC, b)` — allocates; requires explicit `gammaBC` (low-level form)
+- `CAtransform(column, b)` — allocates using the `column`'s cached `gammaBC`
 - `CAtransform!(column)` — in-place; reads `column.b`, writes `column.a`
 
 # Returns
-- `Vector{Float64}`: BC-corrected A-coefficients of length `zDim` (allocating variant)
+- `Vector{Float64}`: BC-corrected A-coefficients of length `zDim` (allocating variants)
 
 See also: [`CBtransform`](@ref), [`CItransform`](@ref)
 """
@@ -376,6 +378,11 @@ function CAtransform(cp::ChebyshevParameters, gammaBC, b::Vector{real})
     bfill = [b ; zeros(Float64, cp.zDim-cp.bDim)]
     a = bfill .+ (gammaBC' * bfill)
     return a
+end
+
+function CAtransform(column::Chebyshev1D, b::AbstractVector)
+    bfill = [b ; zeros(Float64, column.params.zDim - length(b))]
+    return bfill .+ (column.gammaBC' * bfill)
 end
 
 function CAtransform!(column::Chebyshev1D)
@@ -536,6 +543,7 @@ end
 """
     CIxtransform(cp::ChebyshevParameters, fftPlan, a::Vector{Float64}, ax::Vector{Float64}) -> Vector{Float64}
     CIxtransform(column::Chebyshev1D) -> Vector{Float64}
+    CIxtransform(column::Chebyshev1D, ux::AbstractVector) -> AbstractVector
 
 Evaluate the **first vertical derivative** ``\\partial u / \\partial z`` in physical space.
 
@@ -544,7 +552,8 @@ then performs an inverse DCT-I.
 
 # Variants
 - `CIxtransform(cp, fftPlan, a, ax)` — allocates a new output vector; `ax` is overwritten
-- `CIxtransform(column)` — convenience form using the cached `column` internals
+- `CIxtransform(column)` — allocates; convenience form using the cached `column` internals
+- `CIxtransform(column, ux)` — writes into pre-allocated `ux` buffer and returns it
 
 # Returns
 - `Vector{Float64}`: First-derivative values of length `zDim`
@@ -562,6 +571,11 @@ function CIxtransform(column::Chebyshev1D)
 
     # Do the inverse transform to get back the first derivative in physical space
     ux = CIxtransform(column.params, column.fftPlan, column.a, column.ax)
+    return ux
+end
+
+function CIxtransform(column::Chebyshev1D, ux::AbstractVector)
+    ux .= CIxtransform(column.params, column.fftPlan, column.a, column.ax)
     return ux
 end
 
@@ -1189,8 +1203,14 @@ end
 # without needing to know the underlying basis type.
 # ---------------------------------------------------------------------------
 
+"""Generic B-transform wrapper for `Chebyshev1D` (allocating). Delegates to [`CBtransform`](@ref)."""
+Btransform(column::Chebyshev1D, uMish::Vector{real}) = CBtransform(column, uMish)
+
 """Generic in-place B-transform wrapper for `Chebyshev1D`. Delegates to `CBtransform!`."""
 Btransform!(column::Chebyshev1D) = CBtransform!(column)
+
+"""Generic A-transform wrapper for `Chebyshev1D` (allocating). Delegates to [`CAtransform`](@ref)."""
+Atransform(column::Chebyshev1D, b::AbstractVector) = CAtransform(column, b)
 
 """Generic in-place A-transform wrapper for `Chebyshev1D`. Delegates to `CAtransform!`."""
 Atransform!(column::Chebyshev1D) = CAtransform!(column)
@@ -1198,8 +1218,17 @@ Atransform!(column::Chebyshev1D) = CAtransform!(column)
 """Generic in-place I-transform wrapper for `Chebyshev1D`. Delegates to `CItransform!`."""
 Itransform!(column::Chebyshev1D) = CItransform!(column)
 
+"""Generic I-transform wrapper for `Chebyshev1D` (in-place output). Performs inverse DCT from `column.a` and writes into `u`."""
+function Itransform(column::Chebyshev1D, u::AbstractVector)
+    u .= column.fftPlan * column.a
+    return u
+end
+
 """Generic Ix-transform wrapper for `Chebyshev1D` (allocating). Delegates to [`CIxtransform`](@ref)."""
 Ixtransform(column::Chebyshev1D) = CIxtransform(column)
+
+"""Generic Ix-transform wrapper for `Chebyshev1D` (in-place output). Delegates to [`CIxtransform`](@ref)."""
+Ixtransform(column::Chebyshev1D, ux::AbstractVector) = CIxtransform(column, ux)
 
 """Generic Ixx-transform wrapper for `Chebyshev1D` (allocating). Delegates to [`CIxxtransform`](@ref)."""
 Ixxtransform(column::Chebyshev1D) = CIxxtransform(column)

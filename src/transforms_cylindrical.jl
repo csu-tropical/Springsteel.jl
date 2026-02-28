@@ -1,6 +1,8 @@
 # transforms_cylindrical.jl — Spectral ↔ physical transforms for Cylindrical SpringsteelGrids
 #
-# Phase 5: 2D Cylindrical (SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+# Covers:
+#   • 2D Cylindrical (Spline×Fourier = RL_Grid)
+#   • 3D Cylindrical (Spline×Fourier×Chebyshev = RLZ_Grid)
 #
 # Provides:
 #   • getGridpoints          — (r, λ) physical gridpoint pairs
@@ -133,8 +135,10 @@ spectral[2k*b_iDim+1 : (2k+1)*b_iDim, v] — wavenumber k, imaginary part
 `kDim = iDim + patchOffsetL` is the largest wavenumber that has at least one
 ring that can represent it.
 
-⚠️ The offset formula is `p = k*2` for RL (NOT `(k-1)*2`), matching the
-existing `RL_Grid` implementation.  See REFACTORING_PLAN.md §13.2 TRAP-1.
+⚠️ The offset formula is `p = k*2` for RL (NOT `(k-1)*2`).  The 2-D (RL) and
+3-D (RLZ) layouts use different offset formulas because they were developed
+independently: RL counts from the absolute array start, while RLZ counts from
+the end of the k=0 block within each z-level.  See Developer Notes §TRAP-1.
 
 # Arguments
 - `grid`: A cylindrical [`SpringsteelGrid`](@ref) with `CylindricalGeometry`.
@@ -376,7 +380,7 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
 end
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase 6 — 3D Cylindrical Transforms  (Spline×Fourier×Chebyshev = RLZ)
+# 3D Cylindrical Transforms  (Spline×Fourier×Chebyshev = RLZ)
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Type alias for brevity ────────────────────────────────────────────────────
@@ -465,7 +469,7 @@ spectral[(z-1)*b_iDim*(1+kDim_wn*2) + b_iDim + (k-1)*2*b_iDim + b_iDim + 1]  —
 ```
 where `kDim_wn = iDim + patchOffsetL`.
 
-⚠️ RLZ uses `p = (k-1)*2` for k ≥ 1 (unlike RL which uses `k*2`).  See §13.2 TRAP-1.
+⚠️ RLZ uses `p = (k-1)*2` for k ≥ 1 (unlike RL which uses `k*2`).  See Developer Notes §TRAP-1.
 
 See also: [`gridTransform!`](@ref)
 """
@@ -536,7 +540,7 @@ function spectralTransform(grid::_RLZGrid, physical::Array{real}, spectral::Arra
                 SBtransform!(grid.ibasis.data[2, v])
                 SBtransform!(grid.ibasis.data[3, v])
 
-                # RLZ convention: p = (k-1)*2  (NOT k*2 — see TRAP-1 in §13.2)
+                # RLZ convention: p = (k-1)*2  (NOT k*2 — see Developer Notes §TRAP-1)
                 p  = (k - 1) * 2
                 p1 = r2 + 1 + (p * b_iDim)
                 p2 = p1 + b_iDim - 1

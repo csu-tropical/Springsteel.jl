@@ -7,7 +7,7 @@
 #   • SpringsteelGrid{G,I,J,K} unified parametric struct
 #   • num_deriv_slots dispatch
 #   • New type aliases (SL_Grid, SLZ_Grid)
-#   • Commented-out aliases for existing grid types (activated in Phase 10)
+#   • Backward-compatible type aliases for all legacy grid names
 
 # ────────────────────────────────────────────────────────────────────────────
 # Geometry sentinel types
@@ -310,7 +310,7 @@ See also: [`SL_Grid`](@ref), [`RLZ_Grid`](@ref), [`SpringsteelGrid`](@ref)
 const SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
 
 # ────────────────────────────────────────────────────────────────────────────
-# Type aliases — BACKWARD-COMPATIBLE old grid names (activated in Phase 10)
+# Type aliases — backward-compatible old grid names
 # Old names → parametric SpringsteelGrid types
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -413,3 +413,117 @@ const RRR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasi
 See also: [`SpringsteelGrid`](@ref)
 """
 const RRR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+
+# ────────────────────────────────────────────────────────────────────────────
+# Type aliases — geometry-name aliases for spline grids
+# ────────────────────────────────────────────────────────────────────────────
+
+"""Alias for [`RL_Grid`](@ref). `geometry = "Polar"`."""
+const Polar_Grid        = RL_Grid
+
+"""Alias for [`RLZ_Grid`](@ref). `geometry = "Cylindrical"`."""
+const Cylindrical_Grid  = RLZ_Grid
+
+"""Alias for [`RRR_Grid`](@ref). `geometry = "Spline3D"` / `"Samurai"`."""
+const Spline3D_Grid     = RRR_Grid
+
+"""Alias for [`RRR_Grid`](@ref). `geometry = "Samurai"` / `"Spline3D"`."""
+const Samurai_Grid      = RRR_Grid
+
+"""Alias for [`SL_Grid`](@ref). `geometry = "SphericalShell"`."""
+const SphericalShell_Grid = SL_Grid
+
+"""Alias for [`SLZ_Grid`](@ref). `geometry = "Sphere"`."""
+const Sphere_Grid       = SLZ_Grid
+
+# ────────────────────────────────────────────────────────────────────────────
+# Type aliases — Fourier-based grids (canonical: L, LL, LLZ)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    L_Grid
+
+1-D purely Fourier grid (`geometry = "L"`).
+
+```julia
+const L_Grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, NoBasisArray, NoBasisArray}
+```
+"""
+const L_Grid    = SpringsteelGrid{CartesianGeometry, FourierBasisArray, NoBasisArray,          NoBasisArray}
+
+"""Alias for [`L_Grid`](@ref). `geometry = "Ring1D"`."""
+const Ring1D_Grid = L_Grid
+
+"""
+    LL_Grid
+
+2-D Fourier×Fourier grid (`geometry = "LL"`).
+
+```julia
+const LL_Grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, NoBasisArray}
+```
+"""
+const LL_Grid   = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray,  NoBasisArray}
+
+"""Alias for [`LL_Grid`](@ref). `geometry = "Ring2D"`."""
+const Ring2D_Grid = LL_Grid
+
+"""
+    LLZ_Grid
+
+3-D Fourier×Fourier×Chebyshev grid (`geometry = "LLZ"`).
+
+```julia
+const LLZ_Grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, ChebyshevBasisArray}
+```
+"""
+const LLZ_Grid           = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, ChebyshevBasisArray}
+
+"""Alias for [`LLZ_Grid`](@ref). `geometry = "DoublyPeriodic"`."""
+const DoublyPeriodic_Grid = LLZ_Grid
+
+# ────────────────────────────────────────────────────────────────────────────
+# Type aliases — Chebyshev-based grids (canonical: Z, ZZ, ZZZ)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    Z_Grid
+
+1-D purely Chebyshev grid (`geometry = "Z"`).
+
+```julia
+const Z_Grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, NoBasisArray, NoBasisArray}
+```
+"""
+const Z_Grid      = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, NoBasisArray,            NoBasisArray}
+
+"""Alias for [`Z_Grid`](@ref). `geometry = "Column1D"`."""
+const Column1D_Grid = Z_Grid
+
+"""
+    ZZ_Grid
+
+2-D Chebyshev×Chebyshev grid (`geometry = "ZZ"`).
+
+```julia
+const ZZ_Grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, NoBasisArray}
+```
+"""
+const ZZ_Grid     = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, NoBasisArray}
+
+"""Alias for [`ZZ_Grid`](@ref). `geometry = "Column2D"`."""
+const Column2D_Grid = ZZ_Grid
+
+"""
+    ZZZ_Grid
+
+3-D Chebyshev×Chebyshev×Chebyshev grid (`geometry = "ZZZ"`).
+
+```julia
+const ZZZ_Grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, ChebyshevBasisArray}
+```
+"""
+const ZZZ_Grid    = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, ChebyshevBasisArray}
+
+"""Alias for [`ZZZ_Grid`](@ref). `geometry = "Column3D"`."""
+const Column3D_Grid = ZZZ_Grid

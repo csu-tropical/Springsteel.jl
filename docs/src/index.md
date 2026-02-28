@@ -107,3 +107,4 @@ gridTransform!(grid)
 - **[Chebyshev](chebyshev.md)** — Chebyshev polynomial basis module
 - **[Testing Guide](testing_guide.md)** — test patterns and conventions
 - **[Documentation Guide](documentation_guide.md)** — docstring standards
+- **[Developer Notes](developer_notes.md)** — architecture invariants, known traps, race-condition rules, spectral array layouts

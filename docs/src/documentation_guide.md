@@ -246,19 +246,18 @@ the half-complex index layout and the in-place mutation of `ax`.
 
 ### 3.1 Boundary Condition Constants
 
-Chebyshev has seven BC constants. Unlike CubicBSpline, the Chebyshev BC dicts use
-**named scalar coefficients** (not derivative-type flags) — the naming follows the
-Ooyama (2002) convention adopted for CubicBSpline:
+Chebyshev has seven BC constants. The naming follows the Ooyama (2002) rank/type
+convention used by `CubicBSpline`, with identical physical meanings:
 
-| Constant | Dict key(s) | Physical meaning |
-|----------|-------------|------------------|
-| `R0` | `"R0"` | Value is zero at boundary (Dirichlet) |
-| `R1T0` | `"α0"` | First derivative is zero (Neumann), bottom/interior method |
-| `R1T1` | `"α1"` | First derivative is zero, global (Wang et al. 1993) method |
-| `R1T2` | `"α2"` | Alternate first-derivative-zero formulation |
-| `R2T10` | `"β1"`, `"β2"` | Combination condition |
-| `R2T20` | `"β1"`, `"β2"` | Alternate rank-2 condition |
-| `R3` | `"R3"` | Not commonly used |
+| Constant | Dict key(s) | Rank | Physical meaning |
+|----------|-------------|:----:|------------------|
+| `R0` | `"R0"` | 0 | No constraint (free boundary) |
+| `R1T0` | `"α0"` | 1 | Zero field value at boundary, ``u(z_0) = 0`` (Dirichlet) |
+| `R1T1` | `"α1"` | 1 | Zero first derivative, ``u'(z_0) = 0`` (Neumann); uses Wang et al. (1993) method |
+| `R1T2` | `"α2"` | 1 | Zero second derivative, ``u''(z_0) = 0`` |
+| `R2T10` | `"β1"`, `"β2"` | 2 | Zero value and zero first derivative, ``u = u' = 0`` |
+| `R2T20` | `"β1"`, `"β2"` | 2 | Zero value and zero second derivative, ``u = u'' = 0`` |
+| `R3` | `"R3"` | 3 | Zero value, first, and second derivative, ``u = u' = u'' = 0`` |
 
 Write one-line docstrings for each, keeping the same style as the Fourier `PERIODIC` example.
 
@@ -301,9 +300,10 @@ the half-open Fourier ring).
 ### 3.4 Internal Setup Functions
 
 **`calcMishPoints(cp::ChebyshevParameters)`**
-- Returns CGL points ordered from `zmax` down to `zmin` (decreasing z) because
-  `cos(0) = 1` → top and `cos(π) = −1` → bottom after the sign/offset transformation.
-  Document this explicitly — callers often expect bottom-to-top ordering and need to reverse.
+- Returns CGL points ordered **from `zmin` up to `zmax`** (increasing z, bottom-to-top)
+  because `scale = -0.5*(zmax-zmin)` (negative) flips the cosine mapping so that
+  `cos(0) = 1` → `zmin` (bottom) and `cos(π) = -1` → `zmax` (top). The returned vector
+  is therefore already in natural bottom-to-top order and does **not** need to be reversed.
 
 **`calcFilterMatrix(cp::ChebyshevParameters)`**
 - Two branches: truncation (`bDim < zDim`) or spectral damping (`bDim == zDim`).
@@ -398,10 +398,14 @@ per variable, because `kmax` and `yDim` vary with radius (larger rings have more
 
 The `physical` array has a **5-element third dimension**:
 - `[:, v, 1]` — field values
-- `[:, v, 2]` — radial derivative ∂/∂r
-- `[:, v, 3]` — azimuthal derivative (1/r) ∂/∂λ
-- `[:, v, 4]` — second radial derivative ∂²/∂r²
-- `[:, v, 5]` — second azimuthal derivative (1/r²) ∂²/∂λ²
+- `[:, v, 2]` — radial derivative ∂f/∂r
+- `[:, v, 3]` — second radial derivative ∂²f/∂r²
+- `[:, v, 4]` — azimuthal derivative ∂f/∂λ
+- `[:, v, 5]` — second azimuthal derivative ∂²f/∂λ²
+
+Note that the stored azimuthal derivatives are the **raw** Fourier derivatives ∂f/∂λ and
+∂²f/∂λ², *not* the geometric (1/r) ∂f/∂λ counterparts. Any 1/r scaling required for
+the physical equations must be applied by the caller.
 
 The spectral array is **1D** (`b_lDim × nvars`) because the combined radial-Fourier spectrum
 is stored in a flattened layout. Document `b_lDim` as the total number of spectral coefficients
@@ -453,8 +457,8 @@ Follow the same docstring patterns as `spline1D_grid.jl`. Note the additional co
   variable. These splines operate in the **transformed spectral-vertical space**, not in
   the original physical vertical coordinates.
 - `columns` has shape `(nvars,)` — one `Chebyshev1D` per variable.
-- `physical` has shape `(zDim * rDim, nvars, 5)` — flattened (z, r) layout with 5 derivative
-  slots: `[value, dr, dz, drr, dzz]`.
+- `physical` has shape `(rDim * zDim, nvars, 5)` — **r-outer, z-inner** flattened layout
+  (index = `(r-1)*zDim + z`) with 5 derivative slots: `[value, ∂f/∂r, ∂²f/∂r², ∂f/∂z, ∂²f/∂z²]`.
 - `spectral` has shape `(b_zDim * b_rDim, nvars)` — flattened 2D spectral layout.
 
 ### 5.2 `create_RZ_Grid` Docstring
