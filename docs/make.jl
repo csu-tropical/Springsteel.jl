@@ -9,7 +9,7 @@ makedocs(;
     sitename="Springsteel.jl",
     warnonly=[:missing_docs, :cross_references],
     format=Documenter.HTML(;
-        canonical="https://mmbell.github.io/Springsteel.jl",
+        canonical="https://csu-tropical.github.io/Springsteel.jl",
         edit_link="main",
         assets=String[],
         prettyurls=get(ENV, "CI", nothing) == "true",
@@ -28,6 +28,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/mmbell/Springsteel.jl",
+    repo="github.com/csu-tropical/Springsteel.jl",
     devbranch="development",
 )
