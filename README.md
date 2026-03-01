@@ -1,7 +1,8 @@
 # Springsteel.jl
 
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://csu-tropical.github.io/Springsteel.jl/dev/)
-[![Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Stable Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Development Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=development)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Adevelopment)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Springsteel is a semi-spectral grid engine that uses a mixture of cubic B-spline, Fourier, and Chebyshev basis functions to represent physical variables and their spatial derivatives. The name comes from an amalgamation of "spectral grid engine" and is the name of a particular type of steel used to make swords and other blades. Things made of [spring steel](https://en.wikipedia.org/wiki/Spring_steel) tend to return to their original shape even after deformation, which is analogous to goals of this software to seamlessly transform between spectral and physical space within a variety of different grid geometries. This package provides the "steel" for the [Scythe.jl](https://github.com/mmbell/Scythe.jl) numerical model and the [Daisho.jl](https://github.com/csu-tropical/Daisho.jl) data analysis and assimilation software. Springsteel currently supports a variety of different grids in 1, 2, or 3 dimensions in Cartesian, cylindrical, or spherical geometry using a mix of cubic B-spline, Fourier, or Chebyshev basis functions.
