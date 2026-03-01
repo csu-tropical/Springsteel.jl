@@ -524,7 +524,13 @@ function _create_cylindrical_2d_rl(gp::SpringsteelGridParameters)
     jbasis  = FourierBasisArray(rings)
     kbasis  = NoBasisArray()
 
-    spectral = zeros(Float64, gp.b_jDim, nvars)
+    # Spectral layout: wavenumber-interleaved uniform blocks of b_iDim coefficients.
+    # Total rows = b_iDim * (1 + 2*kDim) where kDim = iDim + patchOffsetL.
+    # (Using b_jDim — the triangular sum of per-ring Fourier modes — over-allocates
+    # for patches and under-allocates for tiles, producing OOB writes in spectralTransform!.)
+    kDim_fourier = gp.iDim + gp.patchOffsetL
+    spec_dim     = gp.b_iDim * (1 + 2 * kDim_fourier)
+    spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, gp.jDim, nvars, 5)
 
     grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}(

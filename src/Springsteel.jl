@@ -4,7 +4,10 @@ module Springsteel
 abstract type AbstractGrid end
 
 using CSV
+using Dates
 using DataFrames
+using JLD2
+using NCDatasets
 using SharedArrays
 using SparseArrays
 
@@ -38,6 +41,7 @@ export CBxtransform, CIxtransform, CIxxtransform, CIInttransform
 export SplineParameters, Spline1D
 export createGrid, getGridpoints, calcTileSizes
 export read_physical_grid, write_grid, check_grid_dims
+export save_grid, load_grid, write_netcdf, read_netcdf
 export calcPatchMap, calcHaloMap, allocateSplineBuffer, num_columns
 export calcPatchMap_multidim, calcHaloMap_multidim
 export sumSpectralTile!, setSpectralTile!, getBorderSpectral, sumSharedSpectral

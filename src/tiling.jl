@@ -410,6 +410,9 @@ Allocate the spline derivative buffer needed by [`tileTransform!`](@ref) for thi
 | 2-D Spherical (`SL`) | `(iDim, 2, nvars)` | same as Cylindrical |
 | 2-D Cartesian Spline×Spline (`RR`) | `(iDim, b_jDim, nvars)` | j-mode radial evaluations |
 | 2-D Cartesian Spline×Chebyshev (`RZ`) | `(iDim, b_kDim, nvars)` | Chebyshev-mode radial evaluations |
+| 3-D Cartesian Spline×Spline×Spline (`RRR`) | `(iDim, b_jDim, b_kDim, nvars)` | j×k mode radial evaluations |
+| 3-D Cylindrical (`RLZ`) | `(iDim, 3, b_kDim, nvars)` | k=0 / real / imag × Chebyshev levels |
+| 3-D Spherical (`SLZ`) | `(iDim, 3, b_kDim, nvars)` | same as RLZ |
 | All other | `(1,)` trivial | fallback |
 
 # Arguments
@@ -440,7 +443,24 @@ function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, SplineBas
     return zeros(Float64, tile.params.iDim, tile.params.b_kDim, length(tile.params.vars))
 end
 
-# Generic fallback: 3D and any unspecialized tile types
+# 3D Cartesian Spline×Spline×Spline (RRR)
+# Buffer shape matches splineBuffer_r used in gridTransform!: (iDim, b_jDim, b_kDim) per variable.
+function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray})
+    return zeros(Float64, tile.params.iDim, tile.params.b_jDim, tile.params.b_kDim, length(tile.params.vars))
+end
+
+# 3D Cylindrical Spline×Fourier×Chebyshev (RLZ)
+# Buffer shape: (iDim, 3, b_kDim, nvars) — 3 columns per Chebyshev level for k=0, k≥1 real, k≥1 imag.
+function allocateSplineBuffer(tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    return zeros(Float64, tile.params.iDim, 3, tile.params.b_kDim, length(tile.params.vars))
+end
+
+# 3D Spherical Spline×Fourier×Chebyshev (SLZ) — identical layout to RLZ.
+function allocateSplineBuffer(tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    return zeros(Float64, tile.params.iDim, 3, tile.params.b_kDim, length(tile.params.vars))
+end
+
+# Generic fallback: any unspecialized tile types
 function allocateSplineBuffer(tile::SpringsteelGrid)
     return zeros(Float64, 1)
 end
@@ -486,7 +506,75 @@ function getBorderSpectral(grid::SpringsteelGrid{CartesianGeometry, SplineBasisA
     return sparse(border_arr)
 end
 
-# Generic fallback for Cylindrical, Spherical, and multi-D Cartesian grids:
+# CylindricalGeometry 2-D (RL) — extract last-3-row halo from every wavenumber block.
+# Spectral layout mirrors sumSpectralTile!:
+#   k=0   block : tile rows      1 :   b_iDim
+#   k real (p=k*2): tile rows (p-1)*b_iDim+1 : p*b_iDim
+#   k imag (p=k*2): tile rows   p*b_iDim+1   : (p+1)*b_iDim
+# Halo = last 3 rows of each block, stored in tile-internal coordinates.
+# Returns SparseMatrixCSC of size (n, nvars) with nnz = 3*(1+2*kDim)*nvars.
+function getBorderSpectral(grid::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+    n      = size(grid.spectral, 1)
+    nvars  = size(grid.spectral, 2)
+    b_iDim = grid.params.b_iDim
+    kDim   = grid.params.iDim + grid.params.patchOffsetL
+
+    border_arr = zeros(Float64, n, nvars)
+
+    # k=0 block halo
+    if b_iDim >= 3
+        border_arr[b_iDim-2:b_iDim, :] .= grid.spectral[b_iDim-2:b_iDim, :]
+    end
+
+    for k in 1:kDim
+        t = k * 2
+        # Real part block: ends at t*b_iDim
+        te = t * b_iDim
+        if te >= 3 && te <= n
+            border_arr[te-2:te, :] .= grid.spectral[te-2:te, :]
+        end
+        # Imaginary part block: ends at (t+1)*b_iDim
+        te2 = (t + 1) * b_iDim
+        if te2 >= 3 && te2 <= n
+            border_arr[te2-2:te2, :] .= grid.spectral[te2-2:te2, :]
+        end
+    end
+
+    return sparse(border_arr)
+end
+
+# SphericalGeometry 2-D (SL) — identical wavenumber layout to CylindricalGeometry 2-D (RL).
+function getBorderSpectral(grid::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+    n      = size(grid.spectral, 1)
+    nvars  = size(grid.spectral, 2)
+    b_iDim = grid.params.b_iDim
+    kDim   = grid.params.iDim + grid.params.patchOffsetL
+
+    border_arr = zeros(Float64, n, nvars)
+
+    # k=0 block halo
+    if b_iDim >= 3
+        border_arr[b_iDim-2:b_iDim, :] .= grid.spectral[b_iDim-2:b_iDim, :]
+    end
+
+    for k in 1:kDim
+        t = k * 2
+        # Real part block: ends at t*b_iDim
+        te = t * b_iDim
+        if te >= 3 && te <= n
+            border_arr[te-2:te, :] .= grid.spectral[te-2:te, :]
+        end
+        # Imaginary part block: ends at (t+1)*b_iDim
+        te2 = (t + 1) * b_iDim
+        if te2 >= 3 && te2 <= n
+            border_arr[te2-2:te2, :] .= grid.spectral[te2-2:te2, :]
+        end
+    end
+
+    return sparse(border_arr)
+end
+
+# Generic fallback for multi-D Cartesian grids and RLZ/SLZ:
 # return a sparse zero matrix (avoids errors; callers that need halo extraction
 # for full Cylindrical/Spherical tiling should use the specialized variants).
 function getBorderSpectral(grid::SpringsteelGrid)
@@ -600,6 +688,94 @@ function calcPatchMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray
         p2 = p1 + tileShare
         if p1 >= 1 && p2 <= n
             map_arr[p1:p2, :] .= 1.0
+        end
+    end
+    return map_arr
+end
+
+# 3D Cylindrical (RLZ) — z-major, wavenumber-interleaved per z-level.
+# RLZ spectral layout: z-level z_b (1-indexed) base = (z_b-1)*zstride_p (0-indexed),
+# zstride_p = b_iDim_p * (1 + 2*kDim).  RLZ convention: p = (k-1)*2 for k≥1.
+# Inner region per block = first (b_iDim_t - 4) rows (excluding 3-row halo).
+function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                       tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    kDim        = tile.params.iDim + tile.params.patchOffsetL
+    b_kDim      = tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    tileShare   = tile.params.b_iDim - 4  # inner rows per block (excluding 3-row halo)
+
+    map_arr = spzeros(Float64, n, nvars)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+
+        # k=0 block inner region
+        p1 = zp_off + siL
+        p2 = p1 + tileShare - 1
+        if p1 >= 1 && p2 <= n
+            map_arr[p1:p2, :] .= 1.0
+        end
+
+        for k in 1:kDim
+            p = (k - 1) * 2  # RLZ convention
+            # Real part inner region
+            p1 = zp_off + (p+1)*b_iDim_p + siL
+            p2 = p1 + tileShare - 1
+            if p1 >= 1 && p2 <= n
+                map_arr[p1:p2, :] .= 1.0
+            end
+            # Imaginary part inner region
+            p1 = zp_off + (p+2)*b_iDim_p + siL
+            p2 = p1 + tileShare - 1
+            if p1 >= 1 && p2 <= n
+                map_arr[p1:p2, :] .= 1.0
+            end
+        end
+    end
+    return map_arr
+end
+
+# 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
+function calcPatchMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                       tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    kDim        = tile.params.iDim + tile.params.patchOffsetL
+    b_kDim      = tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    tileShare   = tile.params.b_iDim - 4
+
+    map_arr = spzeros(Float64, n, nvars)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+
+        p1 = zp_off + siL
+        p2 = p1 + tileShare - 1
+        if p1 >= 1 && p2 <= n
+            map_arr[p1:p2, :] .= 1.0
+        end
+
+        for k in 1:kDim
+            p = (k - 1) * 2  # SLZ/RLZ convention
+            p1 = zp_off + (p+1)*b_iDim_p + siL
+            p2 = p1 + tileShare - 1
+            if p1 >= 1 && p2 <= n
+                map_arr[p1:p2, :] .= 1.0
+            end
+            p1 = zp_off + (p+2)*b_iDim_p + siL
+            p2 = p1 + tileShare - 1
+            if p1 >= 1 && p2 <= n
+                map_arr[p1:p2, :] .= 1.0
+            end
         end
     end
     return map_arr
@@ -735,6 +911,87 @@ function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray,
     return map_arr
 end
 
+# 3D Cylindrical (RLZ) — 3-row halo from every z-level × wavenumber block.
+function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                      tile1::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                      tile2::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    kDim        = tile1.params.iDim + tile1.params.patchOffsetL
+    b_kDim      = tile1.params.b_kDim
+    siL         = tile1.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    tileShare   = tile1.params.b_iDim - 3  # offset to first halo row within block
+
+    map_arr = spzeros(Float64, n, nvars)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+
+        # k=0 block halo (3 rows)
+        p1 = zp_off + siL + tileShare
+        if p1 >= 1 && p1+2 <= n
+            map_arr[p1:p1+2, :] .= 1.0
+        end
+
+        for k in 1:kDim
+            p = (k - 1) * 2  # RLZ convention
+            # Real part halo
+            p1 = zp_off + (p+1)*b_iDim_p + siL + tileShare
+            if p1 >= 1 && p1+2 <= n
+                map_arr[p1:p1+2, :] .= 1.0
+            end
+            # Imaginary part halo
+            p1 = zp_off + (p+2)*b_iDim_p + siL + tileShare
+            if p1 >= 1 && p1+2 <= n
+                map_arr[p1:p1+2, :] .= 1.0
+            end
+        end
+    end
+    return map_arr
+end
+
+# 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
+function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                      tile1::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                      tile2::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    kDim        = tile1.params.iDim + tile1.params.patchOffsetL
+    b_kDim      = tile1.params.b_kDim
+    siL         = tile1.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    tileShare   = tile1.params.b_iDim - 3
+
+    map_arr = spzeros(Float64, n, nvars)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+
+        p1 = zp_off + siL + tileShare
+        if p1 >= 1 && p1+2 <= n
+            map_arr[p1:p1+2, :] .= 1.0
+        end
+
+        for k in 1:kDim
+            p = (k - 1) * 2  # SLZ/RLZ convention
+            p1 = zp_off + (p+1)*b_iDim_p + siL + tileShare
+            if p1 >= 1 && p1+2 <= n
+                map_arr[p1:p1+2, :] .= 1.0
+            end
+            p1 = zp_off + (p+2)*b_iDim_p + siL + tileShare
+            if p1 >= 1 && p1+2 <= n
+                map_arr[p1:p1+2, :] .= 1.0
+            end
+        end
+    end
+    return map_arr
+end
+
 # Generic fallback (1-D halo approach)
 function calcHaloMap(patch::SpringsteelGrid, tile1::SpringsteelGrid, tile2::SpringsteelGrid)
     n     = size(patch.spectral, 1)
@@ -834,7 +1091,78 @@ function sumSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisA
     return patch.spectral
 end
 
-# Generic fallback (all other Cartesian grid types, Spherical+Chebyshev, etc.)
+# 3D Cylindrical (RLZ) — accumulate all z-level × wavenumber blocks.
+# Uses RLZ spectral layout: z-major with wavenumber-interleaved blocks per z-level.
+# RLZ convention: p = (k-1)*2 for k≥1 within each z-level.
+function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                           tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    kDim        = tile.params.iDim + tile.params.patchOffsetL
+    b_kDim      = tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    b_iDim_t    = tile.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    wn_stride_t = b_iDim_t * (1 + 2 * kDim)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+        zt_off = (z_b - 1) * wn_stride_t
+
+        # k=0 block
+        pp1 = zp_off + siL
+        tp1 = zt_off + 1
+        patch.spectral[pp1:pp1+b_iDim_t-1, :] .+= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+
+        for k in 1:kDim
+            p  = (k - 1) * 2  # RLZ convention
+            # Real part
+            pp1 = zp_off + (p+1)*b_iDim_p + siL
+            tp1 = zt_off + (p+1)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .+= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+            # Imaginary part
+            pp1 = zp_off + (p+2)*b_iDim_p + siL
+            tp1 = zt_off + (p+2)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .+= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+        end
+    end
+    return patch.spectral
+end
+
+# 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
+function sumSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    kDim        = tile.params.iDim + tile.params.patchOffsetL
+    b_kDim      = tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    b_iDim_t    = tile.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    wn_stride_t = b_iDim_t * (1 + 2 * kDim)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+        zt_off = (z_b - 1) * wn_stride_t
+
+        pp1 = zp_off + siL
+        tp1 = zt_off + 1
+        patch.spectral[pp1:pp1+b_iDim_t-1, :] .+= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+
+        for k in 1:kDim
+            p  = (k - 1) * 2  # SLZ/RLZ convention
+            pp1 = zp_off + (p+1)*b_iDim_p + siL
+            tp1 = zt_off + (p+1)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .+= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+            pp1 = zp_off + (p+2)*b_iDim_p + siL
+            tp1 = zt_off + (p+2)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .+= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+        end
+    end
+    return patch.spectral
+end
+
+# Generic fallback (all other Cartesian grid types, etc.)
 function sumSpectralTile!(patch::SpringsteelGrid, tile::SpringsteelGrid)
     siL = tile.params.spectralIndexL
     siR = tile.params.spectralIndexR
@@ -920,7 +1248,78 @@ function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisA
     return patch.spectral
 end
 
-# Generic fallback (SLZ, RLZ, etc.)
+# 3D Cylindrical (RLZ) — zero patch then write all z-level × wavenumber blocks.
+function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                           tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    patch.spectral[:] .= 0.0
+    kDim        = tile.params.iDim + tile.params.patchOffsetL
+    b_kDim      = tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    b_iDim_t    = tile.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    wn_stride_t = b_iDim_t * (1 + 2 * kDim)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+        zt_off = (z_b - 1) * wn_stride_t
+
+        # k=0 block
+        pp1 = zp_off + siL
+        tp1 = zt_off + 1
+        patch.spectral[pp1:pp1+b_iDim_t-1, :] .= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+
+        for k in 1:kDim
+            p  = (k - 1) * 2  # RLZ convention
+            # Real part
+            pp1 = zp_off + (p+1)*b_iDim_p + siL
+            tp1 = zt_off + (p+1)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+            # Imaginary part
+            pp1 = zp_off + (p+2)*b_iDim_p + siL
+            tp1 = zt_off + (p+2)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+        end
+    end
+    return patch.spectral
+end
+
+# 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
+function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+    patch.spectral[:] .= 0.0
+    kDim        = tile.params.iDim + tile.params.patchOffsetL
+    b_kDim      = tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    b_iDim_p    = patch.params.b_iDim
+    b_iDim_t    = tile.params.b_iDim
+    patch_kDim  = patch.params.iDim + patch.params.patchOffsetL
+    wn_stride_p = b_iDim_p * (1 + 2 * patch_kDim)
+    wn_stride_t = b_iDim_t * (1 + 2 * kDim)
+
+    for z_b in 1:b_kDim
+        zp_off = (z_b - 1) * wn_stride_p
+        zt_off = (z_b - 1) * wn_stride_t
+
+        pp1 = zp_off + siL
+        tp1 = zt_off + 1
+        patch.spectral[pp1:pp1+b_iDim_t-1, :] .= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+
+        for k in 1:kDim
+            p  = (k - 1) * 2  # SLZ/RLZ convention
+            pp1 = zp_off + (p+1)*b_iDim_p + siL
+            tp1 = zt_off + (p+1)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+            pp1 = zp_off + (p+2)*b_iDim_p + siL
+            tp1 = zt_off + (p+2)*b_iDim_t + 1
+            patch.spectral[pp1:pp1+b_iDim_t-1, :] .= tile.spectral[tp1:tp1+b_iDim_t-1, :]
+        end
+    end
+    return patch.spectral
+end
+
+# Generic fallback (other grid types)
 function setSpectralTile!(patch::SpringsteelGrid, tile::SpringsteelGrid)
     patch.spectral[:] .= 0.0
     siL = tile.params.spectralIndexL
@@ -1053,6 +1452,788 @@ function tileTransform!(sharedSpectral::SharedArray{real},
         SIxtransform(tile.ibasis.data[1, v],  pts, view(physical, :, v, 2))
         SIxxtransform(tile.ibasis.data[1, v], pts, view(physical, :, v, 3))
     end
+    return physical
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# splineTransform!  (B → A) — 2D Cylindrical (RL)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    splineTransform!(sharedSpectral, tile::_RLGrid) -> Nothing
+
+Apply the SA (B-vector → A-coefficient) transform for all spline blocks in `tile`
+using B-coefficients in `sharedSpectral`.
+
+After this call, `tile.spectral` contains A-coefficients for every wavenumber block
+(k=0, and k=1..kDim real/imaginary pairs), ready for [`tileTransform!`](@ref).
+
+The spectral layout (RL convention, `p = k*2`):
+- k=0 block: rows `1:b_iDim`
+- k real: rows `(p-1)*b_iDim+1 : p*b_iDim`
+- k imag: rows `p*b_iDim+1 : (p+1)*b_iDim`
+
+**Usage note**: designed for single-tile or same-sized patch/tile scenarios.
+For multi-tile workflows with different tile and patch sizes, use the legacy
+5-argument form with explicit patch splines.
+
+# Concurrency warning (RACE-3)
+Reads from `sharedSpectral` (SharedArray).  The caller must ensure that
+`sharedSpectral` is fully populated before invoking this function.
+
+See also: [`tileTransform!`](@ref), [`sumSharedSpectral`](@ref)
+"""
+function splineTransform!(sharedSpectral::SharedArray{real}, tile::_RLGrid)
+    b_iDim = tile.params.b_iDim
+    kDim   = tile.params.iDim + tile.params.patchOffsetL
+    nvars  = length(tile.params.vars)
+
+    for v in 1:nvars
+        # k = 0 block
+        k1 = 1
+        k2 = b_iDim
+        tile.spectral[k1:k2, v] .= SAtransform(tile.ibasis.data[1, v],
+                                                 view(sharedSpectral, k1:k2, v))
+
+        # k >= 1: real and imaginary blocks (RL convention: p = k*2)
+        for k in 1:kDim
+            p  = k * 2
+            p1 = ((p - 1) * b_iDim) + 1
+            p2 = p * b_iDim
+            tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[2, v],
+                                                     view(sharedSpectral, p1:p2, v))
+            p1 = p * b_iDim + 1
+            p2 = (p + 1) * b_iDim
+            tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[3, v],
+                                                     view(sharedSpectral, p1:p2, v))
+        end
+    end
+    return nothing
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# tileTransform!  (A-coefficients → physical) — 2D Cylindrical (RL)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    tileTransform!(sharedSpectral, tile::_RLGrid, physical, spectral) -> Array{Float64}
+
+Evaluate the RL field and its radial/azimuthal derivatives on `tile`'s gridpoints
+using pre-computed A-coefficients in `spectral`.
+
+`spectral` must have been populated by [`splineTransform!`](@ref) (A-coefficient form).
+The SA solve step is **skipped** — spline `.a` fields are set directly from `spectral`.
+
+Populates all 5 physical derivative slots:
+- `physical[:, v, 1]` — field values
+- `physical[:, v, 2]` — ∂f/∂r  (first radial derivative)
+- `physical[:, v, 3]` — ∂²f/∂r²  (second radial derivative)
+- `physical[:, v, 4]` — ∂f/∂λ  (first azimuthal derivative)
+- `physical[:, v, 5]` — ∂²f/∂λ²  (second azimuthal derivative)
+
+See also: [`splineTransform!`](@ref), [`gridTransform!`](@ref)
+"""
+function tileTransform!(sharedSpectral::SharedArray{real},
+                          tile::_RLGrid,
+                          physical::Array{real},
+                          spectral::Array{real})
+    kDim   = tile.params.iDim + tile.params.patchOffsetL
+    b_iDim = tile.params.b_iDim
+    iDim   = tile.params.iDim
+
+    # Buffers for radial-derivative evaluations
+    spline_r  = zeros(Float64, iDim, kDim * 2 + 1)
+    spline_rr = zeros(Float64, iDim, kDim * 2 + 1)
+
+    for v in values(tile.params.vars)
+
+        # ── Wavenumber 0 ─────────────────────────────────────────────────────
+        k1 = 1;  k2 = b_iDim
+        tile.ibasis.data[1, v].a .= spectral[k1:k2, v]  # A-coefficients already computed
+        SItransform!(tile.ibasis.data[1, v])
+        spline_r[:, 1]  .= SIxtransform(tile.ibasis.data[1, v])
+        spline_rr[:, 1] .= SIxxtransform(tile.ibasis.data[1, v])
+        for r in 1:iDim
+            tile.jbasis.data[r, v].b[1] = tile.ibasis.data[1, v].uMish[r]
+        end
+
+        # ── Higher wavenumbers ────────────────────────────────────────────────
+        for k in 1:kDim
+            p  = k * 2   # RL convention: p = k*2
+
+            p1 = ((p - 1) * b_iDim) + 1
+            p2 = p * b_iDim
+            tile.ibasis.data[2, v].a .= spectral[p1:p2, v]
+            SItransform!(tile.ibasis.data[2, v])
+            spline_r[:, p]  .= SIxtransform(tile.ibasis.data[2, v])
+            spline_rr[:, p] .= SIxxtransform(tile.ibasis.data[2, v])
+
+            p1 = p * b_iDim + 1
+            p2 = (p + 1) * b_iDim
+            tile.ibasis.data[3, v].a .= spectral[p1:p2, v]
+            SItransform!(tile.ibasis.data[3, v])
+            spline_r[:, p + 1]  .= SIxtransform(tile.ibasis.data[3, v])
+            spline_rr[:, p + 1] .= SIxxtransform(tile.ibasis.data[3, v])
+
+            for r in 1:iDim
+                if k <= r + tile.params.patchOffsetL
+                    rk = k + 1
+                    ik = tile.jbasis.data[r, v].params.bDim - k + 1
+                    tile.jbasis.data[r, v].b[rk] = tile.ibasis.data[2, v].uMish[r]
+                    tile.jbasis.data[r, v].b[ik] = tile.ibasis.data[3, v].uMish[r]
+                end
+            end
+        end
+
+        # ── Field values and azimuthal derivatives ────────────────────────────
+        l1 = 0;  l2 = 0
+        for r in 1:iDim
+            FAtransform!(tile.jbasis.data[r, v])
+            FItransform!(tile.jbasis.data[r, v])
+            ri = r + tile.params.patchOffsetL
+            l1 = l2 + 1
+            l2 = l1 + 3 + (4 * ri)
+            physical[l1:l2, v, 1] .= tile.jbasis.data[r, v].uMish
+            physical[l1:l2, v, 4] .= FIxtransform(tile.jbasis.data[r, v])
+            physical[l1:l2, v, 5] .= FIxxtransform(tile.jbasis.data[r, v])
+        end
+
+        # ── First radial derivative ∂f/∂r ─────────────────────────────────────
+        for r in 1:iDim
+            tile.jbasis.data[r, v].b[1] = spline_r[r, 1]
+        end
+        for k in 1:kDim
+            p = k * 2
+            for r in 1:iDim
+                if k <= r + tile.params.patchOffsetL
+                    rk = k + 1
+                    ik = tile.jbasis.data[r, v].params.bDim - k + 1
+                    tile.jbasis.data[r, v].b[rk] = spline_r[r, p]
+                    tile.jbasis.data[r, v].b[ik] = spline_r[r, p + 1]
+                end
+            end
+        end
+        l1 = 0;  l2 = 0
+        for r in 1:iDim
+            FAtransform!(tile.jbasis.data[r, v])
+            FItransform!(tile.jbasis.data[r, v])
+            ri = r + tile.params.patchOffsetL
+            l1 = l2 + 1
+            l2 = l1 + 3 + (4 * ri)
+            physical[l1:l2, v, 2] .= tile.jbasis.data[r, v].uMish
+        end
+
+        # ── Second radial derivative ∂²f/∂r² ─────────────────────────────────
+        for r in 1:iDim
+            tile.jbasis.data[r, v].b[1] = spline_rr[r, 1]
+        end
+        for k in 1:kDim
+            p = k * 2
+            for r in 1:iDim
+                if k <= r + tile.params.patchOffsetL
+                    rk = k + 1
+                    ik = tile.jbasis.data[r, v].params.bDim - k + 1
+                    tile.jbasis.data[r, v].b[rk] = spline_rr[r, p]
+                    tile.jbasis.data[r, v].b[ik] = spline_rr[r, p + 1]
+                end
+            end
+        end
+        l1 = 0;  l2 = 0
+        for r in 1:iDim
+            FAtransform!(tile.jbasis.data[r, v])
+            FItransform!(tile.jbasis.data[r, v])
+            ri = r + tile.params.patchOffsetL
+            l1 = l2 + 1
+            l2 = l1 + 3 + (4 * ri)
+            physical[l1:l2, v, 3] .= tile.jbasis.data[r, v].uMish
+        end
+
+    end  # for v
+
+    return physical
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# splineTransform!  (B → A) — 2D Spherical (SL)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    splineTransform!(sharedSpectral, tile::_SLGrid) -> Nothing
+
+Apply the SA (B-vector → A-coefficient) transform for all spline blocks in the 2-D
+spherical (SL) `tile` using B-coefficients in `sharedSpectral`.
+
+Structurally identical to the RL variant; uses `p = k*2` offset convention.
+After this call, `tile.spectral` contains A-coefficients ready for [`tileTransform!`](@ref).
+
+See also: [`tileTransform!`](@ref), [`sumSharedSpectral`](@ref)
+"""
+function splineTransform!(sharedSpectral::SharedArray{real}, tile::_SLGrid)
+    b_iDim = tile.params.b_iDim
+    kDim   = tile.params.iDim + tile.params.patchOffsetL
+    nvars  = length(tile.params.vars)
+
+    for v in 1:nvars
+        # k = 0 block
+        k1 = 1;  k2 = b_iDim
+        tile.spectral[k1:k2, v] .= SAtransform(tile.ibasis.data[1, v],
+                                                 view(sharedSpectral, k1:k2, v))
+
+        # k >= 1: real and imaginary blocks (SL/RL convention: p = k*2)
+        for k in 1:kDim
+            p  = k * 2
+            p1 = ((p - 1) * b_iDim) + 1
+            p2 = p * b_iDim
+            tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[2, v],
+                                                     view(sharedSpectral, p1:p2, v))
+            p1 = p * b_iDim + 1
+            p2 = (p + 1) * b_iDim
+            tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[3, v],
+                                                     view(sharedSpectral, p1:p2, v))
+        end
+    end
+    return nothing
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# tileTransform!  (A-coefficients → physical) — 2D Spherical (SL)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    tileTransform!(sharedSpectral, tile::_SLGrid, physical, spectral) -> Array{Float64}
+
+Evaluate the SL field and its colatitudinal/azimuthal derivatives on `tile`'s
+gridpoints using pre-computed A-coefficients in `spectral`.
+
+Structurally identical to the RL variant with two differences:
+- Ring size: `lpoints = tile.jbasis.data[r, v].params.yDim` (sin(θ)-based)
+- Per-ring kmax: `tile.jbasis.data[r, v].params.kmax` (sin(θ)-based, per-ring cutoff)
+
+Populates all 5 physical derivative slots (values, ∂/∂θ, ∂²/∂θ², ∂/∂λ, ∂²/∂λ²).
+
+See also: [`splineTransform!`](@ref), [`gridTransform!`](@ref)
+"""
+function tileTransform!(sharedSpectral::SharedArray{real},
+                          tile::_SLGrid,
+                          physical::Array{real},
+                          spectral::Array{real})
+    kDim   = tile.params.iDim + tile.params.patchOffsetL
+    b_iDim = tile.params.b_iDim
+    iDim   = tile.params.iDim
+
+    spline_r  = zeros(Float64, iDim, kDim * 2 + 1)
+    spline_rr = zeros(Float64, iDim, kDim * 2 + 1)
+
+    for v in values(tile.params.vars)
+
+        # ── Wavenumber 0 ─────────────────────────────────────────────────────
+        k1 = 1;  k2 = b_iDim
+        tile.ibasis.data[1, v].a .= spectral[k1:k2, v]
+        SItransform!(tile.ibasis.data[1, v])
+        spline_r[:, 1]  .= SIxtransform(tile.ibasis.data[1, v])
+        spline_rr[:, 1] .= SIxxtransform(tile.ibasis.data[1, v])
+        for r in 1:iDim
+            tile.jbasis.data[r, v].b[1] = tile.ibasis.data[1, v].uMish[r]
+        end
+
+        # ── Higher wavenumbers ────────────────────────────────────────────────
+        for k in 1:kDim
+            p  = k * 2   # SL/RL convention: p = k*2
+
+            p1 = ((p - 1) * b_iDim) + 1
+            p2 = p * b_iDim
+            tile.ibasis.data[2, v].a .= spectral[p1:p2, v]
+            SItransform!(tile.ibasis.data[2, v])
+            spline_r[:, p]  .= SIxtransform(tile.ibasis.data[2, v])
+            spline_rr[:, p] .= SIxxtransform(tile.ibasis.data[2, v])
+
+            p1 = p * b_iDim + 1
+            p2 = (p + 1) * b_iDim
+            tile.ibasis.data[3, v].a .= spectral[p1:p2, v]
+            SItransform!(tile.ibasis.data[3, v])
+            spline_r[:, p + 1]  .= SIxtransform(tile.ibasis.data[3, v])
+            spline_rr[:, p + 1] .= SIxxtransform(tile.ibasis.data[3, v])
+
+            for r in 1:iDim
+                # SL check: per-ring kmax (sin(θ)-based)
+                if k <= tile.jbasis.data[r, v].params.kmax
+                    rk = k + 1
+                    ik = tile.jbasis.data[r, v].params.bDim - k + 1
+                    tile.jbasis.data[r, v].b[rk] = tile.ibasis.data[2, v].uMish[r]
+                    tile.jbasis.data[r, v].b[ik] = tile.ibasis.data[3, v].uMish[r]
+                end
+            end
+        end
+
+        # ── Field values and azimuthal derivatives ────────────────────────────
+        l1 = 0;  l2 = 0
+        for r in 1:iDim
+            FAtransform!(tile.jbasis.data[r, v])
+            FItransform!(tile.jbasis.data[r, v])
+            lpoints = tile.jbasis.data[r, v].params.yDim   # SL ring size
+            l1 = l2 + 1
+            l2 = l1 + lpoints - 1
+            physical[l1:l2, v, 1] .= tile.jbasis.data[r, v].uMish
+            physical[l1:l2, v, 4] .= FIxtransform(tile.jbasis.data[r, v])
+            physical[l1:l2, v, 5] .= FIxxtransform(tile.jbasis.data[r, v])
+        end
+
+        # ── First colatitudinal derivative ∂f/∂θ ─────────────────────────────
+        for r in 1:iDim
+            tile.jbasis.data[r, v].b[1] = spline_r[r, 1]
+        end
+        for k in 1:kDim
+            p = k * 2
+            for r in 1:iDim
+                if k <= tile.jbasis.data[r, v].params.kmax
+                    rk = k + 1
+                    ik = tile.jbasis.data[r, v].params.bDim - k + 1
+                    tile.jbasis.data[r, v].b[rk] = spline_r[r, p]
+                    tile.jbasis.data[r, v].b[ik] = spline_r[r, p + 1]
+                end
+            end
+        end
+        l1 = 0;  l2 = 0
+        for r in 1:iDim
+            FAtransform!(tile.jbasis.data[r, v])
+            FItransform!(tile.jbasis.data[r, v])
+            lpoints = tile.jbasis.data[r, v].params.yDim
+            l1 = l2 + 1
+            l2 = l1 + lpoints - 1
+            physical[l1:l2, v, 2] .= tile.jbasis.data[r, v].uMish
+        end
+
+        # ── Second colatitudinal derivative ∂²f/∂θ² ──────────────────────────
+        for r in 1:iDim
+            tile.jbasis.data[r, v].b[1] = spline_rr[r, 1]
+        end
+        for k in 1:kDim
+            p = k * 2
+            for r in 1:iDim
+                if k <= tile.jbasis.data[r, v].params.kmax
+                    rk = k + 1
+                    ik = tile.jbasis.data[r, v].params.bDim - k + 1
+                    tile.jbasis.data[r, v].b[rk] = spline_rr[r, p]
+                    tile.jbasis.data[r, v].b[ik] = spline_rr[r, p + 1]
+                end
+            end
+        end
+        l1 = 0;  l2 = 0
+        for r in 1:iDim
+            FAtransform!(tile.jbasis.data[r, v])
+            FItransform!(tile.jbasis.data[r, v])
+            lpoints = tile.jbasis.data[r, v].params.yDim
+            l1 = l2 + 1
+            l2 = l1 + lpoints - 1
+            physical[l1:l2, v, 3] .= tile.jbasis.data[r, v].uMish
+        end
+
+    end  # for v
+
+    return physical
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# splineTransform!  (B → A) — 3D Cylindrical (RLZ)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    splineTransform!(sharedSpectral, tile::_RLZGrid) -> Nothing
+
+Apply the SA (B-vector → A-coefficient) transform for all spline blocks in the 3-D
+cylindrical (RLZ) `tile` using B-coefficients in `sharedSpectral`.
+
+The spectral layout is z-major with `b_kDim` Chebyshev-coefficient levels.  Within
+each z-level the layout is wavenumber-interleaved (RLZ convention: `p = (k-1)*2`):
+```
+z-level z_b, k=0:     rows r1:r2  where r1 = (z_b-1)*b_iDim*(1+kDim_wn*2)+1
+z-level z_b, k real:  r2+1 + (k-1)*2*b_iDim ... + b_iDim
+z-level z_b, k imag:  r2+1 + (k-1)*2*b_iDim + b_iDim ... + b_iDim
+```
+
+After this call, `tile.spectral` contains A-coefficients ready for [`tileTransform!`](@ref).
+
+See also: [`tileTransform!`](@ref), [`sumSharedSpectral`](@ref)
+"""
+function splineTransform!(sharedSpectral::SharedArray{real}, tile::_RLZGrid)
+    b_iDim  = tile.params.b_iDim
+    b_kDim  = tile.params.b_kDim
+    kDim_wn = tile.params.iDim + tile.params.patchOffsetL
+    nvars   = length(tile.params.vars)
+
+    for v in 1:nvars
+        for z_b in 1:b_kDim
+            r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+            r2 = r1 + b_iDim - 1
+
+            # k = 0 block
+            tile.spectral[r1:r2, v] .= SAtransform(tile.ibasis.data[1, v],
+                                                     view(sharedSpectral, r1:r2, v))
+
+            # k >= 1: real and imaginary (RLZ convention: p = (k-1)*2)
+            for k in 1:kDim_wn
+                p  = (k - 1) * 2
+                p1 = r2 + 1 + (p * b_iDim)
+                p2 = p1 + b_iDim - 1
+                tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[2, v],
+                                                         view(sharedSpectral, p1:p2, v))
+                p1 = p2 + 1
+                p2 = p1 + b_iDim - 1
+                tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[3, v],
+                                                         view(sharedSpectral, p1:p2, v))
+            end
+        end
+    end
+    return nothing
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# tileTransform!  (A-coefficients → physical) — 3D Cylindrical (RLZ)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    tileTransform!(sharedSpectral, tile::_RLZGrid, physical, spectral) -> Array{Float64}
+
+Evaluate the RLZ field and all derivatives on `tile`'s gridpoints using pre-computed
+A-coefficients in `spectral`.
+
+The SA solve step is skipped — spline `.a` fields are set directly.  The function
+mirrors `gridTransform(::_RLZGrid, ...)` but reads A-coefficients instead of B-coefficients.
+
+Populates all 7 physical derivative slots:
+- `physical[:, v, 1]` — field values
+- `physical[:, v, 2]` — ∂f/∂r,  `[:, v, 3]` — ∂²f/∂r²
+- `physical[:, v, 4]` — ∂f/∂λ,  `[:, v, 5]` — ∂²f/∂λ²
+- `physical[:, v, 6]` — ∂f/∂z,  `[:, v, 7]` — ∂²f/∂z²
+
+See also: [`splineTransform!`](@ref), [`gridTransform!`](@ref)
+"""
+function tileTransform!(sharedSpectral::SharedArray{real},
+                          tile::_RLZGrid,
+                          physical::Array{real},
+                          spectral::Array{real})
+    kDim_wn = tile.params.iDim + tile.params.patchOffsetL
+    kDim    = tile.params.kDim
+    b_kDim  = tile.params.b_kDim
+    iDim    = tile.params.iDim
+    b_iDim  = tile.params.b_iDim
+
+    splineBuffer = zeros(Float64, iDim, 3)
+
+    for v in values(tile.params.vars)
+        for dr in 0:2
+
+            # ── Spline + FAtransform stage ────────────────────────────────────
+            for z_b in 1:b_kDim
+                r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+                r2 = r1 + b_iDim - 1
+
+                # k = 0: read A-coefficients directly
+                tile.ibasis.data[1, v].a .= spectral[r1:r2, v]
+                if dr == 0
+                    splineBuffer[:, 1] .= SItransform!(tile.ibasis.data[1, v])
+                elseif dr == 1
+                    splineBuffer[:, 1] .= SIxtransform(tile.ibasis.data[1, v])
+                else
+                    splineBuffer[:, 1] .= SIxxtransform(tile.ibasis.data[1, v])
+                end
+                for r in 1:iDim
+                    tile.jbasis.data[r, z_b].b[1] = splineBuffer[r, 1]
+                end
+
+                # k >= 1 (RLZ convention: p = (k-1)*2)
+                for k in 1:kDim_wn
+                    p  = (k - 1) * 2
+                    p1 = r2 + 1 + (p * b_iDim)
+                    p2 = p1 + b_iDim - 1
+
+                    tile.ibasis.data[2, v].a .= spectral[p1:p2, v]
+                    if dr == 0
+                        splineBuffer[:, 2] .= SItransform!(tile.ibasis.data[2, v])
+                    elseif dr == 1
+                        splineBuffer[:, 2] .= SIxtransform(tile.ibasis.data[2, v])
+                    else
+                        splineBuffer[:, 2] .= SIxxtransform(tile.ibasis.data[2, v])
+                    end
+
+                    p1 = p2 + 1
+                    p2 = p1 + b_iDim - 1
+                    tile.ibasis.data[3, v].a .= spectral[p1:p2, v]
+                    if dr == 0
+                        splineBuffer[:, 3] .= SItransform!(tile.ibasis.data[3, v])
+                    elseif dr == 1
+                        splineBuffer[:, 3] .= SIxtransform(tile.ibasis.data[3, v])
+                    else
+                        splineBuffer[:, 3] .= SIxxtransform(tile.ibasis.data[3, v])
+                    end
+
+                    for r in 1:iDim
+                        if k <= r + tile.params.patchOffsetL
+                            rk = k + 1
+                            ik = tile.jbasis.data[r, z_b].params.bDim - k + 1
+                            tile.jbasis.data[r, z_b].b[rk] = splineBuffer[r, 2]
+                            tile.jbasis.data[r, z_b].b[ik] = splineBuffer[r, 3]
+                        end
+                    end
+                end
+
+                for r in 1:iDim
+                    FAtransform!(tile.jbasis.data[r, z_b])
+                end
+            end  # for z_b
+
+            # ── Fourier + Chebyshev inverse stage ─────────────────────────────
+            zi = 1
+            for r in 1:iDim
+                ri      = r + tile.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                ringBuffer = zeros(Float64, lpoints, b_kDim)
+
+                for dl in 0:2
+                    if dr > 0 && dl > 0
+                        continue
+                    end
+
+                    for z_b in 1:b_kDim
+                        if dr == 0
+                            if dl == 0
+                                ringBuffer[:, z_b] .= FItransform!(tile.jbasis.data[r, z_b])
+                            elseif dl == 1
+                                ringBuffer[:, z_b] .= FIxtransform(tile.jbasis.data[r, z_b])
+                            else
+                                ringBuffer[:, z_b] .= FIxxtransform(tile.jbasis.data[r, z_b])
+                            end
+                        else
+                            ringBuffer[:, z_b] .= FItransform!(tile.jbasis.data[r, z_b])
+                        end
+                    end
+
+                    for l in 1:lpoints
+                        for z_b in 1:b_kDim
+                            tile.kbasis.data[v].b[z_b] = ringBuffer[l, z_b]
+                        end
+                        CAtransform!(tile.kbasis.data[v])
+                        CItransform!(tile.kbasis.data[v])
+
+                        z1 = zi + (l-1)*kDim
+                        z2 = z1 + kDim - 1
+                        if dr == 0 && dl == 0
+                            physical[z1:z2, v, 1] .= tile.kbasis.data[v].uMish
+                            physical[z1:z2, v, 6] .= CIxtransform(tile.kbasis.data[v])
+                            physical[z1:z2, v, 7] .= CIxxtransform(tile.kbasis.data[v])
+                        elseif dr == 0 && dl == 1
+                            physical[z1:z2, v, 4] .= tile.kbasis.data[v].uMish
+                        elseif dr == 0 && dl == 2
+                            physical[z1:z2, v, 5] .= tile.kbasis.data[v].uMish
+                        elseif dr == 1
+                            physical[z1:z2, v, 2] .= tile.kbasis.data[v].uMish
+                        elseif dr == 2
+                            physical[z1:z2, v, 3] .= tile.kbasis.data[v].uMish
+                        end
+                    end
+                end  # for dl
+
+                zi += lpoints * kDim
+            end  # for r
+        end  # for dr
+    end  # for v
+
+    return physical
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# splineTransform!  (B → A) — 3D Spherical (SLZ)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    splineTransform!(sharedSpectral, tile::_SLZGrid) -> Nothing
+
+Apply the SA (B-vector → A-coefficient) transform for all spline blocks in the 3-D
+spherical (SLZ) `tile`.
+
+Layout identical to RLZ: z-major, with `p = (k-1)*2` wavenumber offset convention.
+After this call, `tile.spectral` contains A-coefficients ready for [`tileTransform!`](@ref).
+
+See also: [`tileTransform!`](@ref), [`sumSharedSpectral`](@ref)
+"""
+function splineTransform!(sharedSpectral::SharedArray{real}, tile::_SLZGrid)
+    b_iDim  = tile.params.b_iDim
+    b_kDim  = tile.params.b_kDim
+    kDim_wn = tile.params.iDim + tile.params.patchOffsetL
+    nvars   = length(tile.params.vars)
+
+    for v in 1:nvars
+        for z_b in 1:b_kDim
+            r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+            r2 = r1 + b_iDim - 1
+
+            # k = 0 block
+            tile.spectral[r1:r2, v] .= SAtransform(tile.ibasis.data[1, v],
+                                                     view(sharedSpectral, r1:r2, v))
+
+            # k >= 1: real and imaginary (SLZ/RLZ convention: p = (k-1)*2)
+            for k in 1:kDim_wn
+                p  = (k - 1) * 2
+                p1 = r2 + 1 + (p * b_iDim)
+                p2 = p1 + b_iDim - 1
+                tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[2, v],
+                                                         view(sharedSpectral, p1:p2, v))
+                p1 = p2 + 1
+                p2 = p1 + b_iDim - 1
+                tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[3, v],
+                                                         view(sharedSpectral, p1:p2, v))
+            end
+        end
+    end
+    return nothing
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# tileTransform!  (A-coefficients → physical) — 3D Spherical (SLZ)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    tileTransform!(sharedSpectral, tile::_SLZGrid, physical, spectral) -> Array{Float64}
+
+Evaluate the SLZ field and all derivatives on `tile`'s gridpoints using pre-computed
+A-coefficients in `spectral`.
+
+Structurally identical to the RLZ variant with sin(θ)-based ring sizes:
+- `lpoints = tile.jbasis.data[r, z_b].params.yDim`
+- `k <= tile.jbasis.data[r, z_b].params.kmax` (per-ring kmax check)
+
+Populates all 7 physical derivative slots.
+
+See also: [`splineTransform!`](@ref), [`gridTransform!`](@ref)
+"""
+function tileTransform!(sharedSpectral::SharedArray{real},
+                          tile::_SLZGrid,
+                          physical::Array{real},
+                          spectral::Array{real})
+    kDim_wn = tile.params.iDim + tile.params.patchOffsetL
+    kDim    = tile.params.kDim
+    b_kDim  = tile.params.b_kDim
+    iDim    = tile.params.iDim
+    b_iDim  = tile.params.b_iDim
+
+    splineBuffer = zeros(Float64, iDim, 3)
+
+    for v in values(tile.params.vars)
+        for dr in 0:2
+
+            # ── Spline + FAtransform stage ────────────────────────────────────
+            for z_b in 1:b_kDim
+                r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+                r2 = r1 + b_iDim - 1
+
+                tile.ibasis.data[1, v].a .= spectral[r1:r2, v]
+                if dr == 0
+                    splineBuffer[:, 1] .= SItransform!(tile.ibasis.data[1, v])
+                elseif dr == 1
+                    splineBuffer[:, 1] .= SIxtransform(tile.ibasis.data[1, v])
+                else
+                    splineBuffer[:, 1] .= SIxxtransform(tile.ibasis.data[1, v])
+                end
+                for r in 1:iDim
+                    tile.jbasis.data[r, z_b].b[1] = splineBuffer[r, 1]
+                end
+
+                for k in 1:kDim_wn
+                    p  = (k - 1) * 2
+                    p1 = r2 + 1 + (p * b_iDim)
+                    p2 = p1 + b_iDim - 1
+
+                    tile.ibasis.data[2, v].a .= spectral[p1:p2, v]
+                    if dr == 0
+                        splineBuffer[:, 2] .= SItransform!(tile.ibasis.data[2, v])
+                    elseif dr == 1
+                        splineBuffer[:, 2] .= SIxtransform(tile.ibasis.data[2, v])
+                    else
+                        splineBuffer[:, 2] .= SIxxtransform(tile.ibasis.data[2, v])
+                    end
+
+                    p1 = p2 + 1
+                    p2 = p1 + b_iDim - 1
+                    tile.ibasis.data[3, v].a .= spectral[p1:p2, v]
+                    if dr == 0
+                        splineBuffer[:, 3] .= SItransform!(tile.ibasis.data[3, v])
+                    elseif dr == 1
+                        splineBuffer[:, 3] .= SIxtransform(tile.ibasis.data[3, v])
+                    else
+                        splineBuffer[:, 3] .= SIxxtransform(tile.ibasis.data[3, v])
+                    end
+
+                    for r in 1:iDim
+                        # SLZ check: per-ring kmax (spherical)
+                        if k <= tile.jbasis.data[r, z_b].params.kmax
+                            rk = k + 1
+                            ik = tile.jbasis.data[r, z_b].params.bDim - k + 1
+                            tile.jbasis.data[r, z_b].b[rk] = splineBuffer[r, 2]
+                            tile.jbasis.data[r, z_b].b[ik] = splineBuffer[r, 3]
+                        end
+                    end
+                end
+
+                for r in 1:iDim
+                    FAtransform!(tile.jbasis.data[r, z_b])
+                end
+            end  # for z_b
+
+            # ── Fourier + Chebyshev inverse stage ─────────────────────────────
+            zi = 1
+            for r in 1:iDim
+                lpoints    = tile.jbasis.data[r, 1].params.yDim   # spherical ring size
+                ringBuffer = zeros(Float64, lpoints, b_kDim)
+
+                for dl in 0:2
+                    if dr > 0 && dl > 0
+                        continue
+                    end
+
+                    for z_b in 1:b_kDim
+                        if dr == 0
+                            if dl == 0
+                                ringBuffer[:, z_b] .= FItransform!(tile.jbasis.data[r, z_b])
+                            elseif dl == 1
+                                ringBuffer[:, z_b] .= FIxtransform(tile.jbasis.data[r, z_b])
+                            else
+                                ringBuffer[:, z_b] .= FIxxtransform(tile.jbasis.data[r, z_b])
+                            end
+                        else
+                            ringBuffer[:, z_b] .= FItransform!(tile.jbasis.data[r, z_b])
+                        end
+                    end
+
+                    for l in 1:lpoints
+                        for z_b in 1:b_kDim
+                            tile.kbasis.data[v].b[z_b] = ringBuffer[l, z_b]
+                        end
+                        CAtransform!(tile.kbasis.data[v])
+                        CItransform!(tile.kbasis.data[v])
+
+                        z1 = zi + (l - 1)*kDim
+                        z2 = z1 + kDim - 1
+                        if dr == 0 && dl == 0
+                            physical[z1:z2, v, 1] .= tile.kbasis.data[v].uMish
+                            physical[z1:z2, v, 6] .= CIxtransform(tile.kbasis.data[v])
+                            physical[z1:z2, v, 7] .= CIxxtransform(tile.kbasis.data[v])
+                        elseif dr == 0 && dl == 1
+                            physical[z1:z2, v, 4] .= tile.kbasis.data[v].uMish
+                        elseif dr == 0 && dl == 2
+                            physical[z1:z2, v, 5] .= tile.kbasis.data[v].uMish
+                        elseif dr == 1
+                            physical[z1:z2, v, 2] .= tile.kbasis.data[v].uMish
+                        elseif dr == 2
+                            physical[z1:z2, v, 3] .= tile.kbasis.data[v].uMish
+                        end
+                    end
+                end  # for dl
+
+                zi += lpoints * kDim
+            end  # for r
+        end  # for dr
+    end  # for v
+
     return physical
 end
 

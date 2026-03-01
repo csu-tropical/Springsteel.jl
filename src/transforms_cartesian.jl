@@ -689,6 +689,285 @@ function gridTransform!(grid::_2DCartesianRZ)
 end
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Regular-grid output — 2D Cartesian Spline×Spline (RR)
+# ═══════════════════════════════════════════════════════════════════════════
+
+"""
+    getRegularGridpoints(grid::_2DCartesianRR) -> Matrix{Float64}
+
+Return an `(n_i × n_j, 2)` matrix of uniformly-spaced `(x, y)` coordinates
+for a 2-D Cartesian Spline×Spline (RR) grid.
+
+Unlike [`getGridpoints`](@ref), which returns the unevenly-spaced Gaussian mish
+points, this function returns a regular tensor-product grid for visualisation
+and file I/O.
+
+The output dimensions are controlled by [`SpringsteelGridParameters`](@ref) fields:
+- `i_regular_out` — x-points in `[iMin, iMax]`   (default `num_cells + 1`)
+- `j_regular_out` — y-points in `[jMin, jMax]`   (default `iDim * 2 + 1`)
+
+Points are ordered x-outer, y-inner (y varies fastest), matching
+[`regularGridTransform`](@ref).
+
+See also: [`regularGridTransform`](@ref), [`getGridpoints`](@ref)
+"""
+function getRegularGridpoints(grid::_2DCartesianRR)
+    n_i   = grid.params.i_regular_out
+    n_j   = grid.params.j_regular_out
+    i_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_i))
+    j_pts = collect(LinRange(grid.params.jMin, grid.params.jMax, n_j))
+    pts   = zeros(Float64, n_i * n_j, 2)
+    idx   = 1
+    for i in 1:n_i
+        for j in 1:n_j
+            pts[idx, 1] = i_pts[i]
+            pts[idx, 2] = j_pts[j]
+            idx += 1
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_2DCartesianRR, i_pts, j_pts) -> Array{Float64}
+    regularGridTransform(grid::_2DCartesianRR, gridpoints)   -> Array{Float64}
+
+Evaluate the RR spectral representation on a regular tensor-product `x × y` grid,
+returning field values and all five derivatives.
+
+`grid.spectral` must be populated (call [`spectralTransform!`](@ref) first).
+
+**Algorithm** (two-level tensor-product):
+1. Evaluate i-splines at `i_pts` for all j-modes → buffer `ibuf[n_i, b_jDim]`.
+2. For each `i_out`, set j-spline b-coefficients from `ibuf[i_out, :]`, then
+   evaluate at `j_pts`.
+
+# Returns
+`Array{Float64}` of shape `(n_i × n_j, nvars, 5)` — y varies fastest.  Derivative slots:
+- `[:,:,1]` — `f(x, y)`
+- `[:,:,2]` — `∂f/∂x`
+- `[:,:,3]` — `∂²f/∂x²`
+- `[:,:,4]` — `∂f/∂y`
+- `[:,:,5]` — `∂²f/∂y²`
+
+# Example
+```julia
+spectralTransform!(grid_rr)
+reg_pts  = getRegularGridpoints(grid_rr)
+reg_phys = regularGridTransform(grid_rr, reg_pts)
+```
+
+See also: [`getRegularGridpoints`](@ref), [`gridTransform!`](@ref)
+"""
+function regularGridTransform(grid::_2DCartesianRR,
+                               i_pts::AbstractVector{Float64},
+                               j_pts::AbstractVector{Float64})
+    gp     = grid.params
+    b_iDim = gp.b_iDim
+    b_jDim = gp.b_jDim
+    nvars  = length(gp.vars)
+    n_i    = length(i_pts)
+    n_j    = length(j_pts)
+    i_vec  = collect(Float64, i_pts)
+    j_vec  = collect(Float64, j_pts)
+
+    physical = zeros(Float64, n_i * n_j, nvars, 5)
+
+    for v in values(gp.vars)
+        ibuf = zeros(Float64, n_i, b_jDim)
+        tmp  = zeros(Float64, n_j)
+        for dr in 0:2
+            # Step 1: i-direction spline evaluation at i_pts for each j-mode
+            for l in 1:b_jDim
+                r1 = (l - 1) * b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                sp = grid.ibasis.data[l, v]
+                sp.b .= view(grid.spectral, r1:r2, v)
+                SAtransform!(sp)
+                _spline_eval!(sp, i_vec, dr, view(ibuf, :, l))
+            end
+
+            # Step 2: j-direction evaluation for each i output point
+            dl_range = (dr == 0) ? (0:2) : (0:0)
+            for dl in dl_range
+                slot = _rr_slot(dr, dl)
+                slot == 0 && continue
+                scratch = grid.jbasis.data[1, v]   # any row; all share the same j-params
+                for xi in 1:n_i
+                    for l in 1:b_jDim
+                        scratch.b[l] = ibuf[xi, l]
+                    end
+                    SAtransform!(scratch)
+                    _spline_eval!(scratch, j_vec, dl, tmp)
+                    flat = (xi - 1) * n_j + 1
+                    physical[flat:flat + n_j - 1, v, slot] .= tmp
+                end
+            end
+        end
+    end
+
+    return physical
+end
+
+@inline function _rr_slot(dr::Int, dl::Int)
+    if     dr == 0 && dl == 0; return 1
+    elseif dr == 1 && dl == 0; return 2
+    elseif dr == 2 && dl == 0; return 3
+    elseif dr == 0 && dl == 1; return 4
+    elseif dr == 0 && dl == 2; return 5
+    else;  return 0; end
+end
+
+function regularGridTransform(grid::_2DCartesianRR, gridpoints::AbstractMatrix{Float64})
+    i_pts = sort(unique(gridpoints[:, 1]))
+    j_pts = sort(unique(gridpoints[:, 2]))
+    return regularGridTransform(grid, i_pts, j_pts)
+end
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Regular-grid output — 2D Cartesian Spline×Chebyshev (RZ)
+# ═══════════════════════════════════════════════════════════════════════════
+
+"""
+    getRegularGridpoints(grid::_2DCartesianRZ) -> Matrix{Float64}
+
+Return an `(n_i × n_k, 2)` matrix of uniformly-spaced `(x, z)` coordinates
+for a 2-D Cartesian Spline×Chebyshev (RZ) grid.
+
+Unlike [`getGridpoints`](@ref), which returns the unevenly-spaced Gaussian and
+Chebyshev mish points, this function returns a regular tensor-product grid for
+visualisation and file I/O.
+
+The output dimensions are controlled by [`SpringsteelGridParameters`](@ref) fields:
+- `i_regular_out` — x-points in `[iMin, iMax]`   (default `num_cells + 1`)
+- `k_regular_out` — z-points in `[kMin, kMax]`   (default `kDim + 1`)
+
+Points are ordered x-outer, z-inner (z varies fastest), matching
+[`regularGridTransform`](@ref).
+
+See also: [`regularGridTransform`](@ref), [`getGridpoints`](@ref)
+"""
+function getRegularGridpoints(grid::_2DCartesianRZ)
+    n_i   = grid.params.i_regular_out
+    n_k   = grid.params.k_regular_out
+    i_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_i))
+    k_pts = collect(LinRange(grid.params.kMin, grid.params.kMax, n_k))
+    pts   = zeros(Float64, n_i * n_k, 2)
+    idx   = 1
+    for i in 1:n_i
+        for k in 1:n_k
+            pts[idx, 1] = i_pts[i]
+            pts[idx, 2] = k_pts[k]
+            idx += 1
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_2DCartesianRZ, i_pts, k_pts) -> Array{Float64}
+    regularGridTransform(grid::_2DCartesianRZ, gridpoints)   -> Array{Float64}
+
+Evaluate the RZ spectral representation on a regular tensor-product `x × z` grid,
+returning field values and all five derivatives.
+
+`grid.spectral` must be populated (call [`spectralTransform!`](@ref) first).
+
+**Algorithm** (two-level tensor-product):
+1. Evaluate i-splines at `i_pts` for all Chebyshev modes → buffer `ibuf[n_i, b_kDim]`.
+2. For each `i_out`, set Chebyshev b-coefficients from `ibuf[i_out, :]`, apply
+   `CAtransform!`, then evaluate at `k_pts` using direct polynomial evaluation.
+
+# Returns
+`Array{Float64}` of shape `(n_i × n_k, nvars, 5)` — z varies fastest.  Derivative slots:
+- `[:,:,1]` — `f(x, z)`
+- `[:,:,2]` — `∂f/∂x`
+- `[:,:,3]` — `∂²f/∂x²`
+- `[:,:,4]` — `∂f/∂z`
+- `[:,:,5]` — `∂²f/∂z²`
+
+# Example
+```julia
+spectralTransform!(grid_rz)
+reg_pts  = getRegularGridpoints(grid_rz)
+reg_phys = regularGridTransform(grid_rz, reg_pts)
+```
+
+See also: [`getRegularGridpoints`](@ref), [`gridTransform!`](@ref)
+"""
+function regularGridTransform(grid::_2DCartesianRZ,
+                               i_pts::AbstractVector{Float64},
+                               k_pts::AbstractVector{Float64})
+    gp     = grid.params
+    b_iDim = gp.b_iDim
+    b_kDim = gp.b_kDim
+    nvars  = length(gp.vars)
+    n_i    = length(i_pts)
+    n_k    = length(k_pts)
+    i_vec  = collect(Float64, i_pts)
+    k_vec  = collect(Float64, k_pts)
+
+    physical = zeros(Float64, n_i * n_k, nvars, 5)
+
+    for v in values(gp.vars)
+        ibuf     = zeros(Float64, n_i, b_kDim)
+        cheb_col = grid.kbasis.data[v]
+        for dr in 0:2
+            # Step 1: i-direction spline evaluation at i_pts for each Chebyshev mode
+            for z in 1:b_kDim
+                r1 = (z - 1) * b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                sp = grid.ibasis.data[z, v]
+                sp.b .= view(grid.spectral, r1:r2, v)
+                SAtransform!(sp)
+                _spline_eval!(sp, i_vec, dr, view(ibuf, :, z))
+            end
+
+            # Step 2: Chebyshev evaluation at k_pts for each i output point
+            # (_cheb_eval_pts! / _cheb_dz_pts! / _cheb_dzz_pts! are defined in
+            # transforms_cylindrical.jl, included after this file)
+            dk_range = (dr == 0) ? (0:2) : (0:0)
+            for dk in dk_range
+                slot = _rz_slot(dr, dk)
+                slot == 0 && continue
+                for xi in 1:n_i
+                    for z in 1:b_kDim
+                        cheb_col.b[z] = ibuf[xi, z]
+                    end
+                    CAtransform!(cheb_col)
+                    flat = (xi - 1) * n_k + 1
+                    out  = view(physical, flat:flat + n_k - 1, v, slot)
+                    if dk == 0
+                        _cheb_eval_pts!(cheb_col, k_vec, out)
+                    elseif dk == 1
+                        _cheb_dz_pts!(cheb_col, k_vec, out)
+                    else
+                        _cheb_dzz_pts!(cheb_col, k_vec, out)
+                    end
+                end
+            end
+        end
+    end
+
+    return physical
+end
+
+@inline function _rz_slot(dr::Int, dk::Int)
+    if     dr == 0 && dk == 0; return 1
+    elseif dr == 1 && dk == 0; return 2
+    elseif dr == 2 && dk == 0; return 3
+    elseif dr == 0 && dk == 1; return 4
+    elseif dr == 0 && dk == 2; return 5
+    else;  return 0; end
+end
+
+function regularGridTransform(grid::_2DCartesianRZ, gridpoints::AbstractMatrix{Float64})
+    i_pts = sort(unique(gridpoints[:, 1]))
+    k_pts = sort(unique(gridpoints[:, 2]))
+    return regularGridTransform(grid, i_pts, k_pts)
+end
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 3D Cartesian Transforms  (Spline×Spline×Spline = RRR)
 # ═══════════════════════════════════════════════════════════════════════════
 

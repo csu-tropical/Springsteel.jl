@@ -622,3 +622,109 @@ remain available as type aliases for full backward compatibility.
 | `"RRR"` | Spline × Spline × Spline | `RRR_Grid` |
 | `"SL"` / `"SphericalShell"` | Spline × Fourier | `SL_Grid` / `SphericalShell_Grid` |
 | `"SLZ"` / `"Sphere"` | Spline × Fourier × Chebyshev | `SLZ_Grid` / `Sphere_Grid` |
+
+---
+
+## I/O
+
+Springsteel provides three I/O pathways:
+
+| Format | Write | Read | Notes |
+|:-------|:------|:-----|:------|
+| CSV | `write_grid` | `read_physical_grid` | Human-readable; physical (mish-point) grid values |
+| JLD2 | `save_grid` | `load_grid` | Binary; full round-trip including spectral coefficients |
+| NetCDF | `write_netcdf` | `read_netcdf` | CF-1.12 compliant; regular output grid; language-agnostic |
+
+### JLD2 — save and reload a grid
+
+`save_grid` serialises the complete grid state (parameters, spectral coefficients,
+physical array) to a compressed JLD2 binary file.  `load_grid` reconstructs the
+full grid from the file, including fresh FFTW plans.
+
+```julia
+using Springsteel
+
+# Build and transform a grid
+gp = SpringsteelGridParameters(
+    geometry="RL", num_cells=20, iMin=0.0, iMax=100.0,
+    vars=Dict("u" => 1, "v" => 2),
+    BCL=Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+    BCR=Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0))
+grid = createGrid(gp)
+# ... fill grid.physical and call spectralTransform! ...
+
+# Save (zstd compression by default)
+save_grid("simulation.jld2", grid)
+
+# Load into a fresh session — FFTW plans are reconstructed automatically
+grid2 = load_grid("simulation.jld2")
+@assert grid2.spectral ≈ grid.spectral
+gridTransform!(grid2)   # works immediately; plans are fresh
+```
+
+Use `compress=false` to skip compression (larger files, faster writes):
+```julia
+save_grid("simulation_uncompressed.jld2", grid; compress=false)
+```
+
+### NetCDF — write CF-compliant output
+
+`write_netcdf` evaluates the spectral representation on a uniform tensor-product
+grid and writes the result to a CF-1.12-compliant NetCDF file readable by any
+NetCDF-aware tool (Python/xarray, MATLAB, NCO, ParaView, …).
+
+```julia
+spectralTransform!(grid)
+write_netcdf("output.nc", grid)
+```
+
+By default only field values are written.  Pass `include_derivatives=true` to
+also write first and second derivative variables:
+
+```julia
+write_netcdf("output.nc", grid; include_derivatives=true)
+```
+
+Extra CF global attributes (institution, references, …) can be provided:
+
+```julia
+write_netcdf("output.nc", grid;
+    global_attributes=Dict{String,Any}(
+        "institution" => "NCAR",
+        "references"  => "doi:10.1000/example"))
+```
+
+Coordinate names follow the grid geometry:
+
+| Grid type | Dimension names |
+|:----------|:----------------|
+| Cartesian (R, RR, RZ, RRR) | `x`, `y`, `z` |
+| Cylindrical (RL, RLZ) | `radius`, `azimuth` (degrees), `height` |
+| Spherical (SL, SLZ) | `latitude` (degrees_north), `longitude` (degrees_east), `height` |
+
+### NetCDF — reading back with `read_netcdf`
+
+`read_netcdf` returns a plain `Dict` with four keys: `"dimensions"`,
+`"coordinates"`, `"variables"`, and `"attributes"`.  This is ready for
+passing to plotting libraries or further Julia analysis.
+
+```julia
+data = read_netcdf("output.nc")
+
+# Inspect contents
+data["attributes"]["Conventions"]   # "CF-1.12"
+x    = data["coordinates"]["x"]     # Vector{Float64}
+u    = data["variables"]["u"]       # Array{Float64}
+
+# Plot with CairoMakie
+using CairoMakie
+lines(x, u; label="u")
+```
+
+For a cylindrical grid the coordinate keys would be `"radius"` and `"azimuth"`;
+for spherical, `"latitude"` and `"longitude"`.
+
+> **Note**: `read_netcdf` returns data on the *regular output grid*, not the
+> native mish-point grid.  To load field values back onto the mish-point grid
+> (e.g. to restart a simulation), use `read_physical_grid` with a CSV file
+> produced by `write_grid`.
