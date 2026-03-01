@@ -1,0 +1,23 @@
+# Act configuration file
+# This file configures act to run GitHub Actions locally
+
+# Use a compatible Ubuntu image
+#-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Set container architecture for compatibility
+--container-architecture linux/amd64
+
+# Configure artifact storage location
+#--artifact-server-path /tmp/artifacts
+
+# Reuse containers between runs for faster execution
+#--reuse
+
+# Use .secrets file if it exists
+#--secret-file .secrets
+
+# Verbose output for debugging (comment out if too noisy)
+# --verbose
+
+# Bind mount the workspace (useful for debugging)
+#--bind

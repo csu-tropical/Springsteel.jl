@@ -29,5 +29,5 @@ makedocs(;
 
 deploydocs(;
     repo="github.com/mmbell/Springsteel.jl",
-    devbranch="main",
+    devbranch="development",
 )
