@@ -512,7 +512,7 @@ produce "docstring not found" errors.
 
 Create `docs/src/{module_name}.md` following the structure used in `docs/src/cubicbspline.md`:
 
-```markdown
+````markdown
 ```@meta
 CurrentModule = Springsteel
 ```
@@ -553,7 +553,7 @@ ModuleName.XItransform
 ModuleName.XIxtransform
 ModuleName.XIxxtransform
 ```
-```
+````
 
 Then add the page to the `pages` list in `make.jl`:
 
@@ -833,7 +833,7 @@ See also: [`dft_1st_derivative`](@ref), [`dft_2nd_derivative`](@ref)
 
 The solver documentation page should follow this structure:
 
-```markdown
+````markdown
 ```@meta
 CurrentModule = Springsteel
 ```
@@ -881,7 +881,7 @@ OptimizationBackend
 ```@docs
 solve
 ```
-```
+````
 
 Add the page to `docs/make.jl`:
 ```julia

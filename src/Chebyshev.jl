@@ -738,6 +738,22 @@ function calcGammaBCalt(cp::ChebyshevParameters)
     return gammaBC
 end
 
+function _bc_type(bc::Dict)::Symbol
+    # Classify a BC dict by its key, ignoring the value.
+    # This allows non-homogeneous BCs (e.g. Dict("α0" => 5.0)) to be treated
+    # the same as homogeneous ones (R1T0 = Dict("α0" => 0.0)) for gammaBC computation.
+    # The non-homogeneous value is handled separately by the solver via row replacement.
+    if haskey(bc, "R0")
+        return :R0
+    elseif haskey(bc, "α0")
+        return :R1T0
+    elseif haskey(bc, "α1")
+        return :R1T1
+    else
+        throw(DomainError(bc, "Unrecognized Chebyshev BC dict keys"))
+    end
+end
+
 """
     calcGammaBC(cp::ChebyshevParameters) -> Union{Vector{Float64}, Matrix{Float64}}
 
@@ -764,22 +780,6 @@ Neumann BCs via the global method reference:
 
 See also: [`CAtransform`](@ref), [`Chebyshev1D`](@ref)
 """
-function _bc_type(bc::Dict)::Symbol
-    # Classify a BC dict by its key, ignoring the value.
-    # This allows non-homogeneous BCs (e.g. Dict("α0" => 5.0)) to be treated
-    # the same as homogeneous ones (R1T0 = Dict("α0" => 0.0)) for gammaBC computation.
-    # The non-homogeneous value is handled separately by the solver via row replacement.
-    if haskey(bc, "R0")
-        return :R0
-    elseif haskey(bc, "α0")
-        return :R1T0
-    elseif haskey(bc, "α1")
-        return :R1T1
-    else
-        throw(DomainError(bc, "Unrecognized Chebyshev BC dict keys"))
-    end
-end
-
 function calcGammaBC(cp::ChebyshevParameters)
 
     # Calculate a matrix to apply the Neumann and Dirichelet BCs
