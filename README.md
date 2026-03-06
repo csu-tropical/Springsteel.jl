@@ -1,9 +1,10 @@
 # Springsteel.jl
 
-[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://csu-tropical.github.io/Springsteel.jl/dev/)
-[![Stable Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Development Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=development)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Adevelopment)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+Stable: [![Stable Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Amain) [![Stable Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://csu-tropical.github.io/Springsteel.jl/stable/)
+
+Development: [![Development Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=development)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Adevelopment) [![Dev Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://csu-tropical.github.io/Springsteel.jl/dev/)
 
 Springsteel is a semi-spectral grid engine that uses a mixture of cubic B-spline, Fourier, and Chebyshev basis functions to represent physical variables and their spatial derivatives. The name comes from an amalgamation of "spectral grid engine" and is the name of a particular type of steel used to make swords and other blades. Things made of [spring steel](https://en.wikipedia.org/wiki/Spring_steel) tend to return to their original shape even after deformation, which is analogous to goals of this software to seamlessly transform between spectral and physical space within a variety of different grid geometries. This package provides the "steel" for the [Scythe.jl](https://github.com/mmbell/Scythe.jl) numerical model and the [Daisho.jl](https://github.com/csu-tropical/Daisho.jl) data analysis and assimilation software. Springsteel currently supports a variety of different grids in 1, 2, or 3 dimensions in Cartesian, cylindrical, or spherical geometry using a mix of cubic B-spline, Fourier, or Chebyshev basis functions.
 
@@ -82,6 +83,14 @@ write_grid(grid, output_dir, tag)   # write spectral + physical CSVs
 read_physical_grid(file, grid)      # read physical CSV into grid
 ```
 
+#### I/O formats
+
+Springsteel supports multiple I/O backends for different workflows:
+
+- **CSV** — `write_grid` / `read_physical_grid` for human-readable, portable output on the native (non-uniform) grid
+- **JLD2** — `save_grid` / `load_grid` for fast binary round-tripping of full grid state (parameters, spectral coefficients, and physical values) on the native grid
+- **NetCDF** — `write_netcdf` / `read_netcdf` for CF-compliant files interpolated onto a regular grid, with coordinate attributes and optional derivative fields, suitable for analysis with standard tools (e.g. NCO, xarray, Panoply)
+
 For distributed computing, each grid supports radial decomposition into tiles with halo overlap:
 
 ```julia
@@ -98,4 +107,4 @@ The supertype of all grids is `AbstractGrid`; the concrete parametric type is
 geometry-agnostic code via multiple dispatch.
 
 ### Future plans
-Support for CF-compliant NetCDF input and output will be added in the near future. Dedicated tiling implementations for 3D grids (RLZ, SLZ) and regular-grid output for 2D Cartesian grids (RR, RZ) are planned. Support for grid nesting using the cubic B-splines will be added in future versions. Interested users are welcome to contribute to improve the grid engine. Stay tuned for more functionality!
+Support for grid nesting using the cubic B-splines will be added in future versions. Interested users are welcome to contribute to improve the grid engine. Stay tuned for more functionality!
