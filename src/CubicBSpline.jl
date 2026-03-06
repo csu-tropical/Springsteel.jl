@@ -1053,6 +1053,111 @@ function SIxxtransform(sp::SplineParameters, a::Vector{real}, points::Vector{rea
     return uprime2
 end
 
+"""
+    spline_basis_matrix(spline::Spline1D; gammaBC=nothing) -> Matrix{Float64}
+
+Build the ``(M \\times N)`` cubic B-spline evaluation matrix.
+
+Entry `[i, j]` is the value of the `j`-th B-spline basis function
+``\\varphi_j(x_i)`` at the `i`-th mish point. If `gammaBC` is provided,
+returns the boundary-condition-folded form ``\\mathbf{M} \\boldsymbol{\\Gamma}^T``
+with reduced column count.
+
+# Keywords
+- `gammaBC::Union{Matrix{Float64}, Nothing}`: If provided, fold boundary conditions
+  to produce the reduced matrix of size `(mishDim, Minterior)`.
+
+See also: [`spline_1st_derivative_matrix`](@ref), [`spline_2nd_derivative_matrix`](@ref)
+"""
+function spline_basis_matrix(spline::Spline1D; gammaBC::Union{Matrix{Float64}, Nothing}=nothing)
+    sp = spline.params
+    M = zeros(Float64, sp.mishDim, sp.bDim)
+    for i in 1:sp.mishDim
+        x = spline.mishPoints[i]
+        xm = ceil(Int64, (x - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
+        for m = xm:(xm + 3)
+            if (m >= -1) && (m <= (sp.num_cells + 1))
+                mi = m + 2
+                M[i, mi] = basis(sp, m, x, 0)
+            end
+        end
+    end
+    if gammaBC !== nothing
+        return M * gammaBC'
+    end
+    return M
+end
+
+"""
+    spline_1st_derivative_matrix(spline::Spline1D; gammaBC=nothing) -> Matrix{Float64}
+
+Build the ``(M \\times N)`` cubic B-spline **first-derivative** matrix.
+
+Entry `[i, j]` is the first derivative of the `j`-th B-spline basis function
+``\\varphi'_j(x_i)`` at the `i`-th mish point. If `gammaBC` is provided,
+returns the boundary-condition-folded form ``\\mathbf{M}_x \\boldsymbol{\\Gamma}^T``
+with reduced column count.
+
+# Keywords
+- `gammaBC::Union{Matrix{Float64}, Nothing}`: If provided, fold boundary conditions
+  to produce the reduced matrix of size `(mishDim, Minterior)`.
+
+See also: [`spline_basis_matrix`](@ref), [`spline_2nd_derivative_matrix`](@ref)
+"""
+function spline_1st_derivative_matrix(spline::Spline1D; gammaBC::Union{Matrix{Float64}, Nothing}=nothing)
+    sp = spline.params
+    M = zeros(Float64, sp.mishDim, sp.bDim)
+    for i in 1:sp.mishDim
+        x = spline.mishPoints[i]
+        xm = ceil(Int64, (x - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
+        for m = xm:(xm + 3)
+            if (m >= -1) && (m <= (sp.num_cells + 1))
+                mi = m + 2
+                M[i, mi] = basis(sp, m, x, 1)
+            end
+        end
+    end
+    if gammaBC !== nothing
+        return M * gammaBC'
+    end
+    return M
+end
+
+"""
+    spline_2nd_derivative_matrix(spline::Spline1D; gammaBC=nothing) -> Matrix{Float64}
+
+Build the ``(M \\times N)`` cubic B-spline **second-derivative** matrix.
+
+Entry `[i, j]` is the second derivative of the `j`-th B-spline basis function
+``\\varphi''_j(x_i)`` at the `i`-th mish point. If `gammaBC` is provided,
+returns the boundary-condition-folded form ``\\mathbf{M}_{xx} \\boldsymbol{\\Gamma}^T``
+with reduced column count.
+
+# Keywords
+- `gammaBC::Union{Matrix{Float64}, Nothing}`: If provided, fold boundary conditions
+  to produce the reduced matrix of size `(mishDim, Minterior)`.
+
+See also: [`spline_basis_matrix`](@ref), [`spline_1st_derivative_matrix`](@ref)
+"""
+function spline_2nd_derivative_matrix(spline::Spline1D; gammaBC::Union{Matrix{Float64}, Nothing}=nothing)
+    sp = spline.params
+    M = zeros(Float64, sp.mishDim, sp.bDim)
+    for i in 1:sp.mishDim
+        x = spline.mishPoints[i]
+        xm = ceil(Int64, (x - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
+        for m = xm:(xm + 3)
+            if (m >= -1) && (m <= (sp.num_cells + 1))
+                mi = m + 2
+                M[i, mi] = basis(sp, m, x, 2)
+            end
+        end
+    end
+    if gammaBC !== nothing
+        return M * gammaBC'
+    end
+    return M
+end
+
 # ---------------------------------------------------------------------------
 # Generic wrappers (no "S" prefix) dispatching on Spline1D
 # These enable abstract 1D basis code that calls Btransform, Itransform, etc.

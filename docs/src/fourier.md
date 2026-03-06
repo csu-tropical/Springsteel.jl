@@ -44,6 +44,14 @@ Fourier.FIIntcoefficients
 Fourier.FIInttransform
 ```
 
+## Matrix Representations
+
+```@docs
+Fourier.dft_matrix
+Fourier.dft_1st_derivative
+Fourier.dft_2nd_derivative
+```
+
 ## Generic Wrappers
 
 No-prefix wrappers that delegate to the `F`-prefixed functions above, enabling

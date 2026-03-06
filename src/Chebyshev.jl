@@ -764,25 +764,44 @@ Neumann BCs via the global method reference:
 
 See also: [`CAtransform`](@ref), [`Chebyshev1D`](@ref)
 """
+function _bc_type(bc::Dict)::Symbol
+    # Classify a BC dict by its key, ignoring the value.
+    # This allows non-homogeneous BCs (e.g. Dict("α0" => 5.0)) to be treated
+    # the same as homogeneous ones (R1T0 = Dict("α0" => 0.0)) for gammaBC computation.
+    # The non-homogeneous value is handled separately by the solver via row replacement.
+    if haskey(bc, "R0")
+        return :R0
+    elseif haskey(bc, "α0")
+        return :R1T0
+    elseif haskey(bc, "α1")
+        return :R1T1
+    else
+        throw(DomainError(bc, "Unrecognized Chebyshev BC dict keys"))
+    end
+end
+
 function calcGammaBC(cp::ChebyshevParameters)
 
     # Calculate a matrix to apply the Neumann and Dirichelet BCs
     # The nomenclature follows Ooyama (2002) to match the cubic b-spline designations
     Ndim = cp.zDim
-    
-    if (cp.BCB == R0) && (cp.BCT == R0)
+
+    bcb = _bc_type(cp.BCB)
+    bct = _bc_type(cp.BCT)
+
+    if (bcb == :R0) && (bct == :R0)
         # No BCs
         gammaBC = zeros(Float64,Ndim)
         return gammaBC
     
-    elseif (cp.BCB == R1T0) && (cp.BCT == R0)
+    elseif (bcb == :R1T0) && (bct == :R0)
         #R1T0 bottom
         gammaBC = ones(Float64,Ndim)
         gammaBC[2:Ndim-1] *= 2.0
         gammaBC *= (-0.5 / (Ndim-1))
         return gammaBC
         
-    elseif (cp.BCB == R1T1) && (cp.BCT == R0)
+    elseif (bcb == :R1T1) && (bct == :R0)
         #R1T1 bottom
         # Global coefficient method (Wang et al. 1993) for Neumann BCs
         # https://doi.org/10.1006/jcph.1993.1133
@@ -803,7 +822,7 @@ function calcGammaBC(cp::ChebyshevParameters)
         end
         return gammaBC
     
-    elseif (cp.BCB == R0) && (cp.BCT == R1T0)
+    elseif (bcb == :R0) && (bct == :R1T0)
         gammaBC = ones(Float64,Ndim,Ndim)
         for i = 1:Ndim
             for j = 1:Ndim
@@ -814,7 +833,7 @@ function calcGammaBC(cp::ChebyshevParameters)
         gammaBC[Ndim,:] *= 0.5
         return gammaBC
         
-    elseif (cp.BCB == R0) && (cp.BCT == R1T1)    
+    elseif (bcb == :R0) && (bct == :R1T1)
         scaleFactor = 0.0
         gammaBC = zeros(Float64,Ndim,Ndim)
         c = ones(Float64,Ndim)
@@ -832,7 +851,7 @@ function calcGammaBC(cp::ChebyshevParameters)
         end
         return gammaBC
         
-    elseif (cp.BCB == R1T0) && (cp.BCT == R1T0)
+    elseif (bcb == :R1T0) && (bct == :R1T0)
         gammaBC = ones(Float64,Ndim,Ndim)
         for i = 1:Ndim
             for j = 1:Ndim
@@ -851,7 +870,7 @@ function calcGammaBC(cp::ChebyshevParameters)
         end
         return gammaBC  
         
-    elseif (cp.BCB == R1T1) && (cp.BCT == R1T1)
+    elseif (bcb == :R1T1) && (bct == :R1T1)
         scaleFactor = 0.0
         gammaBCB = zeros(Float64,Ndim,Ndim)
         c = ones(Float64,Ndim)
@@ -885,7 +904,7 @@ function calcGammaBC(cp::ChebyshevParameters)
         gammaBC .= gammaBCB + gammaBCT
         return gammaBC
     
-    elseif (cp.BCB == R1T0) && (cp.BCT == R1T1)
+    elseif (bcb == :R1T0) && (bct == :R1T1)
         c = ones(Float64,Ndim)
         c[1] *= 2.0
         c[Ndim] *= 2.0
@@ -910,7 +929,7 @@ function calcGammaBC(cp::ChebyshevParameters)
         gammaBC .= gammaBCB .+ gammaBCT
         return gammaBC
 
-    elseif (cp.BCB == R1T1) && (cp.BCT == R1T0)
+    elseif (bcb == :R1T1) && (bct == :R1T0)
         c = ones(Float64,Ndim)
         c[1] *= 2.0
         c[Ndim] *= 2.0

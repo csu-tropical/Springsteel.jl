@@ -566,6 +566,100 @@ function FIInttransform(ring::Fourier1D, C0::real = 0.0)
 end
 
 # ---------------------------------------------------------------------------
+# DFT matrix representations
+# ---------------------------------------------------------------------------
+
+"""
+    dft_matrix(ring::Fourier1D) -> Matrix{Float64}
+
+Build the ``(N \\times M)`` DFT evaluation matrix for the Fourier basis so that
+`dft_matrix(ring) * ring.b` recovers the physical field values at the mish points.
+
+Columns follow the B-coefficient layout produced by [`FBtransform`](@ref):
+column 1 is the constant (wavenumber 0), columns `k+1` correspond to
+``\\cos(k\\theta)`` and columns `bDim-k+1` to ``\\sin(k\\theta)`` for
+`k = 1:kmax`. The FFTW normalisation convention means cosine columns carry
+a factor of 2 and sine columns a factor of ``-2``.
+
+See also: [`dft_1st_derivative`](@ref), [`dft_2nd_derivative`](@ref)
+"""
+function dft_matrix(ring::Fourier1D)
+    fp = ring.params
+    M = zeros(Float64, fp.yDim, fp.bDim)
+    pts = ring.mishPoints
+    for i = 1:fp.yDim
+        # Column 1: constant term (weight 1)
+        M[i, 1] = 1.0
+        for k = 1:fp.kmax
+            # Cosine column at index k+1 (weight 2 from FFTW normalisation)
+            M[i, k+1] = 2.0 * cos(k * pts[i])
+            # Sine column at index bDim-k+1 (weight -2 from FFTW normalisation)
+            M[i, fp.bDim-k+1] = -2.0 * sin(k * pts[i])
+        end
+    end
+    return M
+end
+
+"""
+    dft_1st_derivative(ring::Fourier1D) -> Matrix{Float64}
+
+Build the ``(N \\times M)`` first-derivative DFT matrix for the Fourier basis so that
+`dft_1st_derivative(ring) * ring.b` gives ``\\partial u / \\partial \\theta`` at the
+mish points.
+
+Uses the analytic rules ``d/d\\theta[\\cos(k\\theta)] = -k\\sin(k\\theta)`` and
+``d/d\\theta[\\sin(k\\theta)] = k\\cos(k\\theta)`` combined with the FFTW
+normalisation factors.
+
+See also: [`dft_matrix`](@ref), [`dft_2nd_derivative`](@ref)
+"""
+function dft_1st_derivative(ring::Fourier1D)
+    fp = ring.params
+    M = zeros(Float64, fp.yDim, fp.bDim)
+    pts = ring.mishPoints
+    for i = 1:fp.yDim
+        # Column 1: derivative of constant = 0
+        M[i, 1] = 0.0
+        for k = 1:fp.kmax
+            # d/dx [2*cos(kx)] = -2k*sin(kx) → cosine column
+            M[i, k+1] = -2.0 * k * sin(k * pts[i])
+            # d/dx [-2*sin(kx)] = -2k*cos(kx) → sine column
+            M[i, fp.bDim-k+1] = -2.0 * k * cos(k * pts[i])
+        end
+    end
+    return M
+end
+
+"""
+    dft_2nd_derivative(ring::Fourier1D) -> Matrix{Float64}
+
+Build the ``(N \\times M)`` second-derivative DFT matrix for the Fourier basis so
+that `dft_2nd_derivative(ring) * ring.b` gives
+``\\partial^2 u / \\partial \\theta^2`` at the mish points.
+
+Uses the analytic rules ``d^2/d\\theta^2[\\cos(k\\theta)] = -k^2\\cos(k\\theta)``
+and ``d^2/d\\theta^2[\\sin(k\\theta)] = -k^2\\sin(k\\theta)`` combined with the
+FFTW normalisation factors.
+
+See also: [`dft_matrix`](@ref), [`dft_1st_derivative`](@ref)
+"""
+function dft_2nd_derivative(ring::Fourier1D)
+    fp = ring.params
+    M = zeros(Float64, fp.yDim, fp.bDim)
+    pts = ring.mishPoints
+    for i = 1:fp.yDim
+        M[i, 1] = 0.0
+        for k = 1:fp.kmax
+            # d²/dx² [2*cos(kx)] = -2k²*cos(kx) → cosine column
+            M[i, k+1] = -2.0 * k^2 * cos(k * pts[i])
+            # d²/dx² [-2*sin(kx)] = 2k²*sin(kx) → sine column
+            M[i, fp.bDim-k+1] = 2.0 * k^2 * sin(k * pts[i])
+        end
+    end
+    return M
+end
+
+# ---------------------------------------------------------------------------
 # Generic wrappers (no "F" prefix) dispatching on Fourier1D
 # These enable abstract 1D basis code that calls Btransform!, Itransform!, etc.
 # without needing to know the underlying basis type.

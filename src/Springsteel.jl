@@ -70,6 +70,12 @@ export num_deriv_slots
 # Basis interface exports
 export gridpoints, spectral_dim, physical_dim
 
+# Solver framework exports
+export OperatorTerm, AbstractSolverBackend, LocalLinearBackend, OptimizationBackend
+export SpringsteelProblem, SpringsteelSolution
+export operator_matrix, assemble_operator, assemble_from_equation
+export solve, solver_gridpoints
+
 """
     GridParameters
 
@@ -252,6 +258,10 @@ include("transforms_spherical.jl")
 # ── 1D Tiling ───────────────────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses num_columns from Cylindrical/Spherical files)
 include("tiling.jl")
+
+# ── Solver framework ──────────────────────────────────────────────────────────────────
+# Must be included after basis modules and factory.jl
+include("solver.jl")
 
 
 """

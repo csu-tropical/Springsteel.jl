@@ -18,6 +18,12 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 SuiteSparse = "4607b0f0-06f3-5cda-b6b1-a6196a1729e9"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
+[weakdeps]
+Optimization = "7f7a1694-90dd-40f0-9382-eb1f857b2b1e"
+
+[extensions]
+SpringsteelOptimizationExt = "Optimization"
+
 [compat]
 CairoMakie = "0.15.8"
 GeoMakie = "0.7.16"

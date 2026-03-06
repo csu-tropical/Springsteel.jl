@@ -4,38 +4,101 @@
 
 This document describes the testing strategy developed for `CubicBSpline.jl` and `spline1D_grid.jl`, and provides step-by-step instructions for Claude to replicate a similarly comprehensive test suite for any other basis function module (e.g., `Fourier.jl`, `Chebyshev.jl`) and its associated grid file (e.g., `rl_grid.jl`, `rz_grid.jl`, `rlz_grid.jl`).
 
-The test suite lives in `test/runtests.jl` and uses Julia's built-in `Test` standard library. All 547 tests pass as of the current implementation.
+The test suite uses Julia's built-in `Test` standard library with 3392 tests passing as of the current implementation.
 
 ---
 
 ## Part 1: Test File Structure
 
-All tests are organized in a nested `@testset` hierarchy:
+Tests are split into separate files by functional area, loaded by the top-level
+`test/runtests.jl` runner. Each file can be run independently via the
+`TEST_GROUP` environment variable for faster iteration during development.
+
+### 1.1 Test Runner (`test/runtests.jl`)
 
 ```julia
 using Springsteel
 using Test
-using SharedArrays   # needed for tile distributed-computing tests
-using SparseArrays   # needed for sparse spectral buffer tests
+using Dates
+using JLD2
+using NCDatasets
+using SharedArrays
+using SparseArrays
+using DataFrames
+
+const TEST_GROUP = get(ENV, "TEST_GROUP", "all")
 
 @testset "Springsteel.jl" begin
+    TEST_GROUP in ("all", "basis")      && include("basis.jl")
+    TEST_GROUP in ("all", "grids")      && include("grids.jl")
+    TEST_GROUP in ("all", "transforms") && include("transforms.jl")
+    TEST_GROUP in ("all", "tiling")     && include("tiling.jl")
+    TEST_GROUP in ("all", "io")         && include("io.jl")
+    TEST_GROUP in ("all", "compat")     && include("compat.jl")
+    TEST_GROUP in ("all", "solver")     && include("solver.jl")
+end
+```
 
-    @testset "R_Grid Tests" begin           # legacy R_Grid (GridParameters)
-        ...
-    end
+### 1.2 Test File Responsibilities
 
-    @testset "CubicBSpline Tests" begin     # basis function module low-level
-        ...
-    end
+| File | Contents | Approximate tests |
+|:-----|:---------|:-----------------|
+| `test/basis.jl` | Low-level basis module tests (CubicBSpline, Fourier, Chebyshev): parameter structs, 1D object construction, basis function evaluation, all transform dispatch variants, matrix representations, BC types | ~1200 |
+| `test/grids.jl` | Grid creation tests for all geometries via both `GridParameters` (legacy) and `SpringsteelGridParameters` (new): dimensions, variable counts, multi-variable support | ~1600 |
+| `test/transforms.jl` | Grid-level roundtrip accuracy, derivative accuracy, boundary condition enforcement, regular grid transforms for all grid types | ~2100 |
+| `test/tiling.jl` | Distributed computing: `calcTileSizes`, `calcPatchMap`, `calcHaloMap`, `splineTransform!`, `tileTransform!`, spectral tile assembly | ~700 |
+| `test/io.jl` | CSV, JLD2, and NetCDF I/O roundtrips | ~800 |
+| `test/compat.jl` | Backward compatibility: legacy `GridParameters` vs new `SpringsteelGridParameters` | ~400 |
+| `test/solver.jl` | Solver framework: operator matrix assembly, `SpringsteelProblem` construction, `solve()` for linear and nonlinear problems, multi-dimensional BVP tests | new |
 
-    @testset "Spline1D_Grid Tests" begin    # SpringsteelGrid high-level
-        ...
-    end
+### 1.3 Running Individual Test Groups
 
-    @testset "Spline2D_Grid Tests" begin    # another geometry, same pattern
-        ...
-    end
+During development, run only the relevant group for fast iteration:
 
+```bash
+# Run only solver tests (~5-10 seconds vs ~40 seconds for full suite)
+julia --project -e 'ENV["TEST_GROUP"]="solver"; using Pkg; Pkg.test()'
+
+# Or directly without Pkg.test():
+julia --project -e 'using Springsteel, Test; include("test/solver.jl")'
+
+# Run only basis tests (for matrix representation work)
+julia --project -e 'ENV["TEST_GROUP"]="basis"; using Pkg; Pkg.test()'
+
+# Run everything (CI and final verification)
+julia --project -e 'using Pkg; Pkg.test()'
+```
+
+### 1.4 Adding a New Test File
+
+When adding a new test file (e.g., `test/solver.jl`):
+
+1. Create the file with a top-level `@testset` that wraps all sub-testsets:
+   ```julia
+   @testset "Solver Tests" begin
+       @testset "Operator Matrix Assembly" begin ... end
+       @testset "SpringsteelProblem" begin ... end
+       @testset "Linear Solver" begin ... end
+   end
+   ```
+2. Add the include to `test/runtests.jl` with a new `TEST_GROUP` key:
+   ```julia
+   TEST_GROUP in ("all", "solver") && include("solver.jl")
+   ```
+3. Verify the new file runs independently before running the full suite.
+4. The file should NOT include `using Springsteel` or `using Test` — these are
+   already loaded by `runtests.jl`. The file is `include()`-d inside the
+   `@testset "Springsteel.jl"` block.
+
+### 1.5 Internal Testset Organization
+
+Within each file, tests are organized in nested `@testset` blocks:
+
+```julia
+@testset "CubicBSpline Tests" begin     # basis function module low-level
+    @testset "SplineParameters auto-computed fields" begin ... end
+    @testset "Spline1D construction" begin ... end
+    ...
 end
 ```
 
@@ -528,3 +591,173 @@ Before finalizing a new test suite, verify:
 - [ ] Known bugs / unimplemented features are documented with `@test_throws` or a comment, not silently skipped
 - [ ] Tolerances are documented alongside the number of cells used, so future resolution changes don't silently break tests
 - [ ] `num_columns` and `allocateSplineBuffer` are tested for every grid type even if trivial
+---
+
+## Part 8: Solver Test Patterns (`test/solver.jl`)
+
+Solver tests live in `test/solver.jl` and cover the operator matrix assembly,
+`SpringsteelProblem` type, and `solve()` function. This section provides patterns
+for agents implementing solver steps.
+
+### 8.1 Matrix Representation Tests (Basis Module Level)
+
+Matrix representation tests for individual basis modules go in `test/basis.jl`
+(not `test/solver.jl`) since they test basis-module internals:
+
+```julia
+@testset "Fourier matrix representations" begin
+    fp = FourierParameters(ymin=0.0, yDim=32, bDim=11, kmax=5)
+    ring = Fourier1D(fp)
+    M = Fourier.dft_matrix(ring)
+    Mx = Fourier.dft_1st_derivative(ring)
+    Mxx = Fourier.dft_2nd_derivative(ring)
+
+    @test size(M) == (fp.yDim, fp.bDim)
+    @test size(Mx) == (fp.yDim, fp.bDim)
+    @test size(Mxx) == (fp.yDim, fp.bDim)
+
+    # Consistency: M * a ≈ FItransform for a known signal
+    ring.uMish .= sin.(ring.mishPoints)
+    FBtransform!(ring)
+    FAtransform!(ring)
+    u_inv = ring.fftPlan * ring.a     # manual inverse
+    @test M * ring.a[1:fp.bDim] ≈ u_inv atol=1e-10
+
+    # Derivative: d/dx sin(x) = cos(x)
+    cos_analytic = cos.(ring.mishPoints)
+    @test Mx * ring.a[1:fp.bDim] ≈ cos_analytic atol=1e-8
+end
+```
+
+### 8.2 Operator Assembly Tests (Solver Level)
+
+Operator assembly tests go in `test/solver.jl`:
+
+```julia
+@testset "Operator Matrix Assembly" begin
+    @testset "1D operator_matrix" begin
+        gp = SpringsteelGridParameters(
+            geometry = "R", num_cells = 10,
+            iMin = 0.0, iMax = 1.0,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0))
+        grid = createGrid(gp)
+
+        M0 = operator_matrix(grid, :i, 0)    # evaluation matrix
+        M2 = operator_matrix(grid, :i, 2)    # 2nd derivative
+        @test size(M0, 1) == grid.params.iDim
+        @test size(M0, 2) == grid.params.b_iDim
+    end
+
+    @testset "2D Kronecker assembly" begin
+        gp = SpringsteelGridParameters(
+            geometry = "RZ", num_cells = 5,
+            iMin = 0.0, iMax = 1.0,
+            kMin = 0.0, kMax = 1.0, kDim = 10, b_kDim = 10,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => Chebyshev.R1T0),
+            BCT = Dict("u" => Chebyshev.R1T0))
+        grid = createGrid(gp)
+
+        # Laplacian: ∂²/∂r² ⊗ I_z + I_r ⊗ ∂²/∂z²
+        terms = [
+            OperatorTerm(2, 0, 0, 1.0),   # ∂²/∂i²
+            OperatorTerm(0, 0, 2, 1.0),   # ∂²/∂k²
+        ]
+        L = assemble_operator(grid, terms, "u")
+        n_phys = grid.params.iDim * grid.params.kDim
+        n_spec = grid.params.b_iDim * grid.params.b_kDim
+        @test size(L) == (n_phys, n_spec)
+    end
+end
+```
+
+### 8.3 Linear Solver Tests
+
+Linear solver tests verify known analytic solutions:
+
+```julia
+@testset "Linear Solver" begin
+    @testset "1D Chebyshev Poisson" begin
+        # Solve u'' = f where u(x) = sin(πx), f = -π²sin(πx)
+        # Domain [0, 1], Dirichlet BCs u(0) = u(1) = 0
+        gp = SpringsteelGridParameters(
+            geometry = "Z", kMin = 0.0, kMax = 1.0,
+            kDim = 25, b_kDim = 25,
+            vars = Dict("u" => 1),
+            BCB = Dict("u" => Chebyshev.R1T0),
+            BCT = Dict("u" => Chebyshev.R1T0))
+        grid = createGrid(gp)
+        pts = getGridpoints(grid)
+
+        # Assemble operator and RHS
+        L = assemble_operator(grid, [OperatorTerm(0, 0, 2, 1.0)], "u")
+        f = -π^2 .* sin.(π .* pts)
+
+        prob = SpringsteelProblem(grid; operator=L, rhs=f)
+        sol = solve(prob)
+
+        u_analytic = sin.(π .* pts)
+        @test sol.converged == true
+        @test maximum(abs.(sol.physical .- u_analytic)) < 1e-8
+    end
+end
+```
+
+### 8.4 Multi-dimensional Solver Tests
+
+For 2D and 3D problems, use separable analytic solutions:
+
+```julia
+@testset "2D Poisson on RZ_Grid" begin
+    # u(r,z) = sin(πr) * sin(πz), ∇²u = -2π²sin(πr)sin(πz)
+    # Dirichlet BCs on all boundaries
+    ...
+    @test maximum(abs.(sol.physical .- u_analytic)) < 1e-6
+end
+```
+
+**Key principle**: Always use functions whose exact solution is known analytically.
+Verify spectral convergence by testing at two resolutions when feasible.
+
+### 8.5 Running Solver Tests During Development
+
+For fast iteration when implementing solver steps:
+
+```bash
+# Run ONLY solver tests (fastest feedback loop)
+cd /path/to/Springsteel.jl
+julia --project -e '
+    using Springsteel, Test
+    @testset "Solver dev" begin
+        include("test/solver.jl")
+    end
+'
+
+# Run solver + basis tests (for matrix representation work)
+julia --project -e '
+    ENV["TEST_GROUP"] = "solver"
+    using Pkg; Pkg.test()
+'
+
+# Full suite (final verification before committing)
+julia --project -e 'using Pkg; Pkg.test()'
+```
+
+### 8.6 Solver Test Quality Checklist
+
+- [ ] Every solver type (`SpringsteelProblem`, `SpringsteelSolution`, backend sentinels) has a construction test
+- [ ] `solve()` is tested with at least one analytic solution per basis type (Spline, Fourier, Chebyshev)
+- [ ] Multi-dimensional operator assembly is tested for at least one 2D grid
+- [ ] `assemble_from_equation` results match manual `assemble_operator` results
+- [ ] Error cases are tested (`@test_throws` for singular operators, missing fields, etc.)
+- [ ] Cached factorisation is verified (solve twice with different RHS, check both correct)
+- [ ] If Optimization.jl tests exist, they are conditionally loaded:
+  ```julia
+  if isdefined(Main, :Optimization)
+      @testset "Optimization.jl backend" begin ... end
+  end
+  ```

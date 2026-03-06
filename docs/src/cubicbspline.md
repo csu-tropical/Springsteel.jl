@@ -151,6 +151,14 @@ CubicBSpline.SIIntcoefficients
 CubicBSpline.SIInttransform
 ```
 
+## Matrix Representations
+
+```@docs
+CubicBSpline.spline_basis_matrix
+CubicBSpline.spline_1st_derivative_matrix
+CubicBSpline.spline_2nd_derivative_matrix
+```
+
 ## Generic Wrappers
 
 No-prefix wrappers that delegate to the `S`-prefixed functions above, enabling

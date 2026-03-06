@@ -694,6 +694,200 @@ Use these consistent conventions throughout all docstrings:
 | Derivative order in SI | `\\partial^n / \\partial x^n` with `n = 0, 1, 2` |
 | Chebyshev polynomial | `T_n(z)` |
 | CGL node | `z_j = \\cos((j-1)\\pi/(N-1))` |
+| Linear operator | `\\mathcal{L}[u] = f` |
+| Cost functional | `J(u, p) = \\int \\mathcal{F}(u, u', u'', p)\\, dx` |
+| Kronecker product | `A \\otimes B` |
+| Laplacian | `\\nabla^2 u` |
+| Operator matrix | `\\mathbf{L}` (bold for matrices) |
 
 All LaTeX in docstrings must use **double** backslashes (`\\sum`, `\\varphi`) because Julia
 string parsing consumes one level of escaping before Documenter sees them.
+
+---
+
+## Part 10: Documenting the Solver Framework (`solver.jl`)
+
+### 10.1 Solver Type Docstrings
+
+The solver framework introduces composite types that bundle several components. Follow these
+patterns for consistent documentation.
+
+**Abstract Backend Type:**
+```julia
+"""
+    AbstractSolverBackend
+
+Abstract supertype for solver backend sentinel types. Concrete subtypes select the
+algorithm used by [`solve`](@ref).
+
+See also: [`LocalLinearBackend`](@ref), [`OptimizationBackend`](@ref)
+"""
+abstract type AbstractSolverBackend end
+```
+
+**SpringsteelProblem:**
+```julia
+"""
+    SpringsteelProblem{B <: AbstractSolverBackend}
+
+Composite type bundling a [`SpringsteelGrid`](@ref), linear operator or cost
+functional, and solver backend specification.
+
+# Fields
+- `grid::AbstractGrid`: The discretised domain.
+- `operator::Union{Matrix{Float64}, Nothing}`: Assembled linear operator (for linear problems).
+- `rhs::Union{Vector{Float64}, Nothing}`: Right-hand side vector (for linear problems).
+- `cost::Union{Function, Nothing}`: Cost functional ``J(u, p)`` (for nonlinear/optimization problems).
+- `parameters::Dict{String, Any}`: Problem parameters passed to the solver.
+- `backend::B`: Solver backend sentinel.
+
+# Example
+```julia
+prob = SpringsteelProblem(grid; operator=L, rhs=f)
+sol = solve(prob)
+```
+
+See also: [`solve`](@ref), [`SpringsteelSolution`](@ref), [`assemble_operator`](@ref)
+"""
+```
+
+### 10.2 Operator Assembly Docstrings
+
+Matrix assembly functions should document:
+1. What the returned matrix represents mathematically
+2. The relationship between matrix dimensions and grid dimensions
+3. How boundary conditions are incorporated
+
+```julia
+"""
+    operator_matrix(grid::SpringsteelGrid, dim::Symbol, order::Int) -> Matrix{Float64}
+
+Extract a 1D operator matrix for dimension `dim` (`:i`, `:j`, or `:k`) at derivative
+`order` (0 = evaluation, 1 = first derivative, 2 = second derivative).
+
+Dispatches to the appropriate basis module's matrix function based on the grid's
+basis type for that dimension (Spline → `spline_basis_matrix`, Fourier →
+`dft_matrix`, Chebyshev → `dct_matrix`).
+
+# Arguments
+- `grid::SpringsteelGrid`: The grid whose basis objects provide the matrix
+- `dim::Symbol`: Which dimension (`:i`, `:j`, `:k`)
+- `order::Int`: Derivative order (0, 1, or 2)
+
+# Returns
+- `Matrix{Float64}`: Size `(physical_dim, spectral_dim)` for the requested dimension
+
+See also: [`assemble_operator`](@ref), [`OperatorTerm`](@ref)
+"""
+```
+
+### 10.3 solve() Docstring
+
+The `solve()` function has multiple dispatches (one per backend). Use a single
+shared docstring with a multi-signature banner:
+
+```julia
+"""
+    solve(prob::SpringsteelProblem{LocalLinearBackend}) -> SpringsteelSolution
+    solve(prob::SpringsteelProblem{OptimizationBackend}) -> SpringsteelSolution
+
+Solve the problem defined by `prob` using the specified backend.
+
+For `LocalLinearBackend`: factorises the operator matrix and solves
+``\\mathbf{L} \\mathbf{a} = \\mathbf{f}`` via LU decomposition.
+
+For `OptimizationBackend`: minimises the cost functional ``J(u, p)``
+using the algorithm specified in the backend (requires `Optimization.jl`).
+
+# Returns
+- [`SpringsteelSolution`](@ref) containing the spectral coefficients,
+  physical-space solution, convergence flag, and solver diagnostics.
+
+See also: [`SpringsteelProblem`](@ref), [`assemble_operator`](@ref)
+"""
+```
+
+### 10.4 Matrix Representation Docstrings (Basis Modules)
+
+New matrix representation functions added to basis modules should follow the
+existing `dct_matrix` pattern in `Chebyshev.jl`:
+
+```julia
+"""
+    dft_matrix(ring::Fourier1D) -> Matrix{Float64}
+
+Build the ``(N \\times M)`` DFT evaluation matrix for the Fourier basis.
+
+Entry `[i, j]` is the value of the `j`-th Fourier basis function at the
+`i`-th mish point. Columns are ordered as ``[1, \\cos(x), \\sin(x),
+\\cos(2x), \\sin(2x), \\ldots]`` up to wavenumber `kmax`.
+
+Useful for debugging transforms and constructing linear solvers directly
+in spectral space.
+
+See also: [`dft_1st_derivative`](@ref), [`dft_2nd_derivative`](@ref)
+"""
+```
+
+### 10.5 Documentation Page Structure (`docs/src/solver.md`)
+
+The solver documentation page should follow this structure:
+
+```markdown
+```@meta
+CurrentModule = Springsteel
+```
+
+# Solver Framework
+
+## Overview
+
+Brief description of the solver framework and its two backends.
+
+## Matrix Representations
+
+```@docs
+CubicBSpline.spline_basis_matrix
+CubicBSpline.spline_1st_derivative_matrix
+CubicBSpline.spline_2nd_derivative_matrix
+Fourier.dft_matrix
+Fourier.dft_1st_derivative
+Fourier.dft_2nd_derivative
+Chebyshev.dct_matrix
+Chebyshev.dct_1st_derivative
+Chebyshev.dct_2nd_derivative
+```
+
+## Operator Assembly
+
+```@docs
+OperatorTerm
+operator_matrix
+assemble_operator
+assemble_from_equation
+```
+
+## Problem Definition
+
+```@docs
+SpringsteelProblem
+SpringsteelSolution
+LocalLinearBackend
+OptimizationBackend
+```
+
+## Solving
+
+```@docs
+solve
+```
+```
+
+Add the page to `docs/make.jl`:
+```julia
+pages=[
+    ...
+    "Solver" => "solver.md",
+    ...
+]
+```

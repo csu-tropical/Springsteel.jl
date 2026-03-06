@@ -728,3 +728,83 @@ for spherical, `"latitude"` and `"longitude"`.
 > native mish-point grid.  To load field values back onto the mish-point grid
 > (e.g. to restart a simulation), use `read_physical_grid` with a CSV file
 > produced by `write_grid`.
+
+---
+
+## Example 7 — Solving a Boundary Value Problem
+
+Springsteel includes a solver framework for linear boundary value problems.
+This example solves the 1D Poisson equation ``u'' = f`` on a Chebyshev grid.
+
+### Setting up the problem
+
+```julia
+using Springsteel
+
+# Create a 1D Chebyshev grid with Dirichlet BCs
+gp = SpringsteelGridParameters(
+    geometry = "Z",
+    iMin = 0.0, iMax = 1.0,
+    iDim = 25, b_iDim = 25,
+    BCL = Dict("u" => Chebyshev.R1T0),   # u(0) = 0
+    BCR = Dict("u" => Chebyshev.R1T0),   # u(1) = 0
+    vars = Dict("u" => 1))
+grid = createGrid(gp)
+```
+
+### Assembling the operator
+
+Use [`assemble_from_equation`](@ref) to build the second-derivative operator:
+
+```julia
+L = assemble_from_equation(grid, "u"; d_ii=1.0)
+```
+
+For multi-term operators (e.g., ``a u'' + b u' + c u = f``), pass multiple
+keywords:
+
+```julia
+L = assemble_from_equation(grid, "u"; d_ii=a, d_i=b, d0=c)
+```
+
+### Defining the RHS and solving
+
+```julia
+pts = solver_gridpoints(grid, "u")
+f = -pi^2 .* sin.(pi .* pts)   # RHS for u(x) = sin(πx)
+
+prob = SpringsteelProblem(grid; operator=L, rhs=f)
+sol = solve(prob)
+
+# Check accuracy
+u_exact = sin.(pi .* pts)
+maximum(abs.(sol.physical .- u_exact))   # < 1e-4
+```
+
+The solver automatically applies Dirichlet boundary conditions by replacing
+boundary rows in the operator matrix. The solution is returned as a
+[`SpringsteelSolution`](@ref) containing both the spectral coefficients and
+physical-space values.
+
+### 2D boundary value problems
+
+The solver extends naturally to multi-dimensional grids via Kronecker products.
+For a 2D Poisson equation on a Chebyshev×Chebyshev grid:
+
+```julia
+gp2d = SpringsteelGridParameters(
+    geometry = "ZZ",
+    iMin = 0.0, iMax = 1.0, iDim = 20, b_iDim = 20,
+    jMin = 0.0, jMax = 1.0, jDim = 20, b_jDim = 20,
+    BCL = Dict("u" => Chebyshev.R1T0),
+    BCR = Dict("u" => Chebyshev.R1T0),
+    BCU = Dict("u" => Chebyshev.R1T0),
+    BCD = Dict("u" => Chebyshev.R1T0),
+    vars = Dict("u" => 1))
+grid2d = createGrid(gp2d)
+
+L2d = assemble_from_equation(grid2d, "u"; d_ii=1.0, d_jj=1.0)
+```
+
+The assembled operator ``\mathbf{L}`` automatically combines 1D matrices
+via Kronecker products: ``\mathbf{L} = \mathbf{D}^2_i \otimes \mathbf{I}_j + \mathbf{I}_i \otimes \mathbf{D}^2_j``.

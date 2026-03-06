@@ -458,6 +458,66 @@
 
     end
 
+    @testset "CubicBSpline matrix representations" begin
+        sp = SplineParameters(xmin=0.0, xmax=10.0, num_cells=20,
+                              BCL=CubicBSpline.R0, BCR=CubicBSpline.R0)
+        spline = Spline1D(sp)
+        pts = spline.mishPoints
+
+        M = CubicBSpline.spline_basis_matrix(spline)
+        Mx = CubicBSpline.spline_1st_derivative_matrix(spline)
+        Mxx = CubicBSpline.spline_2nd_derivative_matrix(spline)
+
+        # Test 1: Size check
+        @test size(M) == (sp.mishDim, sp.bDim)
+        @test size(Mx) == (sp.mishDim, sp.bDim)
+        @test size(Mxx) == (sp.mishDim, sp.bDim)
+
+        # Test 2: M * a ≈ SItransform for a polynomial input
+        # Use a quadratic: f(x) = x^2
+        spline2 = Spline1D(sp)
+        setMishValues(spline2, pts .^ 2)
+        SBtransform!(spline2)
+        SAtransform!(spline2)
+        u_matrix = M * spline2.a
+        u_transform = zeros(sp.mishDim)
+        SItransform(spline2, u_transform)
+        @test maximum(abs.(u_matrix .- u_transform)) < 1e-10
+
+        # Test 3: Mx * a ≈ SIxtransform for x^2 → 2x
+        deriv1 = Mx * spline2.a
+        ux_transform = SIxtransform(spline2)
+        @test maximum(abs.(deriv1 .- ux_transform)) < 1e-10
+
+        # Test 4: Mxx * a ≈ SIxxtransform for x^3
+        sp3 = SplineParameters(xmin=0.0, xmax=10.0, num_cells=20,
+                               BCL=CubicBSpline.R0, BCR=CubicBSpline.R0)
+        spline3 = Spline1D(sp3)
+        pts3 = spline3.mishPoints
+        setMishValues(spline3, pts3 .^ 3)
+        SBtransform!(spline3)
+        SAtransform!(spline3)
+        Mxx3 = CubicBSpline.spline_2nd_derivative_matrix(spline3)
+        deriv2 = Mxx3 * spline3.a
+        uxx_transform = SIxxtransform(spline3)
+        @test maximum(abs.(deriv2 .- uxx_transform)) < 1e-10
+
+        # Test 5: First derivative of constant ≈ 0
+        spline_c = Spline1D(sp)
+        setMishValues(spline_c, fill(5.0, sp.mishDim))
+        SBtransform!(spline_c)
+        SAtransform!(spline_c)
+        @test maximum(abs.(Mx * spline_c.a)) < 1e-10
+
+        # Test 6: Matrix with BC folding produces correct dimensions
+        sp_bc = SplineParameters(xmin=0.0, xmax=10.0, num_cells=20,
+                                 BCL=CubicBSpline.R1T0, BCR=CubicBSpline.R1T0)
+        spline_bc = Spline1D(sp_bc)
+        M_folded = CubicBSpline.spline_basis_matrix(spline_bc; gammaBC=spline_bc.gammaBC)
+        # R1T0 has rank 1 on each side, so Minterior = bDim - 2
+        @test size(M_folded) == (sp_bc.mishDim, sp_bc.bDim - 2)
+    end
+
     @testset "Fourier Tests" begin
 
         @testset "FourierParameters construction" begin
@@ -768,6 +828,54 @@
             uint_f = Fourier.FIInttransform(ring, 0.0)
             uint_g = Fourier.IInttransform(ring, 0.0)
             @test uint_f == uint_g
+        end
+
+        @testset "Fourier matrix representations" begin
+            fp = Fourier.FourierParameters(ymin=0.0, kmax=5, yDim=32, bDim=11)
+            ring = Fourier.Fourier1D(fp)
+            pts = ring.mishPoints
+
+            M = Fourier.dft_matrix(ring)
+            Mx = Fourier.dft_1st_derivative(ring)
+            Mxx = Fourier.dft_2nd_derivative(ring)
+
+            # Test 1: Size check
+            @test size(M) == (fp.yDim, fp.bDim)
+            @test size(Mx) == (fp.yDim, fp.bDim)
+            @test size(Mxx) == (fp.yDim, fp.bDim)
+
+            # Test 2: Round-trip consistency with FB transform
+            ring.uMish .= sin.(pts)
+            FBtransform!(ring)
+            u_matrix = M * ring.b
+            FAtransform!(ring)
+            FItransform!(ring)
+            @test maximum(abs.(u_matrix .- ring.uMish)) < 1e-10
+
+            # Test 3: First derivative of sin(x) ≈ cos(x)
+            # Get b-coefficients for sin(x)
+            ring2 = Fourier.Fourier1D(fp)
+            ring2.uMish .= sin.(pts)
+            FBtransform!(ring2)
+            deriv1 = Mx * ring2.b
+            @test maximum(abs.(deriv1 .- cos.(pts))) < 1e-10
+
+            # Test 4: Second derivative of sin(x) ≈ -sin(x)
+            deriv2 = Mxx * ring2.b
+            @test maximum(abs.(deriv2 .+ sin.(pts))) < 1e-10
+
+            # Test 5: First derivative of constant ≈ 0
+            ring3 = Fourier.Fourier1D(fp)
+            ring3.uMish .= 5.0
+            FBtransform!(ring3)
+            @test maximum(abs.(Mx * ring3.b)) < 1e-12
+
+            # Test 6: Second derivative of cos(2x) ≈ -4*cos(2x)
+            ring4 = Fourier.Fourier1D(fp)
+            ring4.uMish .= cos.(2.0 .* pts)
+            FBtransform!(ring4)
+            deriv2_cos2x = Mxx * ring4.b
+            @test maximum(abs.(deriv2_cos2x .+ 4.0 .* cos.(2.0 .* pts))) < 1e-10
         end
 
     end  # Fourier Tests
