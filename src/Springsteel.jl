@@ -202,7 +202,9 @@ Base.@kwdef struct SpringsteelGridParameters
     iMin::real = 0.0
     iMax::real = 0.0
     num_cells::int = 0
-    iDim::int = num_cells * CubicBSpline.mubar
+    mubar::int = 3
+    quadrature::Symbol = :gauss
+    iDim::int = num_cells * mubar
     b_iDim::int = num_cells + 3
     l_q::Dict = Dict("default" => 2.0)
     BCL::Dict = CubicBSpline.R0
@@ -224,7 +226,7 @@ Base.@kwdef struct SpringsteelGridParameters
     # Patch indices
     spectralIndexL::int = 1
     spectralIndexR::int = spectralIndexL + b_iDim - 1
-    patchOffsetL::int = (spectralIndexL - 1) * 3
+    patchOffsetL::int = (spectralIndexL - 1) * mubar
     patchOffsetR::int = patchOffsetL + iDim
     tile_num::int = 0
     # The default i increment is the number of spline cells
@@ -291,7 +293,9 @@ Base.@kwdef struct GridParameters
     xmin::real = 0.0
     xmax::real = 0.0
     num_cells::int = 0
-    rDim::int = num_cells * CubicBSpline.mubar
+    mubar::int = 3
+    quadrature::Symbol = :gauss
+    rDim::int = num_cells * mubar
     b_rDim::int = num_cells + 3
     l_q::Dict = Dict("default" => 2.0)
     BCL::Dict = CubicBSpline.R0
@@ -313,7 +317,7 @@ Base.@kwdef struct GridParameters
     # Patch indices
     spectralIndexL::int = 1
     spectralIndexR::int = spectralIndexL + b_rDim - 1
-    patchOffsetL::int = (spectralIndexL - 1) * 3
+    patchOffsetL::int = (spectralIndexL - 1) * mubar
     patchOffsetR::int = patchOffsetL + rDim
     tile_num::int = 0
     r_regular_out::int = num_cells + 1

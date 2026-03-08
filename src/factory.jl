@@ -181,6 +181,8 @@ function _i_mishpoints(gp::SpringsteelGridParameters)
         xmin     = gp.iMin,
         xmax     = gp.iMax,
         num_cells = gp.num_cells,
+        mubar    = gp.mubar,
+        quadrature = gp.quadrature,
         l_q      = 2.0,
         BCL      = gp.BCL[first_key],
         BCR      = gp.BCR[first_key]))
@@ -207,9 +209,9 @@ function _cartesian_j_dims(gp::SpringsteelGridParameters)
         dx = gp.iMax - gp.iMin
         nc_j = Int64(ceil(gp.num_cells * (dy / dx)))
     else
-        nc_j = Int64(gp.jDim / CubicBSpline.mubar)
+        nc_j = Int64(gp.jDim / gp.mubar)
     end
-    return nc_j * CubicBSpline.mubar, nc_j + 3
+    return nc_j * gp.mubar, nc_j + 3
 end
 
 # kDim, b_kDim for Cartesian Spline k (RRR)
@@ -219,9 +221,9 @@ function _cartesian_k_dims(gp::SpringsteelGridParameters)
         dx = gp.iMax - gp.iMin
         nc_k = Int64(ceil(gp.num_cells * (dk / dx)))
     else
-        nc_k = Int64(gp.kDim / CubicBSpline.mubar)
+        nc_k = Int64(gp.kDim / gp.mubar)
     end
-    return nc_k * CubicBSpline.mubar, nc_k + 3
+    return nc_k * gp.mubar, nc_k + 3
 end
 
 # Reconstruct SpringsteelGridParameters with updated j/k dims
@@ -233,6 +235,8 @@ function _update_gp(gp::SpringsteelGridParameters;
         iMin           = gp.iMin,
         iMax           = gp.iMax,
         num_cells      = gp.num_cells,
+        mubar          = gp.mubar,
+        quadrature     = gp.quadrature,
         iDim           = gp.iDim,
         b_iDim         = gp.b_iDim,
         l_q            = gp.l_q,
@@ -340,6 +344,8 @@ function _create_cartesian_1d(gp::SpringsteelGridParameters)
             xmin      = gp.iMin,
             xmax      = gp.iMax,
             num_cells = gp.num_cells,
+            mubar     = gp.mubar,
+            quadrature = gp.quadrature,
             l_q       = var_l_q,
             BCL       = gp.BCL[key],
             BCR       = gp.BCR[key]))
@@ -374,6 +380,8 @@ function _create_cartesian_2d_rz(gp::SpringsteelGridParameters)
                 xmin      = gp.iMin,
                 xmax      = gp.iMax,
                 num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
                 l_q       = var_l_q,
                 BCL       = gp.BCL[key],
                 BCR       = gp.BCR[key]))
@@ -407,7 +415,7 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
     grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
-    nc_j = Int64(gp.jDim / CubicBSpline.mubar)
+    nc_j = Int64(gp.jDim / gp.mubar)
     for key in keys(gp.vars)
         v = gp.vars[key]
         var_l_q_i = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
@@ -417,6 +425,8 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
                 xmin      = gp.iMin,
                 xmax      = gp.iMax,
                 num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
                 l_q       = var_l_q_i,
                 BCL       = gp.BCL[key],
                 BCR       = gp.BCR[key]))
@@ -426,6 +436,8 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
                 xmin      = gp.jMin,
                 xmax      = gp.jMax,
                 num_cells = nc_j,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
                 l_q       = var_l_q_j,
                 BCL       = gp.BCU[key],
                 BCR       = gp.BCD[key]))
@@ -452,8 +464,8 @@ function _create_cartesian_3d_rrr(gp::SpringsteelGridParameters)
     grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
-    nc_j = Int64(gp.jDim / CubicBSpline.mubar)
-    nc_k = Int64(gp.kDim / CubicBSpline.mubar)
+    nc_j = Int64(gp.jDim / gp.mubar)
+    nc_k = Int64(gp.kDim / gp.mubar)
     for key in keys(gp.vars)
         v = gp.vars[key]
         var_l_q_i = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
@@ -462,19 +474,22 @@ function _create_cartesian_3d_rrr(gp::SpringsteelGridParameters)
         for j in 1:gp.b_jDim, z in 1:gp.b_kDim
             grid.ibasis.data[j, z, v] = Spline1D(SplineParameters(
                 xmin      = gp.iMin, xmax = gp.iMax,
-                num_cells = gp.num_cells, l_q = var_l_q_i,
+                num_cells = gp.num_cells, mubar = gp.mubar,
+                quadrature = gp.quadrature, l_q = var_l_q_i,
                 BCL       = gp.BCL[key], BCR = gp.BCR[key]))
         end
         for r in 1:gp.iDim, z in 1:gp.b_kDim
             grid.jbasis.data[r, z, v] = Spline1D(SplineParameters(
                 xmin      = gp.jMin, xmax = gp.jMax,
-                num_cells = nc_j, l_q = var_l_q_j,
+                num_cells = nc_j, mubar = gp.mubar,
+                quadrature = gp.quadrature, l_q = var_l_q_j,
                 BCL       = gp.BCU[key], BCR = gp.BCD[key]))
         end
         for r in 1:gp.iDim, l in 1:gp.jDim
             grid.kbasis.data[r, l, v] = Spline1D(SplineParameters(
                 xmin      = gp.kMin, xmax = gp.kMax,
-                num_cells = nc_k, l_q = var_l_q_k,
+                num_cells = nc_k, mubar = gp.mubar,
+                quadrature = gp.quadrature, l_q = var_l_q_k,
                 BCL       = gp.BCB[key], BCR = gp.BCT[key]))
         end
     end
@@ -544,6 +559,8 @@ function _create_cylindrical_2d_rl(gp::SpringsteelGridParameters)
                 xmin      = gp.iMin,
                 xmax      = gp.iMax,
                 num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
                 l_q       = var_l_q,
                 BCL       = gp.BCL[key],
                 BCR       = gp.BCR[key]))
@@ -583,6 +600,8 @@ function _create_cylindrical_3d_rlz(gp::SpringsteelGridParameters)
                 xmin      = gp.iMin,
                 xmax      = gp.iMax,
                 num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
                 l_q       = var_l_q,
                 BCL       = gp.BCL[key],
                 BCR       = gp.BCR[key]))
@@ -636,6 +655,8 @@ function _create_spherical_2d_sl(gp::SpringsteelGridParameters)
                 xmin      = gp.iMin,
                 xmax      = gp.iMax,
                 num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
                 l_q       = var_l_q,
                 BCL       = gp.BCL[key],
                 BCR       = gp.BCR[key]))
@@ -675,6 +696,8 @@ function _create_spherical_3d_slz(gp::SpringsteelGridParameters)
                 xmin      = gp.iMin,
                 xmax      = gp.iMax,
                 num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
                 l_q       = var_l_q,
                 BCL       = gp.BCL[key],
                 BCR       = gp.BCR[key]))

@@ -100,9 +100,87 @@ basis functions are folded onto the interior so that the domain has exactly
 """
 const PERIODIC = Dict("PERIODIC" => 0)
 
-# Fix the mish to 3 points
+# Default mish points per cell (kept for backward compatibility; prefer sp.mubar)
 const mubar = 3
 const gaussweight = [5.0/18.0, 8.0/18.0, 5.0/18.0]
+
+# ── Quadrature rule tables ────────────────────────────────────────────────────
+# Gauss-Legendre nodes on [-1, 1] and weights (sum to 2) for mubar 1–5.
+# These are mapped to [0, 1] by _quadrature_rule.
+
+const _GL_NODES = Dict{Int,Vector{Float64}}(
+    1 => [0.0],
+    2 => [-1.0/sqrt(3.0), 1.0/sqrt(3.0)],
+    3 => [-sqrt(3.0/5.0), 0.0, sqrt(3.0/5.0)],
+    4 => [-sqrt(3.0/7.0 + 2.0/7.0*sqrt(6.0/5.0)),
+           -sqrt(3.0/7.0 - 2.0/7.0*sqrt(6.0/5.0)),
+            sqrt(3.0/7.0 - 2.0/7.0*sqrt(6.0/5.0)),
+            sqrt(3.0/7.0 + 2.0/7.0*sqrt(6.0/5.0))],
+    5 => [-sqrt(5.0 + 2.0*sqrt(10.0/7.0))/3.0,
+           -sqrt(5.0 - 2.0*sqrt(10.0/7.0))/3.0,
+            0.0,
+            sqrt(5.0 - 2.0*sqrt(10.0/7.0))/3.0,
+            sqrt(5.0 + 2.0*sqrt(10.0/7.0))/3.0],
+)
+const _GL_WEIGHTS = Dict{Int,Vector{Float64}}(
+    1 => [2.0],
+    2 => [1.0, 1.0],
+    3 => [5.0/9.0, 8.0/9.0, 5.0/9.0],
+    4 => [(18.0 - sqrt(30.0))/36.0,
+           (18.0 + sqrt(30.0))/36.0,
+           (18.0 + sqrt(30.0))/36.0,
+           (18.0 - sqrt(30.0))/36.0],
+    5 => [(322.0 - 13.0*sqrt(70.0))/900.0,
+           (322.0 + 13.0*sqrt(70.0))/900.0,
+            128.0/225.0,
+           (322.0 + 13.0*sqrt(70.0))/900.0,
+           (322.0 - 13.0*sqrt(70.0))/900.0],
+)
+
+const _MAX_GAUSS_MUBAR = 5
+
+"""
+    _quadrature_rule(mubar::Int, quadrature::Symbol) -> (Vector{Float64}, Vector{Float64})
+
+Return `(quadpoints, quadweights)` for the given `mubar` and quadrature type.
+
+- `quadpoints`: positions within a cell as fractions of DX, in `[0, 1)`.
+- `quadweights`: integration weights normalised so that `sum(quadweights) == 1`.
+  Multiply by `DX` to get the physical integration weight.
+
+Quadrature types:
+- `:gauss` — Gauss-Legendre rule (mubar 1–$(_MAX_GAUSS_MUBAR) supported).
+- `:regular` — equispaced midpoint rule (any mubar ≥ 1).
+"""
+function _quadrature_rule(mb::Int, quadrature::Symbol)
+    if mb < 1
+        throw(ArgumentError("mubar must be ≥ 1, got $mb"))
+    end
+
+    if quadrature == :gauss
+        if mb > _MAX_GAUSS_MUBAR
+            throw(ArgumentError(
+                "Gauss-Legendre tables only available for mubar 1–$(_MAX_GAUSS_MUBAR), got $mb. " *
+                "Use quadrature=:regular for larger mubar."))
+        end
+        # Map GL nodes from [-1, 1] to [0, 1] and scale weights to sum to 1
+        gl_nodes = _GL_NODES[mb]
+        gl_weights = _GL_WEIGHTS[mb]
+        qpts = [(xi + 1.0) / 2.0 for xi in gl_nodes]
+        qwts = [w / 2.0 for w in gl_weights]
+        return qpts, qwts
+
+    elseif quadrature == :regular
+        # Equispaced midpoint rule: points at cell-local (2k-1)/(2N)
+        qpts = [(2*k - 1) / (2*mb) for k in 1:mb]
+        qwts = fill(1.0 / mb, mb)
+        return qpts, qwts
+
+    else
+        throw(ArgumentError(
+            "Unknown quadrature type: $quadrature. Use :gauss or :regular."))
+    end
+end
 
 """
     SplineParameters
@@ -112,7 +190,14 @@ Immutable parameter struct (using `@kwdef`) for a 1D cubic B-spline basis.
 # Fields
 - `xmin::Float64`: Left boundary of the domain
 - `xmax::Float64`: Right boundary of the domain
-- `num_cells::Int64`: Number of spline cells; total physical gridpoints = `num_cells * mubar`
+- `num_cells::Int64`: Number of spline cells
+- `mubar::Int64`: Number of quadrature (mish) points per cell (default `3`).
+  This controls the physical grid density within each cell. The spectral resolution
+  is always `bDim = num_cells + 3` regardless of `mubar`.
+- `quadrature::Symbol`: Quadrature type (default `:gauss`).
+  - `:gauss` — Gauss-Legendre quadrature (mubar 1–5). Optimal integration accuracy.
+  - `:regular` — equispaced midpoint rule (any mubar ≥ 1). Produces a globally
+    uniform physical grid with spacing `DX/mubar`.
 - `l_q::Float64`: Filter length scale (default `2.0`). Larger values produce smoother spectral fits
 - `BCL::Dict`: Left boundary condition (one of [`R0`](@ref), [`R1T0`](@ref), [`R1T1`](@ref), [`R1T2`](@ref), [`R2T10`](@ref), [`R2T20`](@ref), [`R3`](@ref), [`PERIODIC`](@ref))
 - `BCR::Dict`: Right boundary condition (same options as `BCL`)
@@ -131,14 +216,22 @@ sp = CubicBSpline.SplineParameters(
     BCL = CubicBSpline.R0,
     BCR = CubicBSpline.R0
 )
+
+# Regular grid with 2 points per cell
+sp_reg = CubicBSpline.SplineParameters(
+    xmin = 0.0, xmax = 100.0, num_cells = 20,
+    mubar = 2, quadrature = :regular
+)
 ```
 
-See also: [`Spline1D`](@ref)
+See also: [`Spline1D`](@ref), [`_quadrature_rule`](@ref)
 """
 Base.@kwdef struct SplineParameters
     xmin::real = 0.0
     xmax::real = 0.0
     num_cells::int = 1
+    mubar::int = 3
+    quadrature::Symbol = :gauss
     l_q::real = 2.0
     BCL::Dict = R0
     BCR::Dict = R0
@@ -148,19 +241,36 @@ Base.@kwdef struct SplineParameters
     mishDim::int = num_cells * mubar
 end
 
+function _validate_spline_params(sp::SplineParameters)
+    if sp.mubar < 1
+        throw(ArgumentError("mubar must be ≥ 1, got $(sp.mubar)"))
+    end
+    if sp.quadrature ∉ (:gauss, :regular)
+        throw(ArgumentError(
+            "Unknown quadrature type: $(sp.quadrature). Use :gauss or :regular."))
+    end
+    if sp.quadrature == :gauss && sp.mubar > _MAX_GAUSS_MUBAR
+        throw(ArgumentError(
+            "Gauss-Legendre tables only available for mubar 1–$(_MAX_GAUSS_MUBAR), got $(sp.mubar). " *
+            "Use quadrature=:regular for larger mubar."))
+    end
+end
+
 """
     Spline1D
 
 One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParameters)`.
 
 # Fields
-- `params::SplineParameters`: Configuration (domain, cells, BCs, filter length)
+- `params::SplineParameters`: Configuration (domain, cells, BCs, filter length, mubar, quadrature)
+- `quadpoints::Vector{Float64}`: Cell-local quadrature positions in `[0, 1)` (length `mubar`)
+- `quadweights::Vector{Float64}`: Quadrature weights normalised to sum to 1 (length `mubar`)
 - `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix (maps interior to full coefficient space)
 - `pq`: Full `(P + Q)` matrix used in the least-squares / variational solve
 - `pqFactor::SuiteSparse.CHOLMOD.Factor{Float64}`: Sparse Cholesky factorisation of the open-form `(P + Q)` matrix for fast solves
-- `p1`: Full `(P⁽¹⁾ + Q)` matrix for the integral variational solve (same Q as `pq`, but P uses first-derivative basis ``\varphi'_m``; see [`calcP1factor`](@ref))
+- `p1`: Full `(P⁽¹⁾ + Q)` matrix for the integral variational solve (same Q as `pq`, but P uses first-derivative basis ``\\varphi'_m``; see [`calcP1factor`](@ref))
 - `p1Factor::SuiteSparse.CHOLMOD.Factor{Float64}`: Sparse Cholesky factorisation of the open-form `(P⁽¹⁾ + Q)` matrix, used by [`SIIntcoefficients`](@ref) for fast integration solves
-- `mishPoints::Vector{Float64}`: Physical locations of the mish points
+- `mishPoints::Vector{Float64}`: Physical locations of the mish points (length `num_cells * mubar`)
 - `uMish::Vector{Float64}`: Physical field values at mish points (mutable working buffer)
 - `b::Vector{Float64}`: B-vector (result of SB transform, inner products ⟨φₘ, u⟩)
 - `a::Vector{Float64}`: Spectral coefficient vector (result of SA transform)
@@ -168,12 +278,15 @@ One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParame
 # Notes
 - Constructing `Spline1D` builds `gammaBC` and factorises the `(P + Q)` matrix, which is the
   computationally expensive step.  Reuse spline objects when possible.
-- The `mubar = 3` Gauss–Legendre points per cell are fixed (Ooyama 2002).
+- The number of quadrature points per cell (`mubar`) and the quadrature type
+  (`:gauss` or `:regular`) are set in [`SplineParameters`](@ref).
 
 See also: [`SplineParameters`](@ref), [`SBtransform`](@ref), [`SAtransform`](@ref), [`SItransform`](@ref)
 """
 struct Spline1D
     params::SplineParameters
+    quadpoints::Vector{real}
+    quadweights::Vector{real}
     gammaBC::Matrix{real}
     pq
     pqFactor::SuiteSparse.CHOLMOD.Factor{Float64}
@@ -357,6 +470,7 @@ Cholesky decomposition for repeated fast linear solves during [`SAtransform`](@r
 - `(pq::Matrix{Float64}, pqFactor)`: Full `(P + Q)` matrix and its Cholesky factor
 """
 function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
+    qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
     eps_q = ((sp.l_q*sp.DX)/(2*π))^6
     Mdim = sp.num_cells + 3
 
@@ -378,15 +492,15 @@ function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
                 if (mc < (m2 - 2)) || (mc > (m2 + 1))
                     continue
                 end
-                for mu = 1:mubar
-                    i = mu + (mubar * mc)
-                    x = sp.xmin + (mc * sp.DX) + sp.DX * ((mu/2.0 - 1.0) * sqrt35) + sp.DX * 0.5
+                for mu = 1:sp.mubar
+                    i = mu + (sp.mubar * mc)
+                    x = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
                     pm1 = basis(sp, m1, x, 0)
                     qm1 = basis(sp, m1, x, 3)
                     pm2 = basis(sp, m2, x, 0)
                     qm2 = basis(sp, m2, x, 3)
-                    P[mi1,mi2] += sp.DX * gaussweight[mu] * pm1 * pm2
-                    Q[mi1,mi2] += sp.DX * gaussweight[mu] * eps_q * qm1 * qm2
+                    P[mi1,mi2] += sp.DX * qwts[mu] * pm1 * pm2
+                    Q[mi1,mi2] += sp.DX * qwts[mu] * eps_q * qm1 * qm2
                 end
             end
         end
@@ -424,6 +538,7 @@ indefinite integral.
 See also: [`calcPQfactor`](@ref), [`SIIntcoefficients`](@ref)
 """
 function calcP1factor(sp::SplineParameters, gammaBC::Matrix{real})
+    qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
     eps_q = ((sp.l_q*sp.DX)/(2*π))^6
     Mdim = sp.num_cells + 3
 
@@ -445,15 +560,15 @@ function calcP1factor(sp::SplineParameters, gammaBC::Matrix{real})
                 if (mc < (m2 - 2)) || (mc > (m2 + 1))
                     continue
                 end
-                for mu = 1:mubar
-                    i = mu + (mubar * mc)
-                    x = sp.xmin + (mc * sp.DX) + sp.DX * ((mu/2.0 - 1.0) * sqrt35) + sp.DX * 0.5
+                for mu = 1:sp.mubar
+                    i = mu + (sp.mubar * mc)
+                    x = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
                     pm1 = basis(sp, m1, x, 1)  # first derivative of basis
                     pm2 = basis(sp, m2, x, 1)  # first derivative of basis
                     qm1 = basis(sp, m1, x, 3)
                     qm2 = basis(sp, m2, x, 3)
-                    P1[mi1,mi2] += sp.DX * gaussweight[mu] * pm1 * pm2
-                    Q[mi1,mi2]  += sp.DX * gaussweight[mu] * eps_q * qm1 * qm2
+                    P1[mi1,mi2] += sp.DX * qwts[mu] * pm1 * pm2
+                    Q[mi1,mi2]  += sp.DX * qwts[mu] * eps_q * qm1 * qm2
                 end
             end
         end
@@ -493,11 +608,12 @@ spectral transform.
 See also: [`Spline1D`](@ref), [`SBtransform`](@ref)
 """
 function calcMishPoints(sp::SplineParameters)
-    x = zeros(real,sp.num_cells*mubar)
+    qpts, _ = _quadrature_rule(sp.mubar, sp.quadrature)
+    x = zeros(real, sp.mishDim)
     for mc = 0:(sp.num_cells-1)
-        for mu = 1:mubar
-            i = mu + (mubar * mc)
-            x[i] = sp.xmin + (mc * sp.DX) + sp.DX * ((mu/2.0 - 1.0) * sqrt35) + sp.DX * 0.5
+        for mu = 1:sp.mubar
+            i = mu + (sp.mubar * mc)
+            x[i] = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
         end
     end
     return x
@@ -536,6 +652,9 @@ spline = CubicBSpline.Spline1D(sp)
 See also: [`SBtransform`](@ref), [`SAtransform`](@ref), [`SItransform`](@ref)
 """
 function Spline1D(sp::SplineParameters)
+    _validate_spline_params(sp)
+    qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
+
     gammaBC = calcGammaBC(sp)
     pq, pqFactor = calcPQfactor(sp, gammaBC)
     p1, p1Factor = calcP1factor(sp, gammaBC)
@@ -546,7 +665,7 @@ function Spline1D(sp::SplineParameters)
     b = zeros(real,sp.bDim)
     a = zeros(real,sp.bDim)
 
-    spline = Spline1D(sp,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,uMish,b,a)
+    spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,uMish,b,a)
     return spline
 end
 
@@ -596,6 +715,7 @@ continues with [`SAtransform`](@ref).
 See also: [`SAtransform`](@ref), [`SBxtransform`](@ref)
 """
 function SBtransform(sp::SplineParameters, uMish::Vector{real})
+    qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
     Mdim = sp.num_cells + 3
     b = zeros(real,Mdim)
 
@@ -605,11 +725,11 @@ function SBtransform(sp::SplineParameters, uMish::Vector{real})
             if (mc < (m - 2)) || (mc > (m + 1))
                 continue
             end
-            for mu = 1:mubar
-                i = mu + (mubar * mc)
-                x = sp.xmin + (mc * sp.DX) + sp.DX * ((mu/2.0 - 1.0) * sqrt35) + sp.DX * 0.5
+            for mu = 1:sp.mubar
+                i = mu + (sp.mubar * mc)
+                x = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
                 bm = basis(sp, m, x, 0)
-                b[mi] += sp.DX * gaussweight[mu] * bm * uMish[i]
+                b[mi] += sp.DX * qwts[mu] * bm * uMish[i]
             end
         end
     end
@@ -650,6 +770,7 @@ Compute the **SBx transform**: B-vector of the derivative ``f'`` via integration
 See also: [`SBtransform`](@ref), [`SAtransform`](@ref)
 """
 function SBxtransform(sp::SplineParameters, uMish::Vector{real}, BCL::real, BCR::real)
+    qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
     Mdim = sp.num_cells + 3
     b = zeros(real, Mdim)
 
@@ -659,11 +780,11 @@ function SBxtransform(sp::SplineParameters, uMish::Vector{real}, BCL::real, BCR:
             if (mc < (m - 2)) || (mc > (m + 1))
                 continue
             end
-            for mu = 1:mubar
-                i = mu + (mubar * mc)
-                x = sp.xmin + (mc * sp.DX) + sp.DX * ((mu/2.0 - 1.0) * sqrt35) + sp.DX * 0.5
+            for mu = 1:sp.mubar
+                i = mu + (sp.mubar * mc)
+                x = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
                 bm = basis(sp, m, x, 1)
-                b[mi] += sp.DX * gaussweight[mu] * bm * uMish[i]
+                b[mi] += sp.DX * qwts[mu] * bm * uMish[i]
             end
         end
         bl = basis(sp, m, sp.xmin, 0) * BCL
@@ -862,12 +983,13 @@ function SItransform(sp::SplineParameters, a::Vector{real}, x::real, derivative:
 end
 
 function SItransform(sp::SplineParameters, a::Vector{real}, derivative::int = 0)
+    qpts, _ = _quadrature_rule(sp.mubar, sp.quadrature)
 
-    u = zeros(real,sp.num_cells*mubar)
+    u = zeros(real,sp.mishDim)
     for mc = 0:(sp.num_cells-1)
-        for mu = 1:mubar
-            i = mu + (mubar * mc)
-            x = sp.xmin + (mc * sp.DX) + sp.DX * ((mu/2.0 - 1.0) * sqrt35) + sp.DX * 0.5
+        for mu = 1:sp.mubar
+            i = mu + (sp.mubar * mc)
+            x = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
             for m = (mc-1):(mc+2)
                 if (m >= -1) && (m <= (sp.num_cells+1))
                     mi = m + 2
@@ -950,7 +1072,7 @@ See also: [`SItransform`](@ref)
 """
 function SItransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64 = 0)
     sp = spline.params
-    u = zeros(Float64,sp.num_cells*mubar,spline.params.bDim)
+    u = zeros(Float64,sp.mishDim,spline.params.bDim)
     for i in eachindex(points)
         xm = ceil(Int64,(points[i] - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
         for m = xm:(xm + 3)

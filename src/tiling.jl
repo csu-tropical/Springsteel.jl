@@ -70,6 +70,8 @@ function _create_tile_from_patch(patch::SpringsteelGrid,
         BCB            = patch.params.BCB,
         BCT            = patch.params.BCT,
         vars           = patch.params.vars,
+        mubar          = patch.params.mubar,
+        quadrature     = patch.params.quadrature,
         spectralIndexL = spectralIndexL,
         tile_num       = tile_num)
     return createGrid(tile_gp)
@@ -150,12 +152,12 @@ function calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArra
     siL   = ones(Int64,    num_tiles)
 
     iMins[1] = patch.params.iMin
-    nc[1]    = Int64(ceil(tile_sizes[1] / 3))
+    nc[1]    = Int64(ceil(tile_sizes[1] / patch.params.mubar))
     iMaxs[1] = nc[1] * DX + iMins[1]
 
     for i in 2:num_tiles-1
         iMins[i] = iMaxs[i-1]
-        nc[i]    = Int64(ceil(tile_sizes[i] / 3))
+        nc[i]    = Int64(ceil(tile_sizes[i] / patch.params.mubar))
         iMaxs[i] = nc[i] * DX + iMins[i]
         siL[i]   = nc[i-1] + siL[i-1]
     end
@@ -2472,11 +2474,11 @@ function calcTileSizes(patch::_2DCartesianRR, tile_spec::NamedTuple)
     siL_i  = ones(Int64, ni)
 
     iMins[1] = patch.params.iMin
-    nc_i[1]  = Int64(ceil(i_sizes[1] / 3))
+    nc_i[1]  = Int64(ceil(i_sizes[1] / patch.params.mubar))
     iMaxs[1] = nc_i[1] * DX_cell + iMins[1]
     for idx in 2:ni-1
         iMins[idx] = iMaxs[idx-1]
-        nc_i[idx]  = Int64(ceil(i_sizes[idx] / 3))
+        nc_i[idx]  = Int64(ceil(i_sizes[idx] / patch.params.mubar))
         iMaxs[idx] = nc_i[idx] * DX_cell + iMins[idx]
         siL_i[idx] = siL_i[idx-1] + nc_i[idx-1]
     end
@@ -2503,13 +2505,15 @@ function calcTileSizes(patch::_2DCartesianRR, tile_spec::NamedTuple)
                 num_cells      = nc_i[ti],
                 jMin           = jMins[tj],
                 jMax           = jMaxs[tj],
-                jDim           = nc_j_vec[tj] * CubicBSpline.mubar,
+                jDim           = nc_j_vec[tj] * patch.params.mubar,
                 l_q            = patch.params.l_q,
                 BCL            = patch.params.BCL,
                 BCR            = patch.params.BCR,
                 BCU            = patch.params.BCU,
                 BCD            = patch.params.BCD,
                 vars           = patch.params.vars,
+                mubar          = patch.params.mubar,
+                quadrature     = patch.params.quadrature,
                 spectralIndexL = siL_i[ti],
                 tile_num       = t)
             tiles[t] = createGrid(tile_gp)
@@ -2571,11 +2575,11 @@ function calcTileSizes(patch::_3DCartesianRRR, tile_spec::NamedTuple)
     siL_i  = ones(Int64, ni)
 
     iMins[1] = patch.params.iMin
-    nc_i[1]  = Int64(ceil(i_sizes[1] / 3))
+    nc_i[1]  = Int64(ceil(i_sizes[1] / patch.params.mubar))
     iMaxs[1] = nc_i[1] * DX_cell + iMins[1]
     for idx in 2:ni-1
         iMins[idx] = iMaxs[idx-1]
-        nc_i[idx]  = Int64(ceil(i_sizes[idx] / 3))
+        nc_i[idx]  = Int64(ceil(i_sizes[idx] / patch.params.mubar))
         iMaxs[idx] = nc_i[idx] * DX_cell + iMins[idx]
         siL_i[idx] = siL_i[idx-1] + nc_i[idx-1]
     end
@@ -2607,10 +2611,10 @@ function calcTileSizes(patch::_3DCartesianRRR, tile_spec::NamedTuple)
                     num_cells      = nc_i[ti],
                     jMin           = jMins[tj],
                     jMax           = jMaxs[tj],
-                    jDim           = nc_j_vec[tj] * CubicBSpline.mubar,
+                    jDim           = nc_j_vec[tj] * patch.params.mubar,
                     kMin           = kMins[tk],
                     kMax           = kMaxs[tk],
-                    kDim           = nc_k_vec[tk] * CubicBSpline.mubar,
+                    kDim           = nc_k_vec[tk] * patch.params.mubar,
                     l_q            = patch.params.l_q,
                     BCL            = patch.params.BCL,
                     BCR            = patch.params.BCR,
@@ -2619,6 +2623,8 @@ function calcTileSizes(patch::_3DCartesianRRR, tile_spec::NamedTuple)
                     BCB            = patch.params.BCB,
                     BCT            = patch.params.BCT,
                     vars           = patch.params.vars,
+                    mubar          = patch.params.mubar,
+                    quadrature     = patch.params.quadrature,
                     spectralIndexL = siL_i[ti],
                     tile_num       = t)
                 tiles[t] = createGrid(tile_gp)
