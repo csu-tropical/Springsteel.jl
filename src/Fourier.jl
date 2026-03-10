@@ -659,6 +659,55 @@ function dft_2nd_derivative(ring::Fourier1D)
     return M
 end
 
+"""
+    FItransform_matrix(ring::Fourier1D, points::Vector{Float64}, derivative::Int=0) -> Matrix{Float64}
+
+Build the Fourier evaluation matrix at arbitrary angular positions `points`.
+
+Each row corresponds to one evaluation point and each column to one Fourier
+coefficient (in FFTW halfcomplex order, matching [`dft_matrix`](@ref)).
+
+# Arguments
+- `ring::Fourier1D`: Fourier ring object (provides `params.kmax` and `params.bDim`)
+- `points::Vector{Float64}`: Angular evaluation locations (radians)
+- `derivative::Int`: Derivative order (0, 1, or 2; default `0`)
+
+# Returns
+- `Matrix{Float64}` of size `(length(points), bDim)`
+
+See also: [`dft_matrix`](@ref), [`SItransform_matrix`](@ref), [`CItransform_matrix`](@ref)
+"""
+function FItransform_matrix(ring::Fourier1D, points::Vector{Float64}, derivative::Int=0)
+    fp = ring.params
+    np = length(points)
+    M = zeros(Float64, np, fp.bDim)
+    for i in 1:np
+        θ = points[i]
+        if derivative == 0
+            M[i, 1] = 1.0
+            for k = 1:fp.kmax
+                M[i, k+1] = 2.0 * cos(k * θ)
+                M[i, fp.bDim-k+1] = -2.0 * sin(k * θ)
+            end
+        elseif derivative == 1
+            M[i, 1] = 0.0
+            for k = 1:fp.kmax
+                M[i, k+1] = -2.0 * k * sin(k * θ)
+                M[i, fp.bDim-k+1] = -2.0 * k * cos(k * θ)
+            end
+        elseif derivative == 2
+            M[i, 1] = 0.0
+            for k = 1:fp.kmax
+                M[i, k+1] = -2.0 * k^2 * cos(k * θ)
+                M[i, fp.bDim-k+1] = 2.0 * k^2 * sin(k * θ)
+            end
+        else
+            throw(ArgumentError("Derivative order $derivative not supported (use 0, 1, or 2)"))
+        end
+    end
+    return M
+end
+
 # ---------------------------------------------------------------------------
 # Generic wrappers (no "F" prefix) dispatching on Fourier1D
 # These enable abstract 1D basis code that calls Btransform!, Itransform!, etc.
@@ -697,6 +746,10 @@ Ixxtransform(ring::Fourier1D) = FIxxtransform(ring)
 
 """Generic indefinite-integral transform wrapper for `Fourier1D`. Delegates to [`FIInttransform`](@ref)."""
 IInttransform(ring::Fourier1D, C0::real = 0.0) = FIInttransform(ring, C0)
+
+"""Generic I-transform matrix wrapper for `Fourier1D`. Delegates to [`FItransform_matrix`](@ref)."""
+Itransform_matrix(ring::Fourier1D, points::Vector{Float64}, derivative::Int=0) =
+    FItransform_matrix(ring, points, derivative)
 
 #Module end
 end

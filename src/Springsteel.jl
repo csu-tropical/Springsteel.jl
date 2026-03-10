@@ -47,6 +47,10 @@ export calcPatchMap_multidim, calcHaloMap_multidim
 export sumSpectralTile!, setSpectralTile!, getBorderSpectral, sumSharedSpectral
 export spectralTransform!, splineTransform!, tileTransform!, gridTransform!
 export regularGridTransform, getRegularGridpoints
+export applyFilter!
+
+# Filter type exports
+export AbstractFilter, SpectralFilter, GaussianFilter
 
 # Unified type system exports
 export AbstractGeometry, CartesianGeometry, CylindricalGeometry, SphericalGeometry
@@ -75,6 +79,16 @@ export OperatorTerm, AbstractSolverBackend, LocalLinearBackend, OptimizationBack
 export SpringsteelProblem, SpringsteelSolution
 export operator_matrix, assemble_operator, assemble_from_equation
 export solve, solver_gridpoints
+
+# Interpolation framework exports
+export grid_from_regular_data, grid_from_netcdf
+export interpolate_to_grid, interpolate_to_grid!
+export evaluate_unstructured
+export cartesian_to_cylindrical, cylindrical_to_cartesian
+export cartesian_to_cylindrical_3d, cylindrical_to_cartesian_3d
+export cartesian_to_spherical, spherical_to_cartesian
+export cylindrical_to_spherical, spherical_to_cylindrical
+export latlon_to_spherical, spherical_to_latlon
 
 """
     GridParameters
@@ -223,6 +237,9 @@ Base.@kwdef struct SpringsteelGridParameters
     BCB::Dict = Chebyshev.R0
     BCT::Dict = Chebyshev.R0
     vars::Dict = Dict("u" => 1)
+    # Spectral filters (per-variable, keyed by variable name or "default")
+    fourier_filter::Dict = Dict()
+    chebyshev_filter::Dict = Dict()
     # Patch indices
     spectralIndexL::int = 1
     spectralIndexR::int = spectralIndexL + b_iDim - 1
@@ -264,6 +281,14 @@ include("tiling.jl")
 # ── Solver framework ──────────────────────────────────────────────────────────────────
 # Must be included after basis modules and factory.jl
 include("solver.jl")
+
+# ── Interpolation framework ──────────────────────────────────────────────────────────
+# Must be included after transforms_*.jl (uses _cheb_eval_pts!) and factory.jl
+include("interpolation.jl")
+
+# ── Filtering framework ─────────────────────────────────────────────────────────────
+# Must be included after transforms_*.jl (uses grid type aliases)
+include("filtering.jl")
 
 
 """
@@ -314,6 +339,9 @@ Base.@kwdef struct GridParameters
     BCB::Dict = Chebyshev.R0
     BCT::Dict = Chebyshev.R0
     vars::Dict = Dict("u" => 1)
+    # Spectral filters (per-variable, keyed by variable name or "default")
+    fourier_filter::Dict = Dict()
+    chebyshev_filter::Dict = Dict()
     # Patch indices
     spectralIndexL::int = 1
     spectralIndexR::int = spectralIndexL + b_rDim - 1

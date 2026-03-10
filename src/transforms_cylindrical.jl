@@ -152,6 +152,7 @@ See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_RLGrid)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 
@@ -475,6 +476,7 @@ See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_RLZGrid)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 

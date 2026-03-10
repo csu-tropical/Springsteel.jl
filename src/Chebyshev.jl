@@ -696,6 +696,95 @@ function dct_2nd_derivative(Nbasis::Int64, physical_length::Float64)
 end
 
 """
+    CItransform_matrix(column::Chebyshev1D, points::Vector{Float64}, derivative::Int=0) -> Matrix{Float64}
+
+Build the Chebyshev evaluation matrix at arbitrary physical locations `points`.
+
+Maps physical coordinates to the reference domain via
+`t = acos((z - offset) / scale)` where `scale = -(zmax - zmin)/2` and
+`offset = (zmin + zmax)/2`, then evaluates Chebyshev polynomials (or their
+derivatives) at the mapped locations.
+
+Each row corresponds to one evaluation point and each column to one Chebyshev
+coefficient, matching the convention of [`dct_matrix`](@ref).
+
+# Arguments
+- `column::Chebyshev1D`: Chebyshev column object (provides parameters and `zDim`)
+- `points::Vector{Float64}`: Physical evaluation locations in `[zmin, zmax]`
+- `derivative::Int`: Derivative order (0, 1, or 2; default `0`)
+
+# Returns
+- `Matrix{Float64}` of size `(length(points), zDim)`
+
+See also: [`dct_matrix`](@ref), [`SItransform_matrix`](@ref), [`FItransform_matrix`](@ref)
+"""
+function CItransform_matrix(column::Chebyshev1D, points::Vector{Float64}, derivative::Int=0)
+    cp = column.params
+    N = cp.zDim
+    np = length(points)
+    scale  = -0.5 * (cp.zmax - cp.zmin)
+    offset =  0.5 * (cp.zmin + cp.zmax)
+    M = zeros(Float64, np, N)
+
+    for i in 1:np
+        ξ_raw = (points[i] - offset) / scale
+
+        if derivative == 0
+            # For evaluation, allow exact endpoints (no division by sin(t))
+            ξ = clamp(ξ_raw, -1.0, 1.0)
+            t = acos(ξ)
+            # Match _cheb_eval_pts!: val = a[1] + Σ 2*a[k]*cos(...) + a[N]*cos(...)
+            M[i, 1] = 1.0
+            for k = 2:(N - 1)
+                M[i, k] = 2.0 * cos((k - 1) * t)
+            end
+            if N > 1
+                M[i, N] = cos((N - 1) * t)
+            end
+
+        elseif derivative == 1
+            # For derivatives, clamp away from endpoints to avoid sin(t)=0
+            ξ = clamp(ξ_raw, -1.0 + 1e-10, 1.0 - 1e-10)
+            t = acos(ξ)
+            # Match _cheb_dz_pts!: df/dz = dfdt / (-scale * sin(t))
+            st = sin(t)
+            inv_scale_st = 1.0 / (-scale * st)
+            M[i, 1] = 0.0
+            for k = 2:(N - 1)
+                M[i, k] = -2.0 * (k - 1) * sin((k - 1) * t) * inv_scale_st
+            end
+            if N > 1
+                M[i, N] = -(N - 1) * sin((N - 1) * t) * inv_scale_st
+            end
+
+        elseif derivative == 2
+            ξ = clamp(ξ_raw, -1.0 + 1e-10, 1.0 - 1e-10)
+            t = acos(ξ)
+            # Match _cheb_dzz_pts!: d²f/dz² = (d²f/dt² * sin - df/dt * cos) / (s² sin³)
+            st = sin(t)
+            ct = cos(t)
+            inv_s2s3 = 1.0 / (scale^2 * st^3)
+            M[i, 1] = 0.0
+            for k = 2:(N - 1)
+                m = k - 1
+                dv_dt = -2.0 * m * sin(m * t)
+                d2v_dt2 = -2.0 * m^2 * cos(m * t)
+                M[i, k] = (d2v_dt2 * st - dv_dt * ct) * inv_s2s3
+            end
+            if N > 1
+                m = N - 1
+                dv_dt = -m * sin(m * t)
+                d2v_dt2 = -m^2 * cos(m * t)
+                M[i, N] = (d2v_dt2 * st - dv_dt * ct) * inv_s2s3
+            end
+        else
+            throw(ArgumentError("Derivative order $derivative not supported (use 0, 1, or 2)"))
+        end
+    end
+    return M
+end
+
+"""
     calcGammaBCalt(cp::ChebyshevParameters)
 
 Alternative BC matrix construction via DCT matrix inversion.
@@ -1254,6 +1343,10 @@ Ixxtransform(column::Chebyshev1D) = CIxxtransform(column)
 
 """Generic indefinite-integral transform wrapper for `Chebyshev1D`. Delegates to [`CIInttransform`](@ref)."""
 IInttransform(column::Chebyshev1D, C0::real = 0.0) = CIInttransform(column, C0)
+
+"""Generic I-transform matrix wrapper for `Chebyshev1D`. Delegates to [`CItransform_matrix`](@ref)."""
+Itransform_matrix(column::Chebyshev1D, points::Vector{Float64}, derivative::Int=0) =
+    CItransform_matrix(column, points, derivative)
 
 #Module end
 end #module

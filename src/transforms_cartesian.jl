@@ -219,6 +219,7 @@ See also: [`gridTransform!`](@ref), [`spectralTransform`](@ref)
 """
 function spectralTransform!(grid::_1DCartesianGrid)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 
@@ -431,6 +432,7 @@ See also: [`spectralTransform`](@ref), [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_2DCartesianRR)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 
@@ -590,6 +592,7 @@ See also: [`spectralTransform`](@ref), [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_2DCartesianRZ)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 
@@ -1098,6 +1101,7 @@ See also: [`spectralTransform`](@ref), [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_3DCartesianRRR)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 

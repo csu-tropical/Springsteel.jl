@@ -114,6 +114,7 @@ See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_SLGrid)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 
@@ -409,6 +410,7 @@ See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_SLZGrid)
     spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
     return grid.spectral
 end
 

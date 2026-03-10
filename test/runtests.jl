@@ -18,4 +18,6 @@ const TEST_GROUP = get(ENV, "TEST_GROUP", "all")
     TEST_GROUP in ("all", "compat")     && include("compat.jl")
     TEST_GROUP in ("all", "solver")     && include("solver.jl")
     TEST_GROUP in ("all", "mubar")      && include("mubar.jl")
+    TEST_GROUP in ("all", "interpolation") && include("interpolation.jl")
+    TEST_GROUP in ("all", "filtering")      && include("filtering.jl")
 end

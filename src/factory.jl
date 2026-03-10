@@ -256,6 +256,8 @@ function _update_gp(gp::SpringsteelGridParameters;
         BCB            = gp.BCB,
         BCT            = gp.BCT,
         vars           = gp.vars,
+        fourier_filter = gp.fourier_filter,
+        chebyshev_filter = gp.chebyshev_filter,
         spectralIndexL = gp.spectralIndexL,
         spectralIndexR = gp.spectralIndexR,
         patchOffsetL   = gp.patchOffsetL,

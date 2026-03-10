@@ -1072,7 +1072,7 @@ See also: [`SItransform`](@ref)
 """
 function SItransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64 = 0)
     sp = spline.params
-    u = zeros(Float64,sp.mishDim,spline.params.bDim)
+    u = zeros(Float64,length(points),spline.params.bDim)
     for i in eachindex(points)
         xm = ceil(Int64,(points[i] - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
         for m = xm:(xm + 3)
@@ -1337,6 +1337,10 @@ Ixxtransform(spline::Spline1D, points::Vector{real}, uprime2::AbstractVector) =
 """Generic indefinite-integral transform wrapper for `Spline1D`. Delegates to [`SIInttransform`](@ref)."""
 IInttransform(spline::Spline1D, uMish::Vector{real}, C0::real = 0.0) =
     SIInttransform(spline, uMish, C0)
+
+"""Generic I-transform matrix wrapper for `Spline1D`. Delegates to [`SItransform_matrix`](@ref)."""
+Itransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64=0) =
+    SItransform_matrix(spline, points, derivative)
 
 #Module end
 end
