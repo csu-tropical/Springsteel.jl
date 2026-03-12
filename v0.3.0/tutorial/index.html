@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Tutorial · Springsteel.jl</title><meta name="title" content="Tutorial · Springsteel.jl"/><meta property="og:title" content="Tutorial · Springsteel.jl"/><meta property="twitter:title" content="Tutorial · Springsteel.jl"/><meta name="description" content="Documentation for Springsteel.jl."/><meta property="og:description" content="Documentation for Springsteel.jl."/><meta property="twitter:description" content="Documentation for Springsteel.jl."/><meta property="og:url" content="https://csu-tropical.github.io/Springsteel.jl/tutorial/"/><meta property="twitter:url" content="https://csu-tropical.github.io/Springsteel.jl/tutorial/"/><link rel="canonical" href="https://csu-tropical.github.io/Springsteel.jl/tutorial/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">Springsteel.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li class="is-active"><a class="tocitem" href>Tutorial</a><ul class="internal"><li><a class="tocitem" href="#Example-1-—-1D-Spline-Grid"><span>Example 1 — 1D Spline Grid</span></a></li><li><a class="tocitem" href="#Example-2-—-2D-Polar-Grid-(Spline-Fourier)"><span>Example 2 — 2D Polar Grid (Spline × Fourier)</span></a></li><li><a class="tocitem" href="#Example-3-—-3D-Cylindrical-Grid-(Spline-Fourier-Chebyshev)"><span>Example 3 — 3D Cylindrical Grid (Spline × Fourier × Chebyshev)</span></a></li><li><a class="tocitem" href="#Example-4-—-3D-Cartesian-Grid-(Spline-Spline-Spline)-with-Two-Variables"><span>Example 4 — 3D Cartesian Grid (Spline × Spline × Spline) with Two Variables</span></a></li><li><a class="tocitem" href="#Example-5-—-2D-Spherical-Shell-Grid-(Spline-Fourier)"><span>Example 5 — 2D Spherical Shell Grid (Spline × Fourier)</span></a></li><li><a class="tocitem" href="#Example-6-—-3D-Sphere-Grid-(Spline-Fourier-Chebyshev)"><span>Example 6 — 3D Sphere Grid (Spline × Fourier × Chebyshev)</span></a></li><li><a class="tocitem" href="#Summary:-Core-Workflow"><span>Summary: Core Workflow</span></a></li><li><a class="tocitem" href="#I/O"><span>I/O</span></a></li><li><a class="tocitem" href="#Example-7-—-Solving-a-Boundary-Value-Problem"><span>Example 7 — Solving a Boundary Value Problem</span></a></li></ul></li><li><a class="tocitem" href="../springsteel_grid/">SpringsteelGrid</a></li><li><a class="tocitem" href="../cubicbspline/">CubicBSpline</a></li><li><a class="tocitem" href="../fourier/">Fourier</a></li><li><a class="tocitem" href="../chebyshev/">Chebyshev</a></li><li><a class="tocitem" href="../solver/">Solver</a></li><li><a class="tocitem" href="../testing_guide/">Testing Guide</a></li><li><a class="tocitem" href="../documentation_guide/">Documentation Guide</a></li><li><a class="tocitem" href="../developer_notes/">Developer Notes</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Tutorial</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tutorial</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/csu-tropical/Springsteel.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/csu-tropical/Springsteel.jl/blob/main/docs/src/tutorial.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Tutorial"><a class="docs-heading-anchor" href="#Tutorial">Tutorial</a><a id="Tutorial-1"></a><a class="docs-heading-anchor-permalink" href="#Tutorial" title="Permalink"></a></h1><p>This tutorial demonstrates Springsteel&#39;s core workflow through six examples of increasing complexity. Each example creates a grid, fills it with a Gaussian function, performs a forward (physical → spectral) and inverse (spectral → physical) round-trip transform, and examines the results.</p><p>A companion Jupyter notebook with visualizations is available at <code>notebooks/Springsteel_tutorial.ipynb</code>.</p><hr/><h2 id="Example-1-—-1D-Spline-Grid"><a class="docs-heading-anchor" href="#Example-1-—-1D-Spline-Grid">Example 1 — 1D Spline Grid</a><a id="Example-1-—-1D-Spline-Grid-1"></a><a class="docs-heading-anchor-permalink" href="#Example-1-—-1D-Spline-Grid" title="Permalink"></a></h2><p>The simplest Springsteel grid uses <strong>cubic B-splines</strong> in a single dimension.</p><h3 id="Creating-the-grid"><a class="docs-heading-anchor" href="#Creating-the-grid">Creating the grid</a><a id="Creating-the-grid-1"></a><a class="docs-heading-anchor-permalink" href="#Creating-the-grid" title="Permalink"></a></h3><p>Use <a href="../springsteel_grid/#Springsteel.SpringsteelGridParameters"><code>SpringsteelGridParameters</code></a> to configure the grid, then <a href="../springsteel_grid/#Springsteel.createGrid"><code>createGrid</code></a> to build it:</p><pre><code class="language-julia hljs">using Springsteel
+
+gp = SpringsteelGridParameters(
+    geometry  = &quot;R&quot;,            # 1D radial/Cartesian
+    iMin      = -50.0,          # domain left bound
+    iMax      = 50.0,           # domain right bound
+    num_cells = 30,             # B-spline cells (iDim = 30 × 3 = 90 gridpoints)
+    BCL       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),   # left BC: free boundary (rank-0, no constraint)
+    BCR       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),   # right BC: free boundary (rank-0, no constraint)
+    vars      = Dict(&quot;gauss&quot; =&gt; 1)                   # one variable
+)
+
+grid = createGrid(gp)</code></pre><p>The result is a <code>SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}</code>, which can also be referred to by the type alias <code>R_Grid</code>.</p><p><strong>Physical array dimensions</strong>: <code>(iDim, n_vars, 3)</code> — the third dimension holds <code>[f, ∂f/∂x, ∂²f/∂x²]</code>.</p><h3 id="Filling-the-grid"><a class="docs-heading-anchor" href="#Filling-the-grid">Filling the grid</a><a id="Filling-the-grid-1"></a><a class="docs-heading-anchor-permalink" href="#Filling-the-grid" title="Permalink"></a></h3><p>Use <a href="../springsteel_grid/#Springsteel.getGridpoints"><code>getGridpoints</code></a> to retrieve the physical gridpoint coordinates:</p><pre><code class="language-julia hljs">pts = getGridpoints(grid)   # Vector{Float64} of length iDim
+
+σ = 10.0
+for i in eachindex(pts)
+    grid.physical[i, 1, 1] = exp(-(pts[i] / σ)^2)
+end</code></pre><h3 id="Round-trip-transform"><a class="docs-heading-anchor" href="#Round-trip-transform">Round-trip transform</a><a id="Round-trip-transform-1"></a><a class="docs-heading-anchor-permalink" href="#Round-trip-transform" title="Permalink"></a></h3><pre><code class="language-julia hljs">spectralTransform!(grid)   # physical → spectral coefficients
+gridTransform!(grid)        # spectral → physical + derivatives
+
+# Check accuracy
+original = exp.(-(pts ./ σ).^2)
+max_error = maximum(abs.(grid.physical[:, 1, 1] .- original))
+# max_error ≈ 1e-6 for 30 cells</code></pre><p>After <a href="../springsteel_grid/#Springsteel.gridTransform!"><code>gridTransform!</code></a>, the derivatives are available:</p><ul><li><code>grid.physical[:, 1, 2]</code> — first derivative ∂f/∂x</li><li><code>grid.physical[:, 1, 3]</code> — second derivative ∂²f/∂x²</li></ul><h3 id="Boundary-conditions"><a class="docs-heading-anchor" href="#Boundary-conditions">Boundary conditions</a><a id="Boundary-conditions-1"></a><a class="docs-heading-anchor-permalink" href="#Boundary-conditions" title="Permalink"></a></h3><p>BC constants follow the <strong>Ooyama (2002)</strong> rank–type naming convention, defined in the <a href="@ref CubicBSpline_module"><code>CubicBSpline</code></a> module. The <em>rank</em> is the number of constraints removed at the boundary; the <em>type</em> identifies which derivative is constrained (T0 = value, T1 = first derivative, T2 = second derivative):</p><table><tr><th style="text-align: left">Constant</th><th style="text-align: left">Ooyama Eq.</th><th style="text-align: left">Mathematical condition</th></tr><tr><td style="text-align: left"><code>CubicBSpline.R0</code></td><td style="text-align: left">3.2a</td><td style="text-align: left">No constraint (free boundary)</td></tr><tr><td style="text-align: left"><code>CubicBSpline.R1T0</code></td><td style="text-align: left">3.2b</td><td style="text-align: left"><span>$u(x_0) = 0$</span> (Dirichlet)</td></tr><tr><td style="text-align: left"><code>CubicBSpline.R1T1</code></td><td style="text-align: left">3.2c</td><td style="text-align: left"><span>$u&#39;(x_0) = 0$</span> (Neumann)</td></tr><tr><td style="text-align: left"><code>CubicBSpline.R1T2</code></td><td style="text-align: left">3.2d</td><td style="text-align: left"><span>$u&#39;&#39;(x_0) = 0$</span></td></tr><tr><td style="text-align: left"><code>CubicBSpline.R2T10</code></td><td style="text-align: left">3.2f</td><td style="text-align: left"><span>$u(x_0) = u&#39;(x_0) = 0$</span> (symmetric reflection)</td></tr><tr><td style="text-align: left"><code>CubicBSpline.R2T20</code></td><td style="text-align: left">3.2g</td><td style="text-align: left"><span>$u(x_0) = u&#39;&#39;(x_0) = 0$</span> (antisymmetric reflection)</td></tr><tr><td style="text-align: left"><code>CubicBSpline.R3</code></td><td style="text-align: left">3.2h</td><td style="text-align: left"><span>$u = u&#39; = u&#39;&#39; = 0$</span> at boundary</td></tr><tr><td style="text-align: left"><code>CubicBSpline.PERIODIC</code></td><td style="text-align: left">§3e</td><td style="text-align: left">Periodic (cyclically continuous) domain</td></tr></table><hr/><h2 id="Example-2-—-2D-Polar-Grid-(Spline-Fourier)"><a class="docs-heading-anchor" href="#Example-2-—-2D-Polar-Grid-(Spline-Fourier)">Example 2 — 2D Polar Grid (Spline × Fourier)</a><a id="Example-2-—-2D-Polar-Grid-(Spline-Fourier)-1"></a><a class="docs-heading-anchor-permalink" href="#Example-2-—-2D-Polar-Grid-(Spline-Fourier)" title="Permalink"></a></h2><p>A <strong>cylindrical</strong> (<code>&quot;RL&quot;</code>) grid uses B-splines in the radial direction and Fourier series in azimuth.</p><h3 id="Key-features"><a class="docs-heading-anchor" href="#Key-features">Key features</a><a id="Key-features-1"></a><a class="docs-heading-anchor-permalink" href="#Key-features" title="Permalink"></a></h3><ul><li>Each radial ring has a <strong>different number of azimuthal gridpoints</strong>: <code>lpoints = 4 + 4rᵢ</code>, where <code>rᵢ = r + patchOffsetL</code>. This avoids over-resolving near the center.</li><li>Fourier BCs are always periodic (set automatically).</li><li>The physical array has <strong>5 derivative slots</strong>: <code>[f, ∂f/∂r, ∂²f/∂r², ∂f/∂λ, ∂²f/∂λ²]</code>.</li></ul><h3 id="Grid-creation"><a class="docs-heading-anchor" href="#Grid-creation">Grid creation</a><a id="Grid-creation-1"></a><a class="docs-heading-anchor-permalink" href="#Grid-creation" title="Permalink"></a></h3><pre><code class="language-julia hljs">gp_rl = SpringsteelGridParameters(
+    geometry  = &quot;RL&quot;,
+    iMin      = 0.0,
+    iMax      = 100.0,
+    num_cells = 10,
+    vars      = Dict(&quot;gauss&quot; =&gt; 1),
+    BCL       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),
+    BCR       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0)
+)
+
+grid_rl = createGrid(gp_rl)  # RL_Grid</code></pre><h3 id="Filling-the-grid-2"><a class="docs-heading-anchor" href="#Filling-the-grid-2">Filling the grid</a><a class="docs-heading-anchor-permalink" href="#Filling-the-grid-2" title="Permalink"></a></h3><p>For cylindrical grids, gridpoints are packed by ring. Loop over radial indices, compute ring sizes, and fill sequentially:</p><pre><code class="language-julia hljs">σ = 30.0
+iDim = grid_rl.params.iDim
+g = 1
+for r in 1:iDim
+    ri      = r + grid_rl.params.patchOffsetL
+    lpoints = 4 + 4 * ri
+    r_val   = grid_rl.ibasis.data[1, 1].mishPoints[r]
+    val     = exp(-(r_val / σ)^2)
+    for l in 1:lpoints
+        grid_rl.physical[g, 1, 1] = val
+        g += 1
+    end
+end</code></pre><h3 id="Round-trip-and-gridpoints"><a class="docs-heading-anchor" href="#Round-trip-and-gridpoints">Round-trip and gridpoints</a><a id="Round-trip-and-gridpoints-1"></a><a class="docs-heading-anchor-permalink" href="#Round-trip-and-gridpoints" title="Permalink"></a></h3><pre><code class="language-julia hljs">original = copy(grid_rl.physical[:, 1, 1])
+spectralTransform!(grid_rl)
+gridTransform!(grid_rl)
+max_error = maximum(abs.(grid_rl.physical[:, 1, 1] .- original))
+
+# getGridpoints returns an (N, 2) matrix: columns are [r, λ]
+pts_rl = getGridpoints(grid_rl)</code></pre><h3 id="Evaluating-on-a-regular-grid"><a class="docs-heading-anchor" href="#Evaluating-on-a-regular-grid">Evaluating on a regular grid</a><a id="Evaluating-on-a-regular-grid-1"></a><a class="docs-heading-anchor-permalink" href="#Evaluating-on-a-regular-grid" title="Permalink"></a></h3><p>The cylindrical mish-point layout has irregular spacing (different <code>lpoints</code> per ring). Use <a href="../springsteel_grid/#Springsteel.regularGridTransform"><code>regularGridTransform</code></a> to evaluate the spectral representation on a uniform (r, λ) grid — ideal for plotting or intercomparison:</p><pre><code class="language-julia hljs"># Default regular grid (uniform r × λ tensor-product grid)
+reg_pts  = getRegularGridpoints(grid_rl)         # (N, 2) → columns [r, λ]
+reg_vals = regularGridTransform(grid_rl, reg_pts) # (N, num_vars, 5)
+
+# Or specify custom output points:
+r_out = collect(range(0.0, 100.0, length=50))
+λ_out = collect(range(0.0, 2π, length=72))
+custom_vals = regularGridTransform(grid_rl, r_out, λ_out)</code></pre><p>The returned array has the same derivative slots as <code>physical</code>: <code>[f, ∂f/∂r, ∂²f/∂r², ∂f/∂λ, ∂²f/∂λ²]</code>.</p><p><strong>Reshape note</strong>: Output is stored with λ varying fastest.  To obtain a <code>(n_r × n_λ)</code> matrix <code>M</code> such that <code>M[i,j] = f(r_i, λ_j)</code>, use Julia&#39;s column-major reshape:</p><pre><code class="language-julia hljs">n_r = grid_rl.params.i_regular_out
+n_λ = grid_rl.params.j_regular_out
+f_matrix = permutedims(reshape(reg_vals[:, 1, 1], n_λ, n_r))  # (n_r × n_λ)</code></pre><p>This matrix can then be passed directly to <code>contourf</code> for scientific figures:</p><pre><code class="language-julia hljs">r_reg = collect(LinRange(gp_rl.iMin, gp_rl.iMax, n_r))
+λ_reg = [2π*(j-1)/n_λ for j in 1:n_λ]
+contourf(ax, r_reg, λ_reg, f_matrix; colormap=:viridis, levels=12)</code></pre><p>See the <a href="https://github.com/mmbell/Springsteel.jl/blob/main/notebooks/Springsteel_tutorial.ipynb">companion notebook</a> for complete visualization examples including saved figures.</p><p><img src="../figures/fig_rl_contourf.png" alt="2D Polar contourf"/> <em>Left: field values f(r,λ) on the regular grid. Right: radial derivative ∂f/∂r.</em></p><hr/><h2 id="Example-3-—-3D-Cylindrical-Grid-(Spline-Fourier-Chebyshev)"><a class="docs-heading-anchor" href="#Example-3-—-3D-Cylindrical-Grid-(Spline-Fourier-Chebyshev)">Example 3 — 3D Cylindrical Grid (Spline × Fourier × Chebyshev)</a><a id="Example-3-—-3D-Cylindrical-Grid-(Spline-Fourier-Chebyshev)-1"></a><a class="docs-heading-anchor-permalink" href="#Example-3-—-3D-Cylindrical-Grid-(Spline-Fourier-Chebyshev)" title="Permalink"></a></h2><p>The <strong>RLZ</strong> grid combines all three basis types.</p><h3 id="Key-features-2"><a class="docs-heading-anchor" href="#Key-features-2">Key features</a><a class="docs-heading-anchor-permalink" href="#Key-features-2" title="Permalink"></a></h3><ul><li><strong>Chebyshev</strong> parameters: <code>kMin</code>, <code>kMax</code> set the vertical domain; <code>kDim</code> is the number of Chebyshev gridpoints.</li><li>The physical array has <strong>7 derivative slots</strong>: <code>[f, ∂f/∂r, ∂²f/∂r², ∂f/∂λ, ∂²f/∂λ², ∂f/∂z, ∂²f/∂z²]</code>.</li><li>Physical indexing: for each radius <code>r</code>, <code>lpoints</code> azimuthal points, each with <code>kDim</code> vertical points packed sequentially.</li></ul><h3 id="Grid-creation-2"><a class="docs-heading-anchor" href="#Grid-creation-2">Grid creation</a><a class="docs-heading-anchor-permalink" href="#Grid-creation-2" title="Permalink"></a></h3><pre><code class="language-julia hljs">gp_rlz = SpringsteelGridParameters(
+    geometry  = &quot;RLZ&quot;,
+    iMin      = 0.0,
+    iMax      = 80.0,
+    num_cells = 6,
+    kMin      = 0.0,
+    kMax      = 20.0,
+    kDim      = 10,
+    vars      = Dict(&quot;gauss&quot; =&gt; 1),
+    BCL       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),
+    BCR       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),
+    BCB       = Dict(&quot;gauss&quot; =&gt; Chebyshev.R0),
+    BCT       = Dict(&quot;gauss&quot; =&gt; Chebyshev.R0)
+)
+
+grid_rlz = createGrid(gp_rlz)  # RLZ_Grid</code></pre><h3 id="Filling-the-grid-3"><a class="docs-heading-anchor" href="#Filling-the-grid-3">Filling the grid</a><a class="docs-heading-anchor-permalink" href="#Filling-the-grid-3" title="Permalink"></a></h3><pre><code class="language-julia hljs">σ_r = 25.0; σ_z = 5.0
+z₀  = (gp_rlz.kMin + gp_rlz.kMax) / 2
+
+iDim = grid_rlz.params.iDim
+kDim = grid_rlz.params.kDim
+idx  = 1
+for r in 1:iDim
+    ri      = r + grid_rlz.params.patchOffsetL
+    lpoints = 4 + 4 * ri
+    r_val   = grid_rlz.ibasis.data[1, 1].mishPoints[r]
+    for l in 1:lpoints
+        for z in 1:kDim
+            z_val = grid_rlz.kbasis.data[1].mishPoints[z]
+            grid_rlz.physical[idx, 1, 1] = exp(-(r_val/σ_r)^2 - ((z_val - z₀)/σ_z)^2)
+            idx += 1
+        end
+    end
+end</code></pre><h3 id="Round-trip"><a class="docs-heading-anchor" href="#Round-trip">Round-trip</a><a id="Round-trip-1"></a><a class="docs-heading-anchor-permalink" href="#Round-trip" title="Permalink"></a></h3><pre><code class="language-julia hljs">original = copy(grid_rlz.physical[:, 1, 1])
+spectralTransform!(grid_rlz)
+gridTransform!(grid_rlz)
+max_error = maximum(abs.(grid_rlz.physical[:, 1, 1] .- original))</code></pre><h3 id="Evaluating-on-a-regular-grid-2"><a class="docs-heading-anchor" href="#Evaluating-on-a-regular-grid-2">Evaluating on a regular grid</a><a class="docs-heading-anchor-permalink" href="#Evaluating-on-a-regular-grid-2" title="Permalink"></a></h3><pre><code class="language-julia hljs">reg_pts  = getRegularGridpoints(grid_rlz)          # (N, 3) → columns [r, λ, z]
+reg_vals = regularGridTransform(grid_rlz, reg_pts)  # (N, num_vars, 7)
+
+# Custom output grid
+r_out = collect(range(0.0, 80.0, length=40))
+λ_out = collect(range(0.0, 2π, length=36))
+z_out = collect(range(0.0, 20.0, length=20))
+custom_vals = regularGridTransform(grid_rlz, r_out, λ_out, z_out)</code></pre><p>The returned array has 7 derivative slots: <code>[f, ∂f/∂r, ∂²f/∂r², ∂f/∂λ, ∂²f/∂λ², ∂f/∂z, ∂²f/∂z²]</code>.</p><p>To extract an <code>(r, z)</code> cross-section at a fixed <code>λ</code>-index for contour plotting:</p><pre><code class="language-julia hljs">n_r = grid_rlz.params.i_regular_out
+n_λ = grid_rlz.params.j_regular_out
+n_z = grid_rlz.params.k_regular_out
+# λ_idx = 1 (first point, λ = 0)
+# flat = (ri-1)*n_λ*n_z + (λ_idx-1)*n_z + zi
+f_rz = [reg_vals[(ri-1)*n_λ*n_z + zi, 1, 1] for ri in 1:n_r, zi in 1:n_z]
+r_reg = collect(LinRange(gp_rlz.iMin, gp_rlz.iMax, n_r))
+z_reg = collect(LinRange(gp_rlz.kMin, gp_rlz.kMax, n_z))
+contourf(ax, r_reg, z_reg, f_rz; colormap=:inferno, levels=12)</code></pre><p><img src="../figures/fig_rlz_contourf.png" alt="3D Cylindrical r-z cross-section"/> <em>Left: f(r,z) at λ=0. Right: vertical derivative ∂f/∂z.</em></p><hr/><h2 id="Example-4-—-3D-Cartesian-Grid-(Spline-Spline-Spline)-with-Two-Variables"><a class="docs-heading-anchor" href="#Example-4-—-3D-Cartesian-Grid-(Spline-Spline-Spline)-with-Two-Variables">Example 4 — 3D Cartesian Grid (Spline × Spline × Spline) with Two Variables</a><a id="Example-4-—-3D-Cartesian-Grid-(Spline-Spline-Spline)-with-Two-Variables-1"></a><a class="docs-heading-anchor-permalink" href="#Example-4-—-3D-Cartesian-Grid-(Spline-Spline-Spline)-with-Two-Variables" title="Permalink"></a></h2><p>The <strong>RRR</strong> grid uses cubic B-splines in all three dimensions.</p><h3 id="Key-features-3"><a class="docs-heading-anchor" href="#Key-features-3">Key features</a><a class="docs-heading-anchor-permalink" href="#Key-features-3" title="Permalink"></a></h3><ul><li>BCs are needed for all three directions: <code>BCL</code>/<code>BCR</code> (i), <code>BCU</code>/<code>BCD</code> (j), <code>BCB</code>/<code>BCT</code> (k).</li><li>Physical indexing: <code>flat = (i-1)*jDim*kDim + (j-1)*kDim + k</code>.</li><li><strong>Multiple variables</strong>: assign each a unique integer index in <code>vars</code>.</li></ul><h3 id="Grid-creation-with-two-variables"><a class="docs-heading-anchor" href="#Grid-creation-with-two-variables">Grid creation with two variables</a><a id="Grid-creation-with-two-variables-1"></a><a class="docs-heading-anchor-permalink" href="#Grid-creation-with-two-variables" title="Permalink"></a></h3><pre><code class="language-julia hljs">gp_rrr = SpringsteelGridParameters(
+    geometry  = &quot;RRR&quot;,
+    iMin      = -30.0,  iMax = 30.0,
+    jMin      = -30.0,  jMax = 30.0,
+    kMin      = -30.0,  kMax = 30.0,
+    num_cells = 6,
+    vars      = Dict(&quot;u&quot; =&gt; 1, &quot;v&quot; =&gt; 2),
+    BCL = Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0),
+    BCR = Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0),
+    BCU = Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0),
+    BCD = Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0),
+    BCB = Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0),
+    BCT = Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0)
+)
+
+grid_rrr = createGrid(gp_rrr)  # RRR_Grid — 2 variables, 7 derivative slots each</code></pre><h3 id="Filling-multiple-variables"><a class="docs-heading-anchor" href="#Filling-multiple-variables">Filling multiple variables</a><a id="Filling-multiple-variables-1"></a><a class="docs-heading-anchor-permalink" href="#Filling-multiple-variables" title="Permalink"></a></h3><p><a href="../springsteel_grid/#Springsteel.getGridpoints"><code>getGridpoints</code></a> returns an <code>(N, 3)</code> matrix for 3D Cartesian grids:</p><pre><code class="language-julia hljs">pts = getGridpoints(grid_rrr)   # (N, 3) → columns [x, y, z]
+
+σ_iso = 15.0;  σ_x = 20.0;  σ_y = 10.0
+
+for i in 1:size(pts, 1)
+    x, y, z = pts[i, 1], pts[i, 2], pts[i, 3]
+    grid_rrr.physical[i, 1, 1] = exp(-(x^2 + y^2 + z^2) / σ_iso^2)
+    grid_rrr.physical[i, 2, 1] = exp(-x^2/σ_x^2 - y^2/σ_y^2) * (z / 30.0)
+end</code></pre><h3 id="Round-trip-2"><a class="docs-heading-anchor" href="#Round-trip-2">Round-trip</a><a class="docs-heading-anchor-permalink" href="#Round-trip-2" title="Permalink"></a></h3><pre><code class="language-julia hljs">orig_u = copy(grid_rrr.physical[:, 1, 1])
+orig_v = copy(grid_rrr.physical[:, 2, 1])
+
+spectralTransform!(grid_rrr)
+gridTransform!(grid_rrr)
+
+err_u = maximum(abs.(grid_rrr.physical[:, 1, 1] .- orig_u))
+err_v = maximum(abs.(grid_rrr.physical[:, 2, 1] .- orig_v))</code></pre><p>Both variables are transformed simultaneously — the spectral and inverse transforms operate on all variables in a single call.</p><h3 id="Evaluating-on-a-regular-grid-3"><a class="docs-heading-anchor" href="#Evaluating-on-a-regular-grid-3">Evaluating on a regular grid</a><a class="docs-heading-anchor-permalink" href="#Evaluating-on-a-regular-grid-3" title="Permalink"></a></h3><p>For Cartesian grids, pass explicit output vectors directly — this gives a clean symmetric grid independent of the internal mish-point density:</p><pre><code class="language-julia hljs"># Pass explicit output vectors (cleaner than getRegularGridpoints for Cartesian)
+n_out = 20
+x_out = collect(LinRange(gp_rrr.iMin, gp_rrr.iMax, n_out))
+y_out = collect(LinRange(gp_rrr.jMin, gp_rrr.jMax, n_out))
+z_out = collect(LinRange(gp_rrr.kMin, gp_rrr.kMax, n_out))
+reg_vals = regularGridTransform(grid_rrr, x_out, y_out, z_out)  # (n_out³, 2, 7)</code></pre><p>All variables are evaluated simultaneously — both <code>u</code> and <code>v</code> appear in the output.</p><p>To extract an <code>(x, y)</code> slice at a fixed <code>z</code>-index for contourf:</p><pre><code class="language-julia hljs"># z varies fastest → flat = (xi-1)*n_out² + (yj-1)*n_out + zi
+k_mid = div(n_out, 2) + 1
+u_xy = [reg_vals[(xi-1)*n_out^2 + (yj-1)*n_out + k_mid, 1, 1]
+        for xi in 1:n_out, yj in 1:n_out]
+contourf(ax, x_out, y_out, u_xy; colormap=:viridis, levels=12)</code></pre><p><img src="../figures/fig_rrr_contourf.png" alt="3D Cartesian x-y slice"/> <em>Both variables on the regular grid x-y slice at z≈0.</em></p><hr/><h2 id="Example-5-—-2D-Spherical-Shell-Grid-(Spline-Fourier)"><a class="docs-heading-anchor" href="#Example-5-—-2D-Spherical-Shell-Grid-(Spline-Fourier)">Example 5 — 2D Spherical Shell Grid (Spline × Fourier)</a><a id="Example-5-—-2D-Spherical-Shell-Grid-(Spline-Fourier)-1"></a><a class="docs-heading-anchor-permalink" href="#Example-5-—-2D-Spherical-Shell-Grid-(Spline-Fourier)" title="Permalink"></a></h2><p>The <strong>SphericalShell</strong> (<code>&quot;SL&quot;</code>) grid uses B-splines in the colatitude (θ) direction and Fourier series in longitude (λ).</p><h3 id="Key-features-4"><a class="docs-heading-anchor" href="#Key-features-4">Key features</a><a class="docs-heading-anchor-permalink" href="#Key-features-4" title="Permalink"></a></h3><ul><li>The colatitude domain is <code>[iMin, iMax]</code> in radians (e.g. <code>0.01π</code> to <code>0.99π</code> to exclude the poles where the Fourier ring collapses).</li><li><strong>Variable azimuthal resolution</strong>: like the <code>RL</code> grid, each colatitude ring has <code>lpoints = k*2</code> Fourier points where <code>k</code> is the ring&#39;s radial index.</li><li>Coordinate convention: <code>i</code> = colatitude θ ∈ (0, π), <code>j</code> = longitude λ ∈ [0, 2π).</li><li>The physical array has <strong>5 derivative slots</strong>: <code>[f, ∂f/∂θ, ∂²f/∂θ², ∂f/∂λ, ∂²f/∂λ²]</code>.</li></ul><h3 id="Grid-creation-3"><a class="docs-heading-anchor" href="#Grid-creation-3">Grid creation</a><a class="docs-heading-anchor-permalink" href="#Grid-creation-3" title="Permalink"></a></h3><pre><code class="language-julia hljs">gp_sl = SpringsteelGridParameters(
+    geometry  = &quot;SphericalShell&quot;,   # or &quot;SL&quot;
+    iMin      = 0.01 * π,           # south-polar exclusion zone
+    iMax      = 0.99 * π,           # north-polar exclusion zone
+    num_cells = 12,
+    vars      = Dict(&quot;gauss&quot; =&gt; 1),
+    BCL       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),
+    BCR       = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0)
+)
+
+grid_sl = createGrid(gp_sl)  # SL_Grid / SphericalShell_Grid</code></pre><h3 id="Filling-the-grid-4"><a class="docs-heading-anchor" href="#Filling-the-grid-4">Filling the grid</a><a class="docs-heading-anchor-permalink" href="#Filling-the-grid-4" title="Permalink"></a></h3><p><a href="../springsteel_grid/#Springsteel.getGridpoints"><code>getGridpoints</code></a> returns an <code>(N, 2)</code> matrix with columns <code>[θ, λ]</code>:</p><pre><code class="language-julia hljs">σ_θ = π / 4   # Gaussian half-width in colatitude
+pts_sl = getGridpoints(grid_sl)
+for i in 1:size(pts_sl, 1)
+    θ = pts_sl[i, 1]
+    grid_sl.physical[i, 1, 1] = exp(-((θ - π/2) / σ_θ)^2)
+end</code></pre><h3 id="Round-trip-3"><a class="docs-heading-anchor" href="#Round-trip-3">Round-trip</a><a class="docs-heading-anchor-permalink" href="#Round-trip-3" title="Permalink"></a></h3><pre><code class="language-julia hljs">original_sl = copy(grid_sl.physical[:, 1, 1])
+spectralTransform!(grid_sl)
+gridTransform!(grid_sl)
+max_error_sl = maximum(abs.(grid_sl.physical[:, 1, 1] .- original_sl))
+# max_error_sl ≈ 8e-4 for 12 cells</code></pre><h3 id="Evaluating-on-a-regular-grid-4"><a class="docs-heading-anchor" href="#Evaluating-on-a-regular-grid-4">Evaluating on a regular grid</a><a class="docs-heading-anchor-permalink" href="#Evaluating-on-a-regular-grid-4" title="Permalink"></a></h3><p>Use <a href="../springsteel_grid/#Springsteel.regularGridTransform"><code>regularGridTransform</code></a> + <a href="../springsteel_grid/#Springsteel.getRegularGridpoints"><code>getRegularGridpoints</code></a> to obtain a uniform (θ × λ) tensor-product grid:</p><pre><code class="language-julia hljs">reg_pts_sl  = getRegularGridpoints(grid_sl)             # (N, 2) → [θ, λ]
+reg_phys_sl = regularGridTransform(grid_sl, reg_pts_sl) # (N, 1, 5)</code></pre><p><strong>Reshape note</strong>: output is stored with λ varying fastest. A <code>(n_λ × n_θ)</code> matrix suitable for GeoMakie <code>surface!</code> is:</p><pre><code class="language-julia hljs">n_θ_sl = grid_sl.params.i_regular_out
+n_λ_sl = grid_sl.params.j_regular_out
+f_mat_sl = reshape(reg_phys_sl[:, 1, 1], n_λ_sl, n_θ_sl)  # (n_λ × n_θ)</code></pre><p>For <strong>GeoMakie</strong> Mollweide projections, latitudes must be in ascending order:</p><pre><code class="language-julia hljs">using GeoMakie, CairoMakie
+lon_sl = λ_reg_sl .* (180/π) .- 180.0          # → [-180, 180)
+lat_sl = 90.0 .- θ_reg_sl .* (180/π)           # colatitude → latitude
+perm   = sortperm(lat_sl)
+fig = Figure()
+ga  = GeoAxis(fig[1,1]; dest = &quot;+proj=moll&quot;, title = &quot;SphericalShell Gaussian&quot;)
+surface!(ga, lon_sl, lat_sl[perm], f_mat_sl[:, perm];
+         colormap = :viridis, shading = NoShading)
+lines!(ga, GeoMakie.coastlines(); color = :white, linewidth = 0.5)
+Colorbar(fig[1, 2], label = &quot;f&quot;)</code></pre><p><img src="../figures/fig_sl_geomakie.png" alt="SphericalShell GeoMakie surface"/> <em>Spherical shell Gaussian on a Mollweide projection. Coastlines are overlaid as a geographic reference.</em></p><hr/><h2 id="Example-6-—-3D-Sphere-Grid-(Spline-Fourier-Chebyshev)"><a class="docs-heading-anchor" href="#Example-6-—-3D-Sphere-Grid-(Spline-Fourier-Chebyshev)">Example 6 — 3D Sphere Grid (Spline × Fourier × Chebyshev)</a><a id="Example-6-—-3D-Sphere-Grid-(Spline-Fourier-Chebyshev)-1"></a><a class="docs-heading-anchor-permalink" href="#Example-6-—-3D-Sphere-Grid-(Spline-Fourier-Chebyshev)" title="Permalink"></a></h2><p>The <strong>Sphere</strong> (<code>&quot;SLZ&quot;</code>) grid adds a Chebyshev dimension in the radial/depth direction to the spherical shell, giving a fully 3D spectral representation.</p><h3 id="Key-features-5"><a class="docs-heading-anchor" href="#Key-features-5">Key features</a><a class="docs-heading-anchor-permalink" href="#Key-features-5" title="Permalink"></a></h3><ul><li><code>iMin</code>/<code>iMax</code> — colatitude bounds; <code>kMin</code>/<code>kMax</code>/<code>kDim</code> — vertical (z) domain.</li><li>The physical array has <strong>7 derivative slots</strong>: <code>[f, ∂f/∂θ, ∂²f/∂θ², ∂f/∂λ, ∂²f/∂λ², ∂f/∂z, ∂²f/∂z²]</code>.</li><li>Physical indexing: z varies fastest, then λ, then θ.</li></ul><h3 id="Grid-creation-4"><a class="docs-heading-anchor" href="#Grid-creation-4">Grid creation</a><a class="docs-heading-anchor-permalink" href="#Grid-creation-4" title="Permalink"></a></h3><pre><code class="language-julia hljs">gp_slz = SpringsteelGridParameters(
+    geometry  = &quot;Sphere&quot;,       # or &quot;SLZ&quot;
+    iMin      = 0.01 * π,
+    iMax      = 0.99 * π,
+    num_cells = 6,
+    kMin      = 0.0,
+    kMax      = 10.0,
+    kDim      = 8,
+    vars      = Dict(&quot;gauss&quot; =&gt; 1),
+    BCL = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),
+    BCR = Dict(&quot;gauss&quot; =&gt; CubicBSpline.R0),
+    BCB = Dict(&quot;gauss&quot; =&gt; Chebyshev.R0),
+    BCT = Dict(&quot;gauss&quot; =&gt; Chebyshev.R0)
+)
+
+grid_slz = createGrid(gp_slz)  # SLZ_Grid / Sphere_Grid</code></pre><h3 id="Filling-the-grid-5"><a class="docs-heading-anchor" href="#Filling-the-grid-5">Filling the grid</a><a class="docs-heading-anchor-permalink" href="#Filling-the-grid-5" title="Permalink"></a></h3><p><a href="../springsteel_grid/#Springsteel.getGridpoints"><code>getGridpoints</code></a> returns an <code>(N, 3)</code> matrix with columns <code>[θ, λ, z]</code>:</p><pre><code class="language-julia hljs">σ_θ_slz = π / 4;  σ_z_slz = 3.0;  z₀_slz = 5.0
+pts_slz = getGridpoints(grid_slz)
+for i in 1:size(pts_slz, 1)
+    θ, λ, z = pts_slz[i, 1], pts_slz[i, 2], pts_slz[i, 3]
+    grid_slz.physical[i, 1, 1] = exp(-((θ - π/2)/σ_θ_slz)^2 - ((z - z₀_slz)/σ_z_slz)^2)
+end</code></pre><h3 id="Round-trip-4"><a class="docs-heading-anchor" href="#Round-trip-4">Round-trip</a><a class="docs-heading-anchor-permalink" href="#Round-trip-4" title="Permalink"></a></h3><pre><code class="language-julia hljs">original_slz = copy(grid_slz.physical[:, 1, 1])
+spectralTransform!(grid_slz)
+gridTransform!(grid_slz)
+max_error_slz = maximum(abs.(grid_slz.physical[:, 1, 1] .- original_slz))
+# max_error_slz ≈ 8e-3 for 6 cells</code></pre><h3 id="Evaluating-on-a-regular-grid-5"><a class="docs-heading-anchor" href="#Evaluating-on-a-regular-grid-5">Evaluating on a regular grid</a><a class="docs-heading-anchor-permalink" href="#Evaluating-on-a-regular-grid-5" title="Permalink"></a></h3><pre><code class="language-julia hljs">reg_pts_slz  = getRegularGridpoints(grid_slz)              # (N, 3) → [θ, λ, z]
+reg_phys_slz = regularGridTransform(grid_slz, reg_pts_slz) # (N, 1, 7)</code></pre><p>The output layout is: <strong>z fastest, λ second, θ outer</strong> (same as <code>RLZ</code>). Flat index: <code>flat = (ti-1)*n_λ*n_z + (li-1)*n_z + zi</code>.</p><p>To extract a <strong>(θ, z) cross-section</strong> at <code>λ = 0</code> for contourf:</p><pre><code class="language-julia hljs">n_θ_slz = grid_slz.params.i_regular_out
+n_λ_slz = grid_slz.params.j_regular_out
+n_z_slz = grid_slz.params.k_regular_out
+θ_reg = collect(LinRange(gp_slz.iMin, gp_slz.iMax, n_θ_slz))
+z_reg = collect(LinRange(gp_slz.kMin, gp_slz.kMax, n_z_slz))
+# λ-index 1 (λ = 0): flat = (ti-1)*n_λ_slz*n_z_slz + zi
+f_tz  = [reg_phys_slz[(ti-1)*n_λ_slz*n_z_slz + zi, 1, 1]
+         for ti in 1:n_θ_slz, zi in 1:n_z_slz]
+lat_reg = 90.0 .- θ_reg .* (180/π)
+contourf(ax, lat_reg, z_reg, f_tz; colormap = :inferno, levels = 12)</code></pre><p>To produce a <strong>GeoMakie surface at a fixed z-level</strong>:</p><pre><code class="language-julia hljs">k_mid = div(n_z_slz, 2) + 1
+f_surf = [reg_phys_slz[(ti-1)*n_λ_slz*n_z_slz + (li-1)*n_z_slz + k_mid, 1, 1]
+          for li in 1:n_λ_slz, ti in 1:n_θ_slz]   # (n_λ × n_θ)
+lon_slz = [2π*(j-1)/n_λ_slz for j in 1:n_λ_slz] .* (180/π) .- 180.0
+lat_slz = 90.0 .- θ_reg .* (180/π)
+perm_slz = sortperm(lat_slz)
+fig = Figure()
+ga  = GeoAxis(fig[1,1]; dest = &quot;+proj=moll&quot;)
+surface!(ga, lon_slz, lat_slz[perm_slz], f_surf[:, perm_slz];
+         colormap = :inferno, shading = NoShading)
+lines!(ga, GeoMakie.coastlines(); color = :white, linewidth = 0.5)</code></pre><p><img src="../figures/fig_slz_contourf.png" alt="Sphere θ-z cross-section"/> <em>Left: f(θ,z) at λ=0. Right: vertical derivative ∂f/∂z.</em></p><p><img src="../figures/fig_slz_geomakie.png" alt="Sphere GeoMakie surface at mid-z"/> <em>Gaussian on the sphere at z = z_mid, Mollweide projection.</em></p><hr/><h2 id="Summary:-Core-Workflow"><a class="docs-heading-anchor" href="#Summary:-Core-Workflow">Summary: Core Workflow</a><a id="Summary:-Core-Workflow-1"></a><a class="docs-heading-anchor-permalink" href="#Summary:-Core-Workflow" title="Permalink"></a></h2><pre><code class="language-julia hljs"># 1. Configure
+gp = SpringsteelGridParameters(geometry = &quot;...&quot;, ...)
+
+# 2. Build
+grid = createGrid(gp)
+
+# 3. Fill physical data
+grid.physical[:, var_index, 1] .= your_data
+
+# 4. Forward transform
+spectralTransform!(grid)
+
+# 5. Inverse transform (fills values + derivatives)
+gridTransform!(grid)
+
+# 6. (Optional) Evaluate on a regular output grid
+reg_pts  = getRegularGridpoints(grid)            # uniform tensor-product grid
+reg_vals = regularGridTransform(grid, reg_pts)   # or pass r_pts, λ_pts, z_pts directly</code></pre><p>All legacy type names (<code>R_Grid</code>, <code>RL_Grid</code>, <code>RZ_Grid</code>, <code>RR_Grid</code>, <code>RLZ_Grid</code>, <code>RRR_Grid</code>, <code>SL_Grid</code>, <code>SphericalShell_Grid</code>, <code>SLZ_Grid</code>, <code>Sphere_Grid</code>) remain available as type aliases for full backward compatibility.</p><h3 id="Supported-grid-geometries"><a class="docs-heading-anchor" href="#Supported-grid-geometries">Supported grid geometries</a><a id="Supported-grid-geometries-1"></a><a class="docs-heading-anchor-permalink" href="#Supported-grid-geometries" title="Permalink"></a></h3><table><tr><th style="text-align: left">Geometry string</th><th style="text-align: left">Basis functions</th><th style="text-align: left">Type alias</th></tr><tr><td style="text-align: left"><code>&quot;R&quot;</code> / <code>&quot;Spline1D&quot;</code></td><td style="text-align: left">Spline</td><td style="text-align: left"><code>R_Grid</code> / <code>Spline1D_Grid</code></td></tr><tr><td style="text-align: left"><code>&quot;RL&quot;</code></td><td style="text-align: left">Spline × Fourier</td><td style="text-align: left"><code>RL_Grid</code></td></tr><tr><td style="text-align: left"><code>&quot;RZ&quot;</code></td><td style="text-align: left">Spline × Chebyshev</td><td style="text-align: left"><code>RZ_Grid</code></td></tr><tr><td style="text-align: left"><code>&quot;RR&quot;</code> / <code>&quot;Spline2D&quot;</code></td><td style="text-align: left">Spline × Spline</td><td style="text-align: left"><code>RR_Grid</code> / <code>Spline2D_Grid</code></td></tr><tr><td style="text-align: left"><code>&quot;RLZ&quot;</code></td><td style="text-align: left">Spline × Fourier × Chebyshev</td><td style="text-align: left"><code>RLZ_Grid</code></td></tr><tr><td style="text-align: left"><code>&quot;RRR&quot;</code></td><td style="text-align: left">Spline × Spline × Spline</td><td style="text-align: left"><code>RRR_Grid</code></td></tr><tr><td style="text-align: left"><code>&quot;SL&quot;</code> / <code>&quot;SphericalShell&quot;</code></td><td style="text-align: left">Spline × Fourier</td><td style="text-align: left"><code>SL_Grid</code> / <code>SphericalShell_Grid</code></td></tr><tr><td style="text-align: left"><code>&quot;SLZ&quot;</code> / <code>&quot;Sphere&quot;</code></td><td style="text-align: left">Spline × Fourier × Chebyshev</td><td style="text-align: left"><code>SLZ_Grid</code> / <code>Sphere_Grid</code></td></tr></table><hr/><h2 id="I/O"><a class="docs-heading-anchor" href="#I/O">I/O</a><a id="I/O-1"></a><a class="docs-heading-anchor-permalink" href="#I/O" title="Permalink"></a></h2><p>Springsteel provides three I/O pathways:</p><table><tr><th style="text-align: left">Format</th><th style="text-align: left">Write</th><th style="text-align: left">Read</th><th style="text-align: left">Notes</th></tr><tr><td style="text-align: left">CSV</td><td style="text-align: left"><code>write_grid</code></td><td style="text-align: left"><code>read_physical_grid</code></td><td style="text-align: left">Human-readable; physical (mish-point) grid values</td></tr><tr><td style="text-align: left">JLD2</td><td style="text-align: left"><code>save_grid</code></td><td style="text-align: left"><code>load_grid</code></td><td style="text-align: left">Binary; full round-trip including spectral coefficients</td></tr><tr><td style="text-align: left">NetCDF</td><td style="text-align: left"><code>write_netcdf</code></td><td style="text-align: left"><code>read_netcdf</code></td><td style="text-align: left">CF-1.12 compliant; regular output grid; language-agnostic</td></tr></table><h3 id="JLD2-—-save-and-reload-a-grid"><a class="docs-heading-anchor" href="#JLD2-—-save-and-reload-a-grid">JLD2 — save and reload a grid</a><a id="JLD2-—-save-and-reload-a-grid-1"></a><a class="docs-heading-anchor-permalink" href="#JLD2-—-save-and-reload-a-grid" title="Permalink"></a></h3><p><code>save_grid</code> serialises the complete grid state (parameters, spectral coefficients, physical array) to a compressed JLD2 binary file.  <code>load_grid</code> reconstructs the full grid from the file, including fresh FFTW plans.</p><pre><code class="language-julia hljs">using Springsteel
+
+# Build and transform a grid
+gp = SpringsteelGridParameters(
+    geometry=&quot;RL&quot;, num_cells=20, iMin=0.0, iMax=100.0,
+    vars=Dict(&quot;u&quot; =&gt; 1, &quot;v&quot; =&gt; 2),
+    BCL=Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0),
+    BCR=Dict(&quot;u&quot; =&gt; CubicBSpline.R0, &quot;v&quot; =&gt; CubicBSpline.R0))
+grid = createGrid(gp)
+# ... fill grid.physical and call spectralTransform! ...
+
+# Save (zstd compression by default)
+save_grid(&quot;simulation.jld2&quot;, grid)
+
+# Load into a fresh session — FFTW plans are reconstructed automatically
+grid2 = load_grid(&quot;simulation.jld2&quot;)
+@assert grid2.spectral ≈ grid.spectral
+gridTransform!(grid2)   # works immediately; plans are fresh</code></pre><p>Use <code>compress=false</code> to skip compression (larger files, faster writes):</p><pre><code class="language-julia hljs">save_grid(&quot;simulation_uncompressed.jld2&quot;, grid; compress=false)</code></pre><h3 id="NetCDF-—-write-CF-compliant-output"><a class="docs-heading-anchor" href="#NetCDF-—-write-CF-compliant-output">NetCDF — write CF-compliant output</a><a id="NetCDF-—-write-CF-compliant-output-1"></a><a class="docs-heading-anchor-permalink" href="#NetCDF-—-write-CF-compliant-output" title="Permalink"></a></h3><p><code>write_netcdf</code> evaluates the spectral representation on a uniform tensor-product grid and writes the result to a CF-1.12-compliant NetCDF file readable by any NetCDF-aware tool (Python/xarray, MATLAB, NCO, ParaView, …).</p><pre><code class="language-julia hljs">spectralTransform!(grid)
+write_netcdf(&quot;output.nc&quot;, grid)</code></pre><p>By default only field values are written.  Pass <code>include_derivatives=true</code> to also write first and second derivative variables:</p><pre><code class="language-julia hljs">write_netcdf(&quot;output.nc&quot;, grid; include_derivatives=true)</code></pre><p>Extra CF global attributes (institution, references, …) can be provided:</p><pre><code class="language-julia hljs">write_netcdf(&quot;output.nc&quot;, grid;
+    global_attributes=Dict{String,Any}(
+        &quot;institution&quot; =&gt; &quot;NCAR&quot;,
+        &quot;references&quot;  =&gt; &quot;doi:10.1000/example&quot;))</code></pre><p>Coordinate names follow the grid geometry:</p><table><tr><th style="text-align: left">Grid type</th><th style="text-align: left">Dimension names</th></tr><tr><td style="text-align: left">Cartesian (R, RR, RZ, RRR)</td><td style="text-align: left"><code>x</code>, <code>y</code>, <code>z</code></td></tr><tr><td style="text-align: left">Cylindrical (RL, RLZ)</td><td style="text-align: left"><code>radius</code>, <code>azimuth</code> (degrees), <code>height</code></td></tr><tr><td style="text-align: left">Spherical (SL, SLZ)</td><td style="text-align: left"><code>latitude</code> (degrees<em>north), <code>longitude</code> (degrees</em>east), <code>height</code></td></tr></table><h3 id="NetCDF-—-reading-back-with-read_netcdf"><a class="docs-heading-anchor" href="#NetCDF-—-reading-back-with-read_netcdf">NetCDF — reading back with <code>read_netcdf</code></a><a id="NetCDF-—-reading-back-with-read_netcdf-1"></a><a class="docs-heading-anchor-permalink" href="#NetCDF-—-reading-back-with-read_netcdf" title="Permalink"></a></h3><p><code>read_netcdf</code> returns a plain <code>Dict</code> with four keys: <code>&quot;dimensions&quot;</code>, <code>&quot;coordinates&quot;</code>, <code>&quot;variables&quot;</code>, and <code>&quot;attributes&quot;</code>.  This is ready for passing to plotting libraries or further Julia analysis.</p><pre><code class="language-julia hljs">data = read_netcdf(&quot;output.nc&quot;)
+
+# Inspect contents
+data[&quot;attributes&quot;][&quot;Conventions&quot;]   # &quot;CF-1.12&quot;
+x    = data[&quot;coordinates&quot;][&quot;x&quot;]     # Vector{Float64}
+u    = data[&quot;variables&quot;][&quot;u&quot;]       # Array{Float64}
+
+# Plot with CairoMakie
+using CairoMakie
+lines(x, u; label=&quot;u&quot;)</code></pre><p>For a cylindrical grid the coordinate keys would be <code>&quot;radius&quot;</code> and <code>&quot;azimuth&quot;</code>; for spherical, <code>&quot;latitude&quot;</code> and <code>&quot;longitude&quot;</code>.</p><blockquote><p><strong>Note</strong>: <code>read_netcdf</code> returns data on the <em>regular output grid</em>, not the native mish-point grid.  To load field values back onto the mish-point grid (e.g. to restart a simulation), use <code>read_physical_grid</code> with a CSV file produced by <code>write_grid</code>.</p></blockquote><hr/><h2 id="Example-7-—-Solving-a-Boundary-Value-Problem"><a class="docs-heading-anchor" href="#Example-7-—-Solving-a-Boundary-Value-Problem">Example 7 — Solving a Boundary Value Problem</a><a id="Example-7-—-Solving-a-Boundary-Value-Problem-1"></a><a class="docs-heading-anchor-permalink" href="#Example-7-—-Solving-a-Boundary-Value-Problem" title="Permalink"></a></h2><p>Springsteel includes a solver framework for linear boundary value problems. This example solves the 1D Poisson equation <span>$u&#39;&#39; = f$</span> on a Chebyshev grid.</p><h3 id="Setting-up-the-problem"><a class="docs-heading-anchor" href="#Setting-up-the-problem">Setting up the problem</a><a id="Setting-up-the-problem-1"></a><a class="docs-heading-anchor-permalink" href="#Setting-up-the-problem" title="Permalink"></a></h3><pre><code class="language-julia hljs">using Springsteel
+
+# Create a 1D Chebyshev grid with Dirichlet BCs
+gp = SpringsteelGridParameters(
+    geometry = &quot;Z&quot;,
+    iMin = 0.0, iMax = 1.0,
+    iDim = 25, b_iDim = 25,
+    BCL = Dict(&quot;u&quot; =&gt; Chebyshev.R1T0),   # u(0) = 0
+    BCR = Dict(&quot;u&quot; =&gt; Chebyshev.R1T0),   # u(1) = 0
+    vars = Dict(&quot;u&quot; =&gt; 1))
+grid = createGrid(gp)</code></pre><h3 id="Assembling-the-operator"><a class="docs-heading-anchor" href="#Assembling-the-operator">Assembling the operator</a><a id="Assembling-the-operator-1"></a><a class="docs-heading-anchor-permalink" href="#Assembling-the-operator" title="Permalink"></a></h3><p>Use <a href="../solver/#Springsteel.assemble_from_equation"><code>assemble_from_equation</code></a> to build the second-derivative operator:</p><pre><code class="language-julia hljs">L = assemble_from_equation(grid, &quot;u&quot;; d_ii=1.0)</code></pre><p>For multi-term operators (e.g., <span>$a u&#39;&#39; + b u&#39; + c u = f$</span>), pass multiple keywords:</p><pre><code class="language-julia hljs">L = assemble_from_equation(grid, &quot;u&quot;; d_ii=a, d_i=b, d0=c)</code></pre><h3 id="Defining-the-RHS-and-solving"><a class="docs-heading-anchor" href="#Defining-the-RHS-and-solving">Defining the RHS and solving</a><a id="Defining-the-RHS-and-solving-1"></a><a class="docs-heading-anchor-permalink" href="#Defining-the-RHS-and-solving" title="Permalink"></a></h3><pre><code class="language-julia hljs">pts = solver_gridpoints(grid, &quot;u&quot;)
+f = -pi^2 .* sin.(pi .* pts)   # RHS for u(x) = sin(πx)
+
+prob = SpringsteelProblem(grid; operator=L, rhs=f)
+sol = solve(prob)
+
+# Check accuracy
+u_exact = sin.(pi .* pts)
+maximum(abs.(sol.physical .- u_exact))   # &lt; 1e-4</code></pre><p>The solver automatically applies Dirichlet boundary conditions by replacing boundary rows in the operator matrix. The solution is returned as a <a href="../solver/#Springsteel.SpringsteelSolution"><code>SpringsteelSolution</code></a> containing both the spectral coefficients and physical-space values.</p><h3 id="2D-boundary-value-problems"><a class="docs-heading-anchor" href="#2D-boundary-value-problems">2D boundary value problems</a><a id="2D-boundary-value-problems-1"></a><a class="docs-heading-anchor-permalink" href="#2D-boundary-value-problems" title="Permalink"></a></h3><p>The solver extends naturally to multi-dimensional grids via Kronecker products. For a 2D Poisson equation on a Chebyshev×Chebyshev grid:</p><pre><code class="language-julia hljs">gp2d = SpringsteelGridParameters(
+    geometry = &quot;ZZ&quot;,
+    iMin = 0.0, iMax = 1.0, iDim = 20, b_iDim = 20,
+    jMin = 0.0, jMax = 1.0, jDim = 20, b_jDim = 20,
+    BCL = Dict(&quot;u&quot; =&gt; Chebyshev.R1T0),
+    BCR = Dict(&quot;u&quot; =&gt; Chebyshev.R1T0),
+    BCU = Dict(&quot;u&quot; =&gt; Chebyshev.R1T0),
+    BCD = Dict(&quot;u&quot; =&gt; Chebyshev.R1T0),
+    vars = Dict(&quot;u&quot; =&gt; 1))
+grid2d = createGrid(gp2d)
+
+L2d = assemble_from_equation(grid2d, &quot;u&quot;; d_ii=1.0, d_jj=1.0)</code></pre><p>The assembled operator <span>$\mathbf{L}$</span> automatically combines 1D matrices via Kronecker products: <span>$\mathbf{L} = \mathbf{D}^2_i \otimes \mathbf{I}_j + \mathbf{I}_i \otimes \mathbf{D}^2_j$</span>.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../springsteel_grid/">SpringsteelGrid »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Thursday 12 March 2026 03:24">Thursday 12 March 2026</span>. Using Julia version 1.12.5.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
