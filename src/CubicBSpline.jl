@@ -13,6 +13,7 @@ export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
 export SIIntcoefficients, SIInttransform
 export setMishValues
+export set_ahat_r3x!
 # Generic (no-prefix) wrappers for abstract 1D basis dispatch
 export Btransform, Btransform!, Bxtransform
 export Atransform, Atransform!
@@ -31,7 +32,6 @@ const sqrt35 = sqrt(3.0/5.0)
 # which removes r border coefficients from the spectral solve via the
 # base-folding operator Γ.  The *type* t identifies which derivative is
 # constrained (T0 = value, T1 = first derivative, T2 = second derivative).
-# Inhomogeneous conditions (R3X) are not yet implemented.
 
 """
 Rank-0 boundary condition (Ooyama 2002, Eq. 3.2a): **no constraint** at the
@@ -90,6 +90,18 @@ external data from an adjacent domain) is the primary tool for domain nesting
 and will be implemented in a future release.
 """
 const R3 = Dict("R3" => 0)
+
+"""
+Rank-3, inhomogeneous boundary condition (Ooyama 2002, section 3): **specified
+value, first derivative, and second derivative** at the boundary,
+``u(x_0) = u_0,\\; u'(x_0) = u_1,\\; u''(x_0) = u_2``. Eliminates all three
+border coefficients, identical to R3 in the gammaBC matrix, but the SAtransform
+uses a background coefficient vector `ahat` that carries the inhomogeneous data.
+The primary use case is grid nesting, where an inner grid obtains boundary data
+from an outer grid that changes each timestep. Set boundary values via
+[`set_ahat_r3x!`](@ref).
+"""
+const R3X = Dict("R3X" => 0)
 
 """
 Periodic boundary condition (Ooyama 2002, section 3e): couples the left and
@@ -274,6 +286,7 @@ One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParame
 - `uMish::Vector{Float64}`: Physical field values at mish points (mutable working buffer)
 - `b::Vector{Float64}`: B-vector (result of SB transform, inner products ⟨φₘ, u⟩)
 - `a::Vector{Float64}`: Spectral coefficient vector (result of SA transform)
+- `ahat::Vector{Float64}`: Background coefficient vector for inhomogeneous R3X boundary conditions (length `bDim`). Initialised to zeros; set via [`set_ahat_r3x!`](@ref) for grid nesting.
 
 # Notes
 - Constructing `Spline1D` builds `gammaBC` and factorises the `(P + Q)` matrix, which is the
@@ -296,6 +309,7 @@ struct Spline1D
     uMish::Vector{real}
     b::Vector{real}
     a::Vector{real}
+    ahat::Vector{real}
 end
 
 """
@@ -392,7 +406,7 @@ function calcGammaBC(sp::SplineParameters)
         rankL = 2
     elseif sp.BCL == R0
         rankL = 0
-    elseif sp.BCL == R3
+    elseif sp.BCL == R3 || haskey(sp.BCL, "R3X")
         rankL = 3
     elseif sp.BCL == PERIODIC
         rankL = 1
@@ -404,7 +418,7 @@ function calcGammaBC(sp::SplineParameters)
         rankR = 2
     elseif sp.BCR == R0
         rankR = 0
-    elseif sp.BCR == R3
+    elseif sp.BCR == R3 || haskey(sp.BCR, "R3X")
         rankR = 3
     elseif sp.BCR == PERIODIC
         rankR = 2
@@ -426,7 +440,7 @@ function calcGammaBC(sp::SplineParameters)
     elseif sp.BCL == PERIODIC
         gammaBC[Minterior_dim,1] = 1.0
         gammaBC[:,2:(Mdim-rankR)] = Matrix(1.0I, Minterior_dim, Minterior_dim)
-    elseif sp.BCL == R3
+    elseif sp.BCL == R3 || haskey(sp.BCL, "R3X")
         gammaBC[:,4:(Mdim-rankR)] = Matrix(1.0I, Minterior_dim, Minterior_dim)
     else
         gammaBC[:,1:(Mdim-rankR)] = Matrix(1.0I, Minterior_dim, Minterior_dim)
@@ -664,8 +678,9 @@ function Spline1D(sp::SplineParameters)
 
     b = zeros(real,sp.bDim)
     a = zeros(real,sp.bDim)
+    ahat = zeros(real,sp.bDim)
 
-    spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,uMish,b,a)
+    spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,uMish,b,a,ahat)
     return spline
 end
 
@@ -921,10 +936,21 @@ function SAtransform(spline::Spline1D, b::AbstractVector)
     return a
 end
 
-function SAtransform!(spline::Spline1D)
+"""
+    _has_r3x(sp::SplineParameters) -> Bool
 
-    # In-place version of the SA transform
-    spline.a .= spline.gammaBC' * (spline.pqFactor \ (spline.gammaBC * spline.b))
+Return `true` if either boundary condition is R3X (inhomogeneous rank-3).
+"""
+_has_r3x(sp::SplineParameters) = haskey(sp.BCL, "R3X") || haskey(sp.BCR, "R3X")
+
+function SAtransform!(spline::Spline1D)
+    if _has_r3x(spline.params)
+        btilde = spline.gammaBC * (spline.b .- (spline.pq * spline.ahat))
+        spline.a .= (spline.gammaBC' * (spline.pqFactor \ btilde)) .+ spline.ahat
+    else
+        # In-place version of the SA transform
+        spline.a .= spline.gammaBC' * (spline.pqFactor \ (spline.gammaBC * spline.b))
+    end
 end
 
 function SAtransform(spline::Spline1D, b::Vector{real}, ahat::Vector{real})
@@ -932,6 +958,73 @@ function SAtransform(spline::Spline1D, b::Vector{real}, ahat::Vector{real})
     btilde = spline.gammaBC * (b - (spline.pq * ahat))
     a = (spline.gammaBC' * (spline.pqFactor \ btilde)) + ahat
     return a
+end
+
+# ── R3X inhomogeneous boundary support ───────────────────────────────────────
+
+"""
+    _border_matrix(sp::SplineParameters, side::Symbol) -> Matrix{Float64}
+
+Build the 3×3 matrix relating boundary derivative values to border coefficients.
+
+For `side == :left`, the three border basis functions are m = -1, 0, 1 (array
+indices 1, 2, 3). For `side == :right`, they are m = N-1, N, N+1 (last 3 array
+indices), where N = `num_cells`.
+
+Row `d+1` of the matrix contains the `d`-th derivative of each border basis
+function evaluated at the boundary point.
+
+Returns an invertible 3×3 matrix `M` such that `M \\ [u₀, u₁, u₂]` gives the
+border coefficients that produce the desired boundary values.
+"""
+function _border_matrix(sp::SplineParameters, side::Symbol)
+    x = (side == :left) ? sp.xmin : sp.xmax
+    border_ms = (side == :left) ? [-1, 0, 1] : [sp.num_cells-1, sp.num_cells, sp.num_cells+1]
+    M = zeros(3, 3)
+    for (col, m) in enumerate(border_ms)
+        for deriv in 0:2
+            M[deriv+1, col] = basis(sp, m, x, deriv)
+        end
+    end
+    return M
+end
+
+"""
+    set_ahat_r3x!(spline::Spline1D, u0::Real, u1::Real, u2::Real, side::Symbol)
+
+Set the inhomogeneous R3X boundary conditions on `spline`.
+
+Computes the border coefficients that produce the specified boundary values
+`u(x₀) = u0`, `u'(x₀) = u1`, `u''(x₀) = u2` and stores them in `spline.ahat`.
+
+# Arguments
+- `spline::Spline1D`: Spline with R3X boundary condition on the specified side
+- `u0::Real`: Desired field value at the boundary
+- `u1::Real`: Desired first derivative at the boundary
+- `u2::Real`: Desired second derivative at the boundary
+- `side::Symbol`: `:left` or `:right`
+
+# Example
+```julia
+sp = SplineParameters(xmin=0.0, xmax=1.0, num_cells=10,
+                      BCL=CubicBSpline.R3X, BCR=CubicBSpline.R3X)
+spline = Spline1D(sp)
+set_ahat_r3x!(spline, 1.0, 0.0, 0.0, :left)   # u(0) = 1
+set_ahat_r3x!(spline, 2.0, 0.0, 0.0, :right)  # u(1) = 2
+```
+
+See also: [`R3X`](@ref), [`_border_matrix`](@ref)
+"""
+function set_ahat_r3x!(spline::Spline1D, u0::Real, u1::Real, u2::Real, side::Symbol)
+    M = _border_matrix(spline.params, side)
+    border_coeffs = M \ [u0, u1, u2]
+    if side == :left
+        spline.ahat[1:3] .= border_coeffs
+    elseif side == :right
+        spline.ahat[end-2:end] .= border_coeffs
+    else
+        throw(ArgumentError("side must be :left or :right, got :$side"))
+    end
 end
 
 """

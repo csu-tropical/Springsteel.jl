@@ -534,6 +534,82 @@ function _build_gammaBC_total(grid::AbstractGrid, var_idx::Int)
     end
 end
 
+# Build the total ahat vector for R3X inhomogeneous boundary conditions.
+# For 1D grids: reads ahat directly from the representative Spline1D.
+# For multi-D grids: assembles ahat_total by reading per-mode ahat vectors from
+# the ibasis array, since each secondary-dimension mode has its own i-spline
+# with potentially different ahat values (boundary data varies across modes).
+# Returns nothing if no R3X BCs are present on any spline dimension.
+function _build_ahat_total(grid::AbstractGrid, var_idx::Int)
+    i_active = !(grid.ibasis isa NoBasisArray)
+    j_active = !(grid.jbasis isa NoBasisArray)
+    k_active = !(grid.kbasis isa NoBasisArray)
+
+    # Check if any spline dimension has R3X
+    has_r3x = false
+    if i_active
+        obj = _get_basis_object(grid, :i, var_idx)
+        if obj isa CubicBSpline.Spline1D && CubicBSpline._has_r3x(obj.params)
+            has_r3x = true
+        end
+    end
+
+    if !has_r3x
+        return nothing
+    end
+
+    # 1D case: just the single spline's ahat
+    if !j_active && !k_active
+        return copy(_get_basis_object(grid, :i, var_idx).ahat)
+    end
+
+    # Multi-D: assemble from per-mode i-splines
+    # ibasis.data layout: [secondary_modes..., var_idx]
+    idata = grid.ibasis.data
+    b_iDim = _get_basis_object(grid, :i, var_idx).params.bDim
+
+    if j_active && !k_active
+        # 2D: RR or RL — ibasis.data[j_mode, var]
+        n_modes = size(idata, 1)
+        n_j = size(_basis_matrix(_get_basis_object(grid, :j, var_idx), 0), 2)
+        ahat_total = zeros(b_iDim * n_j)
+        for i in 1:b_iDim
+            for j in 1:n_modes
+                ahat_total[(i-1)*n_j + j] = idata[j, var_idx].ahat[i]
+            end
+        end
+        return ahat_total
+    end
+
+    if !j_active && k_active
+        # 2D: RZ — ibasis.data[k_mode, var]
+        n_modes = size(idata, 1)
+        n_k = size(_basis_matrix(_get_basis_object(grid, :k, var_idx), 0), 2)
+        ahat_total = zeros(b_iDim * n_k)
+        for i in 1:b_iDim
+            for k in 1:n_modes
+                ahat_total[(i-1)*n_k + k] = idata[k, var_idx].ahat[i]
+            end
+        end
+        return ahat_total
+    end
+
+    # 3D case: ibasis.data[j_mode, k_mode, var]
+    n_j_modes = size(idata, 1)
+    n_k_modes = size(idata, 2)
+    n_j = size(_basis_matrix(_get_basis_object(grid, :j, var_idx), 0), 2)
+    n_k = size(_basis_matrix(_get_basis_object(grid, :k, var_idx), 0), 2)
+    ahat_total = zeros(b_iDim * n_j * n_k)
+    for i in 1:b_iDim
+        for j in 1:n_j_modes
+            for k in 1:n_k_modes
+                ahat_total[(i-1)*n_j*n_k + (j-1)*n_k + k] = idata[j, k, var_idx].ahat[i]
+            end
+        end
+    end
+    return ahat_total
+end
+
 # Apply all boundary conditions for solve().
 # Returns (L_bc, f_bc, gammaBC_total_transpose) where gammaBC_total_transpose
 # maps reduced → full spectral space (or nothing if no spline folding).
@@ -716,6 +792,14 @@ function solve(prob::SpringsteelProblem{LocalLinearBackend})
     info = Dict{String, Any}()
 
     try
+        # Build R3X ahat total (before gammaBC folding, since it lives in full space)
+        ahat_total = _build_ahat_total(grid, var_idx)
+
+        # Adjust RHS for inhomogeneous R3X BCs: f -= L * ahat_total
+        if ahat_total !== nothing
+            f .= f .- L * ahat_total
+        end
+
         # Apply all boundary conditions (Chebyshev rows + Spline gammaBC folding)
         L, f, gammaBC_T = _apply_all_bcs(grid, L, f, var_idx, var)
 
@@ -741,6 +825,11 @@ function solve(prob::SpringsteelProblem{LocalLinearBackend})
             a = gammaBC_T * a_raw
         else
             a = a_raw
+        end
+
+        # Add back the ahat background for R3X
+        if ahat_total !== nothing
+            a = a .+ ahat_total
         end
 
         # Compute physical values using the raw (no-BC) evaluation matrix

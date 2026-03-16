@@ -84,6 +84,7 @@ export solve, solver_gridpoints
 export grid_from_regular_data, grid_from_netcdf
 export interpolate_to_grid, interpolate_to_grid!
 export evaluate_unstructured
+export set_boundary_values!
 export cartesian_to_cylindrical, cylindrical_to_cartesian
 export cartesian_to_cylindrical_3d, cylindrical_to_cartesian_3d
 export cartesian_to_spherical, spherical_to_cartesian

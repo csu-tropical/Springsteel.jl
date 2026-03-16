@@ -1796,3 +1796,106 @@ function interpolate_to_grid!(source::SpringsteelGrid{G1,I1,J1,K1},
     end
     return target
 end
+
+# ────────────────────────────────────────────────────────────────────────────
+# R3X grid-level boundary interface
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    set_boundary_values!(grid::R_Grid, side::Symbol, var::String,
+                         u0::Real, u1::Real, u2::Real)
+
+Set inhomogeneous R3X boundary conditions on a 1D R grid.
+
+# Arguments
+- `grid`: 1D spline grid with R3X boundary condition
+- `side`: `:left` or `:right`
+- `var`: Variable name
+- `u0, u1, u2`: Desired value, first derivative, and second derivative at the boundary
+
+See also: [`CubicBSpline.R3X`](@ref), [`CubicBSpline.set_ahat_r3x!`](@ref)
+"""
+function set_boundary_values!(grid::R_Grid, side::Symbol, var::String,
+                              u0::Real, u1::Real, u2::Real)
+    v = grid.params.vars[var]
+    CubicBSpline.set_ahat_r3x!(grid.ibasis.data[1, v], u0, u1, u2, side)
+end
+
+"""
+    set_boundary_values!(grid::RR_Grid, side::Symbol, var::String,
+                         u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)
+
+Set inhomogeneous R3X boundary conditions on a 2D RR grid (Spline×Spline).
+
+Accepts physical-space arrays along the j-boundary, transforms them to j-spectral
+space, and sets per-mode ahat on each i-spline.
+
+# Arguments
+- `grid`: 2D RR grid with R3X boundary condition on the i-dimension
+- `side`: `:left` or `:right` (i-dimension boundary)
+- `var`: Variable name
+- `u0, u1, u2`: Vectors of length `jDim` with boundary values along the j-direction
+
+See also: [`CubicBSpline.R3X`](@ref)
+"""
+function set_boundary_values!(grid::RR_Grid, side::Symbol, var::String,
+                              u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)
+    v = grid.params.vars[var]
+    b_jDim = size(grid.ibasis.data, 1)  # number of j spectral modes
+
+    # Transform each BC array (u0, u1, u2) to j-spectral space using first j-spline
+    bc_spectral = zeros(3, b_jDim)
+    scratch_j = grid.jbasis.data[1, v]
+
+    for (idx, bc_phys) in enumerate([u0, u1, u2])
+        scratch_j.uMish .= bc_phys
+        CubicBSpline.SBtransform!(scratch_j)
+        CubicBSpline.SAtransform!(scratch_j)
+        bc_spectral[idx, :] .= scratch_j.a[1:b_jDim]
+    end
+
+    # Set per-mode ahat on each i-spline
+    for l in 1:b_jDim
+        CubicBSpline.set_ahat_r3x!(grid.ibasis.data[l, v],
+                                    bc_spectral[1,l], bc_spectral[2,l], bc_spectral[3,l], side)
+    end
+end
+
+"""
+    set_boundary_values!(grid::RZ_Grid, side::Symbol, var::String,
+                         u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)
+
+Set inhomogeneous R3X boundary conditions on a 2D RZ grid (Spline×Chebyshev, i-dim only).
+
+Accepts physical-space arrays along the k-boundary, transforms them to Chebyshev
+spectral space, and sets per-mode ahat on each i-spline.
+
+# Arguments
+- `grid`: 2D RZ grid with R3X boundary condition on the i-dimension
+- `side`: `:left` or `:right` (i-dimension boundary)
+- `var`: Variable name
+- `u0, u1, u2`: Vectors of length `kDim` with boundary values along the k-direction
+
+See also: [`CubicBSpline.R3X`](@ref)
+"""
+function set_boundary_values!(grid::RZ_Grid, side::Symbol, var::String,
+                              u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)
+    v = grid.params.vars[var]
+    b_kDim = size(grid.ibasis.data, 1)  # number of Chebyshev spectral modes
+    cheb = grid.kbasis.data[v]
+
+    # Transform each BC array (u0, u1, u2) to Chebyshev spectral space
+    bc_spectral = zeros(3, b_kDim)
+    for (idx, bc_phys) in enumerate([u0, u1, u2])
+        cheb.uMish .= bc_phys
+        Chebyshev.CBtransform!(cheb)
+        Chebyshev.CAtransform!(cheb)
+        bc_spectral[idx, :] .= cheb.a[1:b_kDim]
+    end
+
+    # Set per-mode ahat on each i-spline
+    for k in 1:b_kDim
+        CubicBSpline.set_ahat_r3x!(grid.ibasis.data[k, v],
+                                    bc_spectral[1,k], bc_spectral[2,k], bc_spectral[3,k], side)
+    end
+end
