@@ -366,20 +366,60 @@ end
 """
     assemble_from_equation(grid::AbstractGrid, var::String="";
         d0=nothing, d_i=nothing, d_j=nothing, d_k=nothing,
-        d_ii=nothing, d_jj=nothing, d_kk=nothing) -> Matrix{Float64}
+        d_ii=nothing, d_jj=nothing, d_kk=nothing,
+        d_ij=nothing, d_ik=nothing, d_jk=nothing,
+        d_iij=nothing, d_iik=nothing, d_ijj=nothing,
+        d_jjk=nothing, d_ikk=nothing, d_jkk=nothing,
+        d_ijk=nothing,
+        d_iijj=nothing, d_iikk=nothing, d_jjkk=nothing,
+        d_iijk=nothing, d_ijjk=nothing, d_ijkk=nothing,
+        d_iijjk=nothing, d_iijkk=nothing, d_ijjkk=nothing,
+        d_iijjkk=nothing) -> Matrix{Float64}
 
 Build an operator matrix from an equation-oriented specification. Non-nothing
 keyword arguments are converted to [`OperatorTerm`](@ref) objects and assembled
 via [`assemble_operator`](@ref).
 
+Each keyword encodes a derivative monomial where letter repetitions denote
+derivative order in that dimension: `d_ijj` → ``\\partial^3 / \\partial i\\,\\partial j^2``
+(i.e. `OperatorTerm(1, 2, 0, c)`).  All 27 combinations of orders 0–2 in
+three dimensions are available.
+
 # Keywords
-- `d0`: Coefficient for the identity (0th derivative) term
-- `d_i`: Coefficient for ``\\partial/\\partial i``
-- `d_j`: Coefficient for ``\\partial/\\partial j``
-- `d_k`: Coefficient for ``\\partial/\\partial k``
-- `d_ii`: Coefficient for ``\\partial^2/\\partial i^2``
-- `d_jj`: Coefficient for ``\\partial^2/\\partial j^2``
-- `d_kk`: Coefficient for ``\\partial^2/\\partial k^2``
+## Pure derivatives (single dimension, order 0–2)
+- `d0`: identity (0th derivative)
+- `d_i`, `d_j`, `d_k`: first derivatives
+- `d_ii`, `d_jj`, `d_kk`: second derivatives
+
+## Mixed 2nd-order (two dimensions, each order 1)
+- `d_ij`: ``\\partial^2/\\partial i\\,\\partial j``
+- `d_ik`: ``\\partial^2/\\partial i\\,\\partial k``
+- `d_jk`: ``\\partial^2/\\partial j\\,\\partial k``
+
+## Mixed 3rd-order
+- `d_iij`: ``\\partial^3/\\partial i^2\\,\\partial j``
+- `d_iik`: ``\\partial^3/\\partial i^2\\,\\partial k``
+- `d_ijj`: ``\\partial^3/\\partial i\\,\\partial j^2``
+- `d_jjk`: ``\\partial^3/\\partial j^2\\,\\partial k``
+- `d_ikk`: ``\\partial^3/\\partial i\\,\\partial k^2``
+- `d_jkk`: ``\\partial^3/\\partial j\\,\\partial k^2``
+- `d_ijk`: ``\\partial^3/\\partial i\\,\\partial j\\,\\partial k``
+
+## Mixed 4th-order
+- `d_iijj`: ``\\partial^4/\\partial i^2\\,\\partial j^2``
+- `d_iikk`: ``\\partial^4/\\partial i^2\\,\\partial k^2``
+- `d_jjkk`: ``\\partial^4/\\partial j^2\\,\\partial k^2``
+- `d_iijk`: ``\\partial^4/\\partial i^2\\,\\partial j\\,\\partial k``
+- `d_ijjk`: ``\\partial^4/\\partial i\\,\\partial j^2\\,\\partial k``
+- `d_ijkk`: ``\\partial^4/\\partial i\\,\\partial j\\,\\partial k^2``
+
+## Mixed 5th-order
+- `d_iijjk`: ``\\partial^5/\\partial i^2\\,\\partial j^2\\,\\partial k``
+- `d_iijkk`: ``\\partial^5/\\partial i^2\\,\\partial j\\,\\partial k^2``
+- `d_ijjkk`: ``\\partial^5/\\partial i\\,\\partial j^2\\,\\partial k^2``
+
+## Mixed 6th-order
+- `d_iijjkk`: ``\\partial^6/\\partial i^2\\,\\partial j^2\\,\\partial k^2``
 
 Each coefficient can be a `Float64` (scalar), `Vector{Float64}` (spatially varying),
 or `nothing` (term not included).
@@ -394,6 +434,12 @@ L = assemble_from_equation(grid; d_ii=1.0, d_kk=1.0)
 
 # General 2nd-order ODE: au'' + bu' + cu = f
 L = assemble_from_equation(grid; d_ii=a, d_i=b, d0=c)
+
+# 2D with mixed derivative: ∂²u/∂i² + 2∂²u/∂i∂j + ∂²u/∂j²
+L = assemble_from_equation(grid; d_ii=1.0, d_ij=2.0, d_jj=1.0)
+
+# 3D mixed: ∂³u/∂i∂j²
+L = assemble_from_equation(grid; d_ijj=1.0)
 ```
 
 See also: [`assemble_operator`](@ref), [`OperatorTerm`](@ref)
@@ -405,30 +451,54 @@ function assemble_from_equation(grid::AbstractGrid, var::String="";
     d_k = nothing,
     d_ii = nothing,
     d_jj = nothing,
-    d_kk = nothing)
+    d_kk = nothing,
+    d_ij = nothing,
+    d_ik = nothing,
+    d_jk = nothing,
+    d_iij = nothing,
+    d_iik = nothing,
+    d_ijj = nothing,
+    d_jjk = nothing,
+    d_ikk = nothing,
+    d_jkk = nothing,
+    d_ijk = nothing,
+    d_iijj = nothing,
+    d_iikk = nothing,
+    d_jjkk = nothing,
+    d_iijk = nothing,
+    d_ijjk = nothing,
+    d_ijkk = nothing,
+    d_iijjk = nothing,
+    d_iijkk = nothing,
+    d_ijjkk = nothing,
+    d_iijjkk = nothing)
 
     terms = OperatorTerm[]
 
-    if d0 !== nothing
-        push!(terms, OperatorTerm(0, 0, 0, _to_coeff(d0)))
-    end
-    if d_i !== nothing
-        push!(terms, OperatorTerm(1, 0, 0, _to_coeff(d_i)))
-    end
-    if d_j !== nothing
-        push!(terms, OperatorTerm(0, 1, 0, _to_coeff(d_j)))
-    end
-    if d_k !== nothing
-        push!(terms, OperatorTerm(0, 0, 1, _to_coeff(d_k)))
-    end
-    if d_ii !== nothing
-        push!(terms, OperatorTerm(2, 0, 0, _to_coeff(d_ii)))
-    end
-    if d_jj !== nothing
-        push!(terms, OperatorTerm(0, 2, 0, _to_coeff(d_jj)))
-    end
-    if d_kk !== nothing
-        push!(terms, OperatorTerm(0, 0, 2, _to_coeff(d_kk)))
+    # Exhaustive enumeration of all (i_order, j_order, k_order) combinations
+    # where each order ∈ {0, 1, 2}  (3³ = 27 total)
+    for (kw, ijo) in (
+        # Pure (single dimension)
+        (d0,      (0,0,0)),
+        (d_i,     (1,0,0)), (d_j,     (0,1,0)), (d_k,     (0,0,1)),
+        (d_ii,    (2,0,0)), (d_jj,    (0,2,0)), (d_kk,    (0,0,2)),
+        # Mixed 2nd-order
+        (d_ij,    (1,1,0)), (d_ik,    (1,0,1)), (d_jk,    (0,1,1)),
+        # Mixed 3rd-order
+        (d_iij,   (2,1,0)), (d_iik,   (2,0,1)), (d_ijj,   (1,2,0)),
+        (d_jjk,   (0,2,1)), (d_ikk,   (1,0,2)), (d_jkk,   (0,1,2)),
+        (d_ijk,   (1,1,1)),
+        # Mixed 4th-order
+        (d_iijj,  (2,2,0)), (d_iikk,  (2,0,2)), (d_jjkk,  (0,2,2)),
+        (d_iijk,  (2,1,1)), (d_ijjk,  (1,2,1)), (d_ijkk,  (1,1,2)),
+        # Mixed 5th-order
+        (d_iijjk, (2,2,1)), (d_iijkk, (2,1,2)), (d_ijjkk, (1,2,2)),
+        # Mixed 6th-order
+        (d_iijjkk,(2,2,2)),
+    )
+        if kw !== nothing
+            push!(terms, OperatorTerm(ijo[1], ijo[2], ijo[3], _to_coeff(kw)))
+        end
     end
 
     if isempty(terms)

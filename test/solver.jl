@@ -419,6 +419,237 @@ using LinearAlgebra
             @test maximum(abs.(sol.physical .- sin.(π .* pts))) < 1e-4
         end
 
+        # ─────────────────────────────────────────────────────────────────
+        # Mixed-derivative keywords
+        # ─────────────────────────────────────────────────────────────────
+
+        @testset "d_ij matches manual OperatorTerm on ZZ grid" begin
+            Ni = 12; Nj = 10
+            gp = SpringsteelGridParameters(
+                geometry = "ZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                BCL = Dict("u" => Chebyshev.R1T0),
+                BCR = Dict("u" => Chebyshev.R1T0),
+                BCU = Dict("u" => Chebyshev.R1T0),
+                BCD = Dict("u" => Chebyshev.R1T0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            L_eq = assemble_from_equation(grid, "u"; d_ij=1.0)
+            L_manual = assemble_operator(grid, [OperatorTerm(1, 1, 0, 1.0)], "u")
+            @test L_eq ≈ L_manual
+        end
+
+        @testset "d_ik matches manual OperatorTerm on RZ grid" begin
+            gp = SpringsteelGridParameters(
+                geometry = "RZ",
+                iMin = 0.0, iMax = 1.0, num_cells = 5,
+                kMin = 0.0, kMax = 1.0, kDim = 8, b_kDim = 8,
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            L_eq = assemble_from_equation(grid, "u"; d_ik=1.0)
+            L_manual = assemble_operator(grid, [OperatorTerm(1, 0, 1, 1.0)], "u")
+            @test L_eq ≈ L_manual
+        end
+
+        @testset "d_jk matches manual OperatorTerm on ZZ grid" begin
+            # Use ZZZ to have all 3 dims active, but ZZ only has i and j.
+            # For d_jk we need j and k active. Use a 3D grid.
+            Ni = 6; Nj = 5; Nk = 4
+            gp = SpringsteelGridParameters(
+                geometry = "ZZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                kMin = 0.0, kMax = 1.0, kDim = Nk, b_kDim = Nk,
+                BCL = Dict("u" => Chebyshev.R0),
+                BCR = Dict("u" => Chebyshev.R0),
+                BCU = Dict("u" => Chebyshev.R0),
+                BCD = Dict("u" => Chebyshev.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            L_eq = assemble_from_equation(grid, "u"; d_jk=1.0)
+            L_manual = assemble_operator(grid, [OperatorTerm(0, 1, 1, 1.0)], "u")
+            @test L_eq ≈ L_manual
+        end
+
+        @testset "d_ijk matches manual OperatorTerm on ZZZ grid" begin
+            Ni = 6; Nj = 5; Nk = 4
+            gp = SpringsteelGridParameters(
+                geometry = "ZZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                kMin = 0.0, kMax = 1.0, kDim = Nk, b_kDim = Nk,
+                BCL = Dict("u" => Chebyshev.R0),
+                BCR = Dict("u" => Chebyshev.R0),
+                BCU = Dict("u" => Chebyshev.R0),
+                BCD = Dict("u" => Chebyshev.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            L_eq = assemble_from_equation(grid, "u"; d_ijk=1.0)
+            L_manual = assemble_operator(grid, [OperatorTerm(1, 1, 1, 1.0)], "u")
+            @test L_eq ≈ L_manual
+        end
+
+        @testset "combined pure + mixed: d_ii + d_ij" begin
+            Ni = 12; Nj = 10
+            gp = SpringsteelGridParameters(
+                geometry = "ZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                BCL = Dict("u" => Chebyshev.R1T0),
+                BCR = Dict("u" => Chebyshev.R1T0),
+                BCU = Dict("u" => Chebyshev.R1T0),
+                BCD = Dict("u" => Chebyshev.R1T0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            L_eq = assemble_from_equation(grid, "u"; d_ii=1.0, d_ij=2.0)
+            L_manual = assemble_operator(grid,
+                [OperatorTerm(2, 0, 0, 1.0), OperatorTerm(1, 1, 0, 2.0)], "u")
+            @test L_eq ≈ L_manual
+        end
+
+        @testset "variable-coefficient mixed derivative" begin
+            Ni = 12; Nj = 10
+            gp = SpringsteelGridParameters(
+                geometry = "ZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                BCL = Dict("u" => Chebyshev.R1T0),
+                BCR = Dict("u" => Chebyshev.R1T0),
+                BCU = Dict("u" => Chebyshev.R1T0),
+                BCD = Dict("u" => Chebyshev.R1T0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            coeff = ones(Ni * Nj) .* 3.5
+            L_eq = assemble_from_equation(grid, "u"; d_ij=coeff)
+            L_manual = assemble_operator(grid, [OperatorTerm(1, 1, 0, coeff)], "u")
+            @test L_eq ≈ L_manual
+        end
+
+        @testset "solve with mixed derivative: 2D ZZ" begin
+            # Solve ∂²u/∂x² + 2∂²u/∂x∂y + ∂²u/∂y² = f on [0,1]×[0,1]
+            # This is (∂/∂x + ∂/∂y)² u = f
+            # Analytic: u(x,y) = sin(πx)sin(πy)
+            # ∂²u/∂x² = -π²sin(πx)sin(πy)
+            # ∂²u/∂x∂y = π²cos(πx)cos(πy)
+            # ∂²u/∂y² = -π²sin(πx)sin(πy)
+            # f = -2π²sin(πx)sin(πy) + 2π²cos(πx)cos(πy)
+            Ni = 20; Nj = 20
+            gp = SpringsteelGridParameters(
+                geometry = "ZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                BCL = Dict("u" => Chebyshev.R1T0),
+                BCR = Dict("u" => Chebyshev.R1T0),
+                BCU = Dict("u" => Chebyshev.R1T0),
+                BCD = Dict("u" => Chebyshev.R1T0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            pts_i = solver_gridpoints(grid, "u")
+            obj_j = grid.jbasis.data[grid.params.vars["u"]]
+            pts_j = Springsteel.gridpoints(obj_j)
+
+            f = zeros(Ni * Nj)
+            u_analytic = zeros(Ni * Nj)
+            for i in 1:Ni
+                for j in 1:Nj
+                    idx = (i-1)*Nj + j
+                    xi = pts_i[i]; yj = pts_j[j]
+                    u_analytic[idx] = sin(π*xi) * sin(π*yj)
+                    f[idx] = -2π^2*sin(π*xi)*sin(π*yj) + 2π^2*cos(π*xi)*cos(π*yj)
+                end
+            end
+
+            L = assemble_from_equation(grid, "u"; d_ii=1.0, d_ij=2.0, d_jj=1.0)
+            prob = SpringsteelProblem(grid; operator=L, rhs=f)
+            sol = solve(prob)
+
+            @test sol.converged == true
+            @test maximum(abs.(sol.physical .- u_analytic)) < 0.01
+        end
+
+        @testset "all higher-order mixed keywords match OperatorTerm" begin
+            # Use a small 3D ZZZ grid so all three dimensions are active
+            Ni = 5; Nj = 4; Nk = 3
+            gp = SpringsteelGridParameters(
+                geometry = "ZZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                kMin = 0.0, kMax = 1.0, kDim = Nk, b_kDim = Nk,
+                BCL = Dict("u" => Chebyshev.R0),
+                BCR = Dict("u" => Chebyshev.R0),
+                BCU = Dict("u" => Chebyshev.R0),
+                BCD = Dict("u" => Chebyshev.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            # Map keyword name → (i_order, j_order, k_order)
+            kw_map = [
+                # 3rd-order mixed
+                (:d_iij,    (2,1,0)),
+                (:d_iik,    (2,0,1)),
+                (:d_ijj,    (1,2,0)),
+                (:d_jjk,    (0,2,1)),
+                (:d_ikk,    (1,0,2)),
+                (:d_jkk,    (0,1,2)),
+                # 4th-order mixed
+                (:d_iijj,   (2,2,0)),
+                (:d_iikk,   (2,0,2)),
+                (:d_jjkk,   (0,2,2)),
+                (:d_iijk,   (2,1,1)),
+                (:d_ijjk,   (1,2,1)),
+                (:d_ijkk,   (1,1,2)),
+                # 5th-order mixed
+                (:d_iijjk,  (2,2,1)),
+                (:d_iijkk,  (2,1,2)),
+                (:d_ijjkk,  (1,2,2)),
+                # 6th-order mixed
+                (:d_iijjkk, (2,2,2)),
+            ]
+
+            for (kw, (io, jo, ko)) in kw_map
+                L_eq = assemble_from_equation(grid, "u"; Dict(kw => 1.0)...)
+                L_manual = assemble_operator(grid, [OperatorTerm(io, jo, ko, 1.0)], "u")
+                @test L_eq ≈ L_manual
+            end
+        end
+
+        @testset "d_ijj combined with d_ii on ZZ grid" begin
+            Ni = 10; Nj = 8
+            gp = SpringsteelGridParameters(
+                geometry = "ZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                BCL = Dict("u" => Chebyshev.R1T0),
+                BCR = Dict("u" => Chebyshev.R1T0),
+                BCU = Dict("u" => Chebyshev.R1T0),
+                BCD = Dict("u" => Chebyshev.R1T0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            L_eq = assemble_from_equation(grid, "u"; d_ii=1.0, d_ijj=3.0)
+            L_manual = assemble_operator(grid,
+                [OperatorTerm(2, 0, 0, 1.0), OperatorTerm(1, 2, 0, 3.0)], "u")
+            @test L_eq ≈ L_manual
+        end
+
     end  # assemble_from_equation
 
     # ─────────────────────────────────────────────────────────────────────────
