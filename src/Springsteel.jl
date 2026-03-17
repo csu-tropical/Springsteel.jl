@@ -92,125 +92,114 @@ export cylindrical_to_spherical, spherical_to_cylindrical
 export latlon_to_spherical, spherical_to_latlon
 
 """
-    GridParameters
+    SpringsteelGridParameters
 
 Configuration structure for spectral grid construction using mixed basis functions.
+Uses dimension-agnostic field names (`iMin`/`iMax`, `jMin`/`jMax`, `kMin`/`kMax`)
+that map to the i, j, k dimensions of the grid regardless of physical interpretation.
+
+Construct with `@kwdef` keyword syntax.  Many fields are auto-calculated from
+primary parameters (marked *auto* below).
 
 # Fields
 
-## Geometry and Dimensions
-- `geometry::String = "R"`: Grid geometry type. Options: `"R"`, `"RZ"`, `"RL"`, `"RR"`, `"RLZ"`, `"RRR"`
+## Geometry
+- `geometry::String = "1D"`: Grid geometry type. Options: `"R"`, `"RZ"`, `"RL"`,
+  `"RR"`, `"RLZ"`, `"RRR"`, `"SL"`, `"SLZ"`, `"Z"`, `"ZZ"`, `"ZZZ"`, `"L"`,
+  `"LL"`, `"LLZ"`
 
-## Radial (R) Direction (Cubic B-splines)
-- `xmin::Float64 = 0.0`: Minimum radial coordinate
-- `xmax::Float64 = 0.0`: Maximum radial coordinate  
-- `num_cells::Int64 = 0`: Number of cubic B-spline cells in R direction
-- `rDim::Int64`: Number of physical gridpoints (auto: `num_cells * 3`)
-- `b_rDim::Int64`: Number of spectral coefficients (auto: `num_cells + 3`)
-- `l_q::Dict = Dict("default" => 2.0)`: Filter length parameter (per variable)
-- `BCL::Dict`: Left boundary condition dictionary (per variable)
-- `BCR::Dict`: Right boundary condition dictionary (per variable)
+## i-Dimension (CubicBSpline, Chebyshev, or Fourier depending on geometry)
+- `iMin::Float64 = 0.0`: Minimum i-coordinate
+- `iMax::Float64 = 0.0`: Maximum i-coordinate
+- `num_cells::Int64 = 0`: Number of cubic B-spline cells (spline geometries)
+- `mubar::Int64 = 3`: Quadrature points per cell (1–5 for Gauss; any ≥1 for regular)
+- `quadrature::Symbol = :gauss`: Quadrature type (`:gauss` or `:regular`)
+- `iDim::Int64`: Physical gridpoints (*auto*: `num_cells * mubar`)
+- `b_iDim::Int64`: Spectral coefficients (*auto*: `num_cells + 3`)
+- `l_q::Dict = Dict("default" => 2.0)`: Spline filter length (per variable)
+- `BCL::Dict = CubicBSpline.R0`: Left boundary condition (per variable)
+- `BCR::Dict = CubicBSpline.R0`: Right boundary condition (per variable)
 
-## Azimuthal (L) Direction (Fourier or Cubic B-splines)
-- `ymin::Float64 = 0.0`: Minimum azimuthal coordinate
-- `ymax::Float64 = 2π`: Maximum azimuthal coordinate
-- `kmax::Dict = Dict("default" => -1)`: Maximum wavenumber (Fourier), -1 for ring-specific
-- `lDim::Int64 = 0`: Number of physical gridpoints (auto-calculated from aspect ratio)
-- `b_lDim::Int64 = 0`: Number of spectral modes/coefficients
-- `BCU::Dict = Fourier.PERIODIC`: Upper boundary condition (Fourier grids)
-- `BCD::Dict = Fourier.PERIODIC`: Lower boundary condition (Fourier grids)
+## j-Dimension (Fourier or CubicBSpline depending on geometry)
+- `jMin::Float64 = 0.0`: Minimum j-coordinate
+- `jMax::Float64 = 2π`: Maximum j-coordinate
+- `max_wavenumber::Dict = Dict("default" => -1)`: Max Fourier wavenumber (-1 = ring-specific)
+- `jDim::Int64 = 0`: Physical gridpoints
+- `b_jDim::Int64 = 0`: Spectral modes/coefficients
+- `BCU::Dict = Fourier.PERIODIC`: j-left/upper boundary condition (per variable)
+- `BCD::Dict = Fourier.PERIODIC`: j-right/lower boundary condition (per variable)
 
-## Vertical (Z) Direction (Chebyshev or Cubic B-splines)
-- `zmin::Float64 = 0.0`: Minimum vertical coordinate
-- `zmax::Float64 = 0.0`: Maximum vertical coordinate
-- `zDim::Int64 = 0`: Number of physical gridpoints
-- `b_zDim::Int64`: Number of spectral coefficients (auto-calculated)
-- `BCB::Dict = Chebyshev.R0`: Bottom boundary condition
-- `BCT::Dict = Chebyshev.R0`: Top boundary condition
+## k-Dimension (Chebyshev or CubicBSpline depending on geometry)
+- `kMin::Float64 = 0.0`: Minimum k-coordinate
+- `kMax::Float64 = 0.0`: Maximum k-coordinate
+- `kDim::Int64 = 0`: Physical gridpoints
+- `b_kDim::Int64`: Spectral coefficients (*auto*: anti-aliased from `kDim`)
+- `BCB::Dict = Chebyshev.R0`: k-bottom boundary condition (per variable)
+- `BCT::Dict = Chebyshev.R0`: k-top boundary condition (per variable)
 
-## Variables and Output
-- `vars::Dict = Dict("u" => 1)`: Variable name to index mapping
+## Variables
+- `vars::Dict = Dict("u" => 1)`: Variable name → index mapping
 
-## Tiling Parameters (for distributed computing)
+## Spectral Filters
+- `fourier_filter::Dict = Dict()`: Fourier filter config (per variable, `"default"` fallback)
+- `chebyshev_filter::Dict = Dict()`: Chebyshev filter config (per variable, `"default"` fallback)
+
+## Tiling (distributed computing)
 - `spectralIndexL::Int64 = 1`: Left spectral index for tile
-- `spectralIndexR::Int64`: Right spectral index for tile (auto)
-- `patchOffsetL::Int64`: Left patch offset in gridpoints (auto)
-- `patchOffsetR::Int64`: Right patch offset in gridpoints (auto)
+- `spectralIndexR::Int64`: Right spectral index (*auto*)
+- `patchOffsetL::Int64`: Left patch offset in gridpoints (*auto*)
+- `patchOffsetR::Int64`: Right patch offset (*auto*)
 - `tile_num::Int64 = 0`: Tile number identifier
 
 ## Regular Output Grid
-- `r_regular_out::Int64`: Radial points for regular output (auto: `num_cells + 1`)
-- `l_regular_out::Int64`: Azimuthal points for regular output (auto: `rDim*2 + 1`)
-- `z_regular_out::Int64`: Vertical points for regular output (auto: `zDim + 1`)
-
-# Description
-`GridParameters` uses the `@kwdef` macro, allowing keyword-based construction with defaults.
-Many fields are auto-calculated from other parameters, simplifying grid setup.
+- `i_regular_out::Int64`: i-points for regular output (*auto*: `num_cells + 1`)
+- `j_regular_out::Int64`: j-points for regular output (*auto*: `iDim*2 + 1`)
+- `k_regular_out::Int64`: k-points for regular output (*auto*: `kDim + 1`)
 
 # Boundary Condition Options
-- **CubicBSpline**: `R0` (value), `R1` (derivative), `R2` (second derivative)
+- **CubicBSpline**: `R0` (free), `R1T0` (Dirichlet), `R1T1` (Neumann),
+  `R1T2` (zero 2nd deriv), `R2T10`, `R2T20`, `R3` (homogeneous rank-3),
+  `R3X` (inhomogeneous rank-3), `PERIODIC`
 - **Fourier**: `PERIODIC`
-- **Chebyshev**: `R0`, `R1`, `R2`
+- **Chebyshev**: `R0` (free), `R1T0` (Dirichlet), `R1T1` (Neumann)
 
-# Example: 1D Radial Grid
+# Example: 1D Spline Grid
 ```julia
-gp = GridParameters(
+gp = SpringsteelGridParameters(
     geometry = "R",
-    xmin = 0.0,
-    xmax = 10.0,
+    iMin = 0.0, iMax = 10.0,
     num_cells = 20,
-    BCL = Dict("temperature" => CubicBSpline.R0),
-    BCR = Dict("temperature" => CubicBSpline.R0),
-    vars = Dict("temperature" => 1)
-)
+    BCL = Dict("u" => CubicBSpline.R1T0),
+    BCR = Dict("u" => CubicBSpline.R1T0),
+    vars = Dict("u" => 1))
+grid = createGrid(gp)
 ```
 
-# Example: 2D Grid with Different Basis Functions
+# Example: 2D Spline × Chebyshev (RZ)
 ```julia
-# RR grid: B-splines in both R and L
-gp_rr = GridParameters(
-    geometry = "RR",
-    xmin = 1.0,
-    xmax = 5.0,
-    num_cells = 30,
-    ymin = 0.0,
-    ymax = 10.0,
-    BCL = Dict("u" => CubicBSpline.R0),
-    BCR = Dict("u" => CubicBSpline.R0),
-    vars = Dict("u" => 1)
-)
+gp = SpringsteelGridParameters(
+    geometry = "RZ",
+    iMin = 0.0, iMax = 1.0, num_cells = 15,
+    kMin = 0.0, kMax = 1.0, kDim = 20,
+    BCL = Dict("u" => CubicBSpline.R1T0),
+    BCR = Dict("u" => CubicBSpline.R1T0),
+    BCB = Dict("u" => Chebyshev.R1T0),
+    BCT = Dict("u" => Chebyshev.R1T0),
+    vars = Dict("u" => 1))
+```
 
-# RL grid: B-splines in R, Fourier in L
-gp_rl = GridParameters(
+# Example: 2D Spline × Fourier (RL, cylindrical)
+```julia
+gp = SpringsteelGridParameters(
     geometry = "RL",
-    xmin = 1.0,
-    xmax = 5.0,
-    num_cells = 30,
-    kmax = Dict("vorticity" => 100),
-    BCL = Dict("vorticity" => CubicBSpline.R0),
-    BCR = Dict("vorticity" => CubicBSpline.R0),
-    vars = Dict("vorticity" => 1)
-)
+    iMin = 1.0, iMax = 5.0, num_cells = 30,
+    max_wavenumber = Dict("v" => 100),
+    BCL = Dict("v" => CubicBSpline.R0),
+    BCR = Dict("v" => CubicBSpline.R0),
+    vars = Dict("v" => 1))
 ```
 
-# Example: 3D Grid
-```julia
-gp_rrr = GridParameters(
-    geometry = "RRR",
-    xmin = 0.0,
-    xmax = 5.0,
-    num_cells = 25,
-    ymin = 0.0,
-    ymax = 10.0,
-    zmin = -2.0,
-    zmax = 2.0,
-    BCL = Dict("w" => CubicBSpline.R0),
-    BCR = Dict("w" => CubicBSpline.R0),
-    vars = Dict("w" => 1)
-)
-```
-
-See also: [`createGrid`](@ref), [`R_Grid`](@ref)
+See also: [`createGrid`](@ref), [`GridParameters`](@ref), [`R_Grid`](@ref)
 """
 Base.@kwdef struct SpringsteelGridParameters
     geometry::String = "1D"
@@ -295,24 +284,21 @@ include("filtering.jl")
 """
     GridParameters
 
-Legacy immutable parameter struct (using `@kwdef`) for configuring spectral grids.
-Specifies geometry type, domain bounds, resolution, boundary conditions, and variables.
+Legacy parameter struct for backward compatibility. Uses physical dimension names
+(`xmin`/`xmax`/`rDim` for radial, `ymin`/`ymax`/`lDim` for azimuthal,
+`zmin`/`zmax`/`zDim` for vertical) rather than the dimension-agnostic `i`/`j`/`k`
+naming of [`SpringsteelGridParameters`](@ref).
 
-# Fields
-- `geometry`: Grid geometry string, e.g. `"R"`, `"RL"`, `"RZ"`, `"RLZ"`
-- `xmin`, `xmax`: Radial domain bounds
-- `num_cells`: Number of radial spline cells
-- `rDim`: Physical gridpoints in radial direction (`num_cells * mubar`)
-- `b_rDim`: Spectral coefficients in radial direction (`num_cells + 3`)
-- `l_q`: Filter length Dict for B-splines (default `Dict("default" => 2.0)`)
-- `BCL`, `BCR`: Left/right radial boundary condition Dicts
-- `ymin`, `ymax`: Azimuthal domain bounds (default `0` to `2π`)
-- `kmax`: Maximum Fourier wavenumber Dict
-- `zmin`, `zmax`, `zDim`: Vertical domain bounds and gridpoints
-- `BCB`, `BCT`: Bottom/top vertical boundary condition Dicts
-- `vars`: Variable name-to-index mapping Dict
+New code should use `SpringsteelGridParameters` instead. Both structs are accepted
+by `createGrid` via the backward-compatibility layer in `deprecated.jl`.
 
-See also: [`createGrid`](@ref), [`R_Grid`](@ref)
+# Field name mapping (GridParameters → SpringsteelGridParameters)
+- `xmin`/`xmax`/`rDim`/`b_rDim` → `iMin`/`iMax`/`iDim`/`b_iDim`
+- `ymin`/`ymax`/`lDim`/`b_lDim`/`kmax` → `jMin`/`jMax`/`jDim`/`b_jDim`/`max_wavenumber`
+- `zmin`/`zmax`/`zDim`/`b_zDim` → `kMin`/`kMax`/`kDim`/`b_kDim`
+- `r_regular_out`/`l_regular_out`/`z_regular_out` → `i_regular_out`/`j_regular_out`/`k_regular_out`
+
+See also: [`SpringsteelGridParameters`](@ref), [`createGrid`](@ref)
 """
 Base.@kwdef struct GridParameters
     geometry::String = "R"
