@@ -457,7 +457,11 @@ See also: [`getRegularGridpoints`](@ref), [`regularGridTransform`](@ref),
 function write_netcdf(filename::String,
                       grid::SpringsteelGrid{G, I, NoBasisArray, NoBasisArray};
                       include_derivatives::Bool=false,
-                      global_attributes::Dict{String,Any}=Dict{String,Any}()) where {G, I}
+                      global_attributes::Dict{String,Any}=Dict{String,Any}(),
+                      coordinate_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      variable_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      time::Union{Nothing,Float64}=nothing,
+                      grid_mapping::Union{Nothing,Dict{String,Any}}=nothing) where {G, I}
     reg_pts  = getRegularGridpoints(grid)
     npts     = length(reg_pts)
     reg_phys = regularGridTransform(grid, reg_pts)
@@ -485,30 +489,51 @@ function write_netcdf(filename::String,
             ds.attrib[k] = v
         end
 
+        # ── time dimension (optional) ─────────────────────────────────────
+        has_time = _netcdf_add_time_dim!(ds, time)
+
         # ── dimension & coordinate variable ───────────────────────────────
         defDim(ds, coord_name, npts)
         coord_var = defVar(ds, coord_name, Float64, (coord_name,))
         coord_var.attrib["units"]     = "1"
         coord_var.attrib["long_name"] = coord_long
+        _netcdf_apply_coord_attrs!(coord_var, coord_name, coordinate_attributes)
         coord_var[:] = reg_pts
 
+        # ── grid mapping (optional) ───────────────────────────────────────
+        _netcdf_write_grid_mapping!(ds, grid_mapping)
+
         # ── data variables ────────────────────────────────────────────────
+        data_dims = has_time ? ("time", coord_name) : (coord_name,)
         for (var_name, var_idx) in vars_sorted
-            vv = defVar(ds, var_name, Float64, (coord_name,),
+            vv = defVar(ds, var_name, Float64, data_dims,
                         deflatelevel=4, fillvalue=NaN)
             vv.attrib["long_name"] = var_name
-            vv[:] = reg_phys[:, var_idx, 1]
+            _netcdf_apply_var_attrs!(vv, var_name, variable_attributes)
+            if has_time
+                vv[1, :] = reg_phys[:, var_idx, 1]
+            else
+                vv[:] = reg_phys[:, var_idx, 1]
+            end
 
             if include_derivatives
-                d1 = defVar(ds, var_name * deriv_sfx[1], Float64, (coord_name,),
+                d1 = defVar(ds, var_name * deriv_sfx[1], Float64, data_dims,
                             deflatelevel=4, fillvalue=NaN)
                 d1.attrib["long_name"] = var_name * " first derivative"
-                d1[:] = reg_phys[:, var_idx, 2]
+                if has_time
+                    d1[1, :] = reg_phys[:, var_idx, 2]
+                else
+                    d1[:] = reg_phys[:, var_idx, 2]
+                end
 
-                d2 = defVar(ds, var_name * deriv_sfx[2], Float64, (coord_name,),
+                d2 = defVar(ds, var_name * deriv_sfx[2], Float64, data_dims,
                             deflatelevel=4, fillvalue=NaN)
                 d2.attrib["long_name"] = var_name * " second derivative"
-                d2[:] = reg_phys[:, var_idx, 3]
+                if has_time
+                    d2[1, :] = reg_phys[:, var_idx, 3]
+                else
+                    d2[:] = reg_phys[:, var_idx, 3]
+                end
             end
         end
     end
@@ -526,6 +551,52 @@ function _netcdf_global_attrs!(ds, global_attributes)
     ds.attrib["source"]      = "Springsteel.jl"
     ds.attrib["history"]     = "Created " * Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS")
     for (k, v) in global_attributes; ds.attrib[k] = v; end
+end
+
+# Apply user-supplied coordinate attributes to a coordinate variable.
+function _netcdf_apply_coord_attrs!(coord_var, coord_name, coordinate_attributes)
+    if haskey(coordinate_attributes, coord_name)
+        for (ak, av) in coordinate_attributes[coord_name]
+            coord_var.attrib[ak] = av
+        end
+    end
+end
+
+# Apply user-supplied variable attributes to a data variable.
+function _netcdf_apply_var_attrs!(data_var, var_name, variable_attributes)
+    if haskey(variable_attributes, var_name)
+        for (ak, av) in variable_attributes[var_name]
+            data_var.attrib[ak] = av
+        end
+    end
+end
+
+# Write a grid_mapping scalar variable if grid_mapping dict is provided.
+function _netcdf_write_grid_mapping!(ds, grid_mapping)
+    if grid_mapping !== nothing
+        gm_name = get(grid_mapping, "variable_name", "grid_mapping")
+        gm = defVar(ds, gm_name, Int32, ())
+        for (k, v) in grid_mapping
+            k == "variable_name" && continue
+            gm.attrib[k] = v
+        end
+        gm[:] = Int32(0)
+    end
+end
+
+# Add a leading time dimension of size 1 if time value is provided.
+# Returns the updated dimension tuple and whether time was added.
+function _netcdf_add_time_dim!(ds, time_val)
+    if time_val !== nothing
+        defDim(ds, "time", 1)
+        tvar = defVar(ds, "time", Float64, ("time",))
+        tvar.attrib["units"]     = "seconds since 1970-01-01T00:00:00Z"
+        tvar.attrib["calendar"]  = "gregorian"
+        tvar.attrib["long_name"] = "time"
+        tvar[:] = [time_val]
+        return true
+    end
+    return false
 end
 
 # (name, units, long_name, standard_name_or_nothing) for each geometry × dimension.
@@ -630,7 +701,11 @@ See also: [`getRegularGridpoints`](@ref), [`regularGridTransform`](@ref),
 function write_netcdf(filename::String,
                       grid::SpringsteelGrid{G, I, J, NoBasisArray};
                       include_derivatives::Bool=false,
-                      global_attributes::Dict{String,Any}=Dict{String,Any}()) where {
+                      global_attributes::Dict{String,Any}=Dict{String,Any}(),
+                      coordinate_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      variable_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      time::Union{Nothing,Float64}=nothing,
+                      grid_mapping::Union{Nothing,Dict{String,Any}}=nothing) where {
                       G <: AbstractGeometry, I,
                       J <: Union{SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}}
     gp   = grid.params
@@ -659,6 +734,10 @@ function write_netcdf(filename::String,
 
     NCDataset(filename, "c") do ds
         _netcdf_global_attrs!(ds, global_attributes)
+
+        # ── time dimension (optional) ─────────────────────────────────────
+        has_time = _netcdf_add_time_dim!(ds, time)
+
         defDim(ds, i_name, n_i)
         defDim(ds, j_name, n_j)
 
@@ -667,21 +746,34 @@ function write_netcdf(filename::String,
         cv_i.attrib["units"]     = i_units
         cv_i.attrib["long_name"] = i_long
         (i_std !== nothing) && (cv_i.attrib["standard_name"] = i_std)
+        _netcdf_apply_coord_attrs!(cv_i, i_name, coordinate_attributes)
         cv_i[:] = i_vals
 
         cv_j = defVar(ds, j_name, Float64, (j_name,))
         cv_j.attrib["units"]     = j_units
         cv_j.attrib["long_name"] = j_long
         (j_std !== nothing) && (cv_j.attrib["standard_name"] = j_std)
+        _netcdf_apply_coord_attrs!(cv_j, j_name, coordinate_attributes)
         cv_j[:] = j_vals
 
+        # ── grid mapping (optional) ───────────────────────────────────────
+        _netcdf_write_grid_mapping!(ds, grid_mapping)
+
         # Data variables (value + up to 4 derivative slots)
+        data_dims = has_time ? ("time", i_name, j_name) : (i_name, j_name)
         for (var_name, var_idx) in vars_sorted
             for slot in 1:n_slots
                 data_2d = _netcdf_reshape2d(reg_phys, var_idx, slot, n_i, n_j)
                 (G <: SphericalGeometry) && (data_2d = data_2d[end:-1:1, :])
                 full_name = var_name * sfx[slot]
-                _netcdf_defvar!(ds, full_name, (i_name, j_name), data_2d)
+                vv = defVar(ds, full_name, Float64, data_dims, deflatelevel=4, fillvalue=NaN)
+                vv.attrib["long_name"] = full_name
+                _netcdf_apply_var_attrs!(vv, full_name, variable_attributes)
+                if has_time
+                    vv[1, :, :] = data_2d
+                else
+                    vv[:] = data_2d
+                end
             end
         end
     end
@@ -732,7 +824,11 @@ See also: [`getRegularGridpoints`](@ref), [`regularGridTransform`](@ref),
 function write_netcdf(filename::String,
                       grid::SpringsteelGrid{G, I, NoBasisArray, K};
                       include_derivatives::Bool=false,
-                      global_attributes::Dict{String,Any}=Dict{String,Any}()) where {
+                      global_attributes::Dict{String,Any}=Dict{String,Any}(),
+                      coordinate_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      variable_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      time::Union{Nothing,Float64}=nothing,
+                      grid_mapping::Union{Nothing,Dict{String,Any}}=nothing) where {
                       G <: AbstractGeometry, I,
                       K <: Union{SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}}
     gp   = grid.params
@@ -759,6 +855,10 @@ function write_netcdf(filename::String,
 
     NCDataset(filename, "c") do ds
         _netcdf_global_attrs!(ds, global_attributes)
+
+        # ── time dimension (optional) ─────────────────────────────────────
+        has_time = _netcdf_add_time_dim!(ds, time)
+
         defDim(ds, i_name, n_i)
         defDim(ds, k_name, n_k)
 
@@ -766,19 +866,32 @@ function write_netcdf(filename::String,
         cv_i.attrib["units"]     = i_units
         cv_i.attrib["long_name"] = i_long
         (i_std !== nothing) && (cv_i.attrib["standard_name"] = i_std)
+        _netcdf_apply_coord_attrs!(cv_i, i_name, coordinate_attributes)
         cv_i[:] = i_vals
 
         cv_k = defVar(ds, k_name, Float64, (k_name,))
         cv_k.attrib["units"]     = k_units
         cv_k.attrib["long_name"] = k_long
         (k_std !== nothing) && (cv_k.attrib["standard_name"] = k_std)
+        _netcdf_apply_coord_attrs!(cv_k, k_name, coordinate_attributes)
         cv_k[:] = k_vals
 
+        # ── grid mapping (optional) ───────────────────────────────────────
+        _netcdf_write_grid_mapping!(ds, grid_mapping)
+
+        data_dims = has_time ? ("time", i_name, k_name) : (i_name, k_name)
         for (var_name, var_idx) in vars_sorted
             for slot in 1:n_slots
                 data_2d   = _netcdf_reshape2d(reg_phys, var_idx, slot, n_i, n_k)
                 full_name = var_name * sfx_2dk[slot]
-                _netcdf_defvar!(ds, full_name, (i_name, k_name), data_2d)
+                vv = defVar(ds, full_name, Float64, data_dims, deflatelevel=4, fillvalue=NaN)
+                vv.attrib["long_name"] = full_name
+                _netcdf_apply_var_attrs!(vv, full_name, variable_attributes)
+                if has_time
+                    vv[1, :, :] = data_2d
+                else
+                    vv[:] = data_2d
+                end
             end
         end
     end
@@ -837,7 +950,11 @@ See also: [`getRegularGridpoints`](@ref), [`regularGridTransform`](@ref),
 function write_netcdf(filename::String,
                       grid::SpringsteelGrid{G, I, J, K};
                       include_derivatives::Bool=false,
-                      global_attributes::Dict{String,Any}=Dict{String,Any}()) where {
+                      global_attributes::Dict{String,Any}=Dict{String,Any}(),
+                      coordinate_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      variable_attributes::Dict{String,Dict{String,Any}}=Dict{String,Dict{String,Any}}(),
+                      time::Union{Nothing,Float64}=nothing,
+                      grid_mapping::Union{Nothing,Dict{String,Any}}=nothing) where {
                       G <: AbstractGeometry, I,
                       J <: Union{SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
                       K <: Union{SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}}
@@ -868,6 +985,10 @@ function write_netcdf(filename::String,
 
     NCDataset(filename, "c") do ds
         _netcdf_global_attrs!(ds, global_attributes)
+
+        # ── time dimension (optional) ─────────────────────────────────────
+        has_time = _netcdf_add_time_dim!(ds, time)
+
         defDim(ds, i_name, n_i)
         defDim(ds, j_name, n_j)
         defDim(ds, k_name, n_k)
@@ -876,26 +997,40 @@ function write_netcdf(filename::String,
         cv_i.attrib["units"]     = i_units
         cv_i.attrib["long_name"] = i_long
         (i_std !== nothing) && (cv_i.attrib["standard_name"] = i_std)
+        _netcdf_apply_coord_attrs!(cv_i, i_name, coordinate_attributes)
         cv_i[:] = i_vals
 
         cv_j = defVar(ds, j_name, Float64, (j_name,))
         cv_j.attrib["units"]     = j_units
         cv_j.attrib["long_name"] = j_long
         (j_std !== nothing) && (cv_j.attrib["standard_name"] = j_std)
+        _netcdf_apply_coord_attrs!(cv_j, j_name, coordinate_attributes)
         cv_j[:] = j_vals
 
         cv_k = defVar(ds, k_name, Float64, (k_name,))
         cv_k.attrib["units"]     = k_units
         cv_k.attrib["long_name"] = k_long
         (k_std !== nothing) && (cv_k.attrib["standard_name"] = k_std)
+        _netcdf_apply_coord_attrs!(cv_k, k_name, coordinate_attributes)
         cv_k[:] = k_vals
 
+        # ── grid mapping (optional) ───────────────────────────────────────
+        _netcdf_write_grid_mapping!(ds, grid_mapping)
+
+        data_dims = has_time ? ("time", i_name, j_name, k_name) : (i_name, j_name, k_name)
         for (var_name, var_idx) in vars_sorted
             for slot in 1:n_slots
                 data_3d = _netcdf_reshape3d(reg_phys, var_idx, slot, n_i, n_j, n_k)
                 (G <: SphericalGeometry) && (data_3d = data_3d[end:-1:1, :, :])
                 full_name = var_name * sfx[slot]
-                _netcdf_defvar!(ds, full_name, (i_name, j_name, k_name), data_3d)
+                vv = defVar(ds, full_name, Float64, data_dims, deflatelevel=4, fillvalue=NaN)
+                vv.attrib["long_name"] = full_name
+                _netcdf_apply_var_attrs!(vv, full_name, variable_attributes)
+                if has_time
+                    vv[1, :, :, :] = data_3d
+                else
+                    vv[:] = data_3d
+                end
             end
         end
     end

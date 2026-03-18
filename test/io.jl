@@ -781,6 +781,260 @@ using DataFrames
                 @test_throws Exception read_netcdf("/nonexistent/path/file.nc")
             end
 
+            # ── New keyword arguments ─────────────────────────────────────
+
+            @testset "write_netcdf coordinate_attributes 1D" begin
+                gp = SpringsteelGridParameters(geometry="R", num_cells=5,
+                    iMin=0.0, iMax=100.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_coord_attrs.nc")
+                write_netcdf(tmpfile, grid;
+                    coordinate_attributes=Dict{String,Dict{String,Any}}(
+                        "x" => Dict{String,Any}("units" => "m", "long_name" => "easting")))
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test ds["x"].attrib["units"] == "m"
+                    @test ds["x"].attrib["long_name"] == "easting"
+                end
+            end
+
+            @testset "write_netcdf variable_attributes 1D" begin
+                gp = SpringsteelGridParameters(geometry="R", num_cells=5,
+                    iMin=0.0, iMax=100.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_var_attrs.nc")
+                write_netcdf(tmpfile, grid;
+                    variable_attributes=Dict{String,Dict{String,Any}}(
+                        "u" => Dict{String,Any}("units" => "m/s", "long_name" => "velocity")))
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test ds["u"].attrib["units"] == "m/s"
+                    @test ds["u"].attrib["long_name"] == "velocity"
+                end
+            end
+
+            @testset "write_netcdf time keyword 1D" begin
+                gp = SpringsteelGridParameters(geometry="R", num_cells=5,
+                    iMin=0.0, iMax=100.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_time.nc")
+                write_netcdf(tmpfile, grid; time=1234567890.0)
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test haskey(ds.dim, "time")
+                    @test ds.dim["time"] == 1
+                    @test ds["time"].attrib["units"] == "seconds since 1970-01-01T00:00:00Z"
+                    # Data variable should have time as leading dimension
+                    @test "time" in dimnames(ds["u"])
+                    @test size(ds["u"]) == (1, gp.i_regular_out)
+                end
+            end
+
+            @testset "write_netcdf grid_mapping keyword 1D" begin
+                gp = SpringsteelGridParameters(geometry="R", num_cells=5,
+                    iMin=0.0, iMax=100.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_grid_mapping.nc")
+                write_netcdf(tmpfile, grid;
+                    grid_mapping=Dict{String,Any}(
+                        "grid_mapping_name" => "transverse_mercator",
+                        "latitude_of_projection_origin" => 35.0,
+                        "longitude_of_central_meridian" => -97.0))
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test haskey(ds, "grid_mapping")
+                    @test ds["grid_mapping"].attrib["grid_mapping_name"] == "transverse_mercator"
+                    @test ds["grid_mapping"].attrib["latitude_of_projection_origin"] ≈ 35.0
+                    @test ds["grid_mapping"].attrib["longitude_of_central_meridian"] ≈ -97.0
+                end
+            end
+
+            @testset "write_netcdf all keywords combined 1D" begin
+                gp = SpringsteelGridParameters(geometry="R", num_cells=5,
+                    iMin=0.0, iMax=100.0,
+                    vars=Dict("u" => 1, "v" => 2),
+                    BCL=Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_all_kw.nc")
+                write_netcdf(tmpfile, grid;
+                    include_derivatives=true,
+                    global_attributes=Dict{String,Any}("institution" => "CSU"),
+                    coordinate_attributes=Dict{String,Dict{String,Any}}(
+                        "x" => Dict{String,Any}("units" => "km")),
+                    variable_attributes=Dict{String,Dict{String,Any}}(
+                        "u" => Dict{String,Any}("units" => "m/s")),
+                    time=100.0,
+                    grid_mapping=Dict{String,Any}(
+                        "grid_mapping_name" => "latitude_longitude"))
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test ds.attrib["institution"] == "CSU"
+                    @test ds["x"].attrib["units"] == "km"
+                    @test ds["u"].attrib["units"] == "m/s"
+                    @test haskey(ds.dim, "time")
+                    @test haskey(ds, "grid_mapping")
+                    @test haskey(ds, "u_x")   # derivatives
+                    @test haskey(ds, "u_xx")
+                    # Data vars should have time dimension
+                    @test size(ds["u"], 1) == 1
+                end
+            end
+
+            @testset "write_netcdf keywords 2D RR" begin
+                gp = SpringsteelGridParameters(geometry="RR", num_cells=3,
+                    iMin=0.0, iMax=10.0,
+                    jMin=0.0, jMax=10.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0),
+                    BCU=Dict("u" => CubicBSpline.R0),
+                    BCD=Dict("u" => CubicBSpline.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_2d_kw.nc")
+                write_netcdf(tmpfile, grid;
+                    coordinate_attributes=Dict{String,Dict{String,Any}}(
+                        "x" => Dict{String,Any}("units" => "m"),
+                        "y" => Dict{String,Any}("units" => "m")),
+                    variable_attributes=Dict{String,Dict{String,Any}}(
+                        "u" => Dict{String,Any}("units" => "dBZ")),
+                    time=200.0,
+                    grid_mapping=Dict{String,Any}(
+                        "grid_mapping_name" => "transverse_mercator"))
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test ds["x"].attrib["units"] == "m"
+                    @test ds["y"].attrib["units"] == "m"
+                    @test ds["u"].attrib["units"] == "dBZ"
+                    @test haskey(ds.dim, "time")
+                    @test ds.dim["time"] == 1
+                    @test haskey(ds, "grid_mapping")
+                    # Data shape: (time, x, y)
+                    @test size(ds["u"]) == (1, gp.i_regular_out, gp.j_regular_out)
+                end
+            end
+
+            @testset "write_netcdf keywords 2D RZ" begin
+                gp = SpringsteelGridParameters(geometry="RZ", num_cells=3,
+                    iMin=0.0, iMax=10.0,
+                    kMin=0.0, kMax=5.0, kDim=6,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0),
+                    BCB=Dict("u" => Chebyshev.R0),
+                    BCT=Dict("u" => Chebyshev.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_rz_kw.nc")
+                write_netcdf(tmpfile, grid;
+                    variable_attributes=Dict{String,Dict{String,Any}}(
+                        "u" => Dict{String,Any}("units" => "K")),
+                    time=300.0,
+                    grid_mapping=Dict{String,Any}(
+                        "grid_mapping_name" => "transverse_mercator"))
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test ds["u"].attrib["units"] == "K"
+                    @test haskey(ds.dim, "time")
+                    @test haskey(ds, "grid_mapping")
+                    @test size(ds["u"]) == (1, gp.i_regular_out, gp.k_regular_out)
+                end
+            end
+
+            @testset "write_netcdf keywords 3D RRR" begin
+                gp = SpringsteelGridParameters(geometry="RRR", num_cells=2,
+                    iMin=0.0, iMax=10.0,
+                    jMin=0.0, jMax=10.0,
+                    kMin=0.0, kMax=5.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0),
+                    BCU=Dict("u" => CubicBSpline.R0),
+                    BCD=Dict("u" => CubicBSpline.R0),
+                    BCB=Dict("u" => CubicBSpline.R0),
+                    BCT=Dict("u" => CubicBSpline.R0))
+                gp = compute_derived_params(gp)
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_3d_kw.nc")
+                write_netcdf(tmpfile, grid;
+                    coordinate_attributes=Dict{String,Dict{String,Any}}(
+                        "x" => Dict{String,Any}("units" => "m"),
+                        "y" => Dict{String,Any}("units" => "m"),
+                        "z" => Dict{String,Any}("units" => "m")),
+                    variable_attributes=Dict{String,Dict{String,Any}}(
+                        "u" => Dict{String,Any}("units" => "m/s")),
+                    time=400.0,
+                    grid_mapping=Dict{String,Any}(
+                        "grid_mapping_name" => "transverse_mercator",
+                        "latitude_of_projection_origin" => 40.0))
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test ds["x"].attrib["units"] == "m"
+                    @test ds["y"].attrib["units"] == "m"
+                    @test ds["z"].attrib["units"] == "m"
+                    @test ds["u"].attrib["units"] == "m/s"
+                    @test haskey(ds.dim, "time")
+                    @test ds.dim["time"] == 1
+                    @test haskey(ds, "grid_mapping")
+                    @test ds["grid_mapping"].attrib["latitude_of_projection_origin"] ≈ 40.0
+                    @test size(ds["u"]) == (1, gp.i_regular_out, gp.j_regular_out, gp.k_regular_out)
+                end
+            end
+
+            @testset "write_netcdf no time keyword preserves original behavior" begin
+                gp = SpringsteelGridParameters(geometry="R", num_cells=5,
+                    iMin=0.0, iMax=100.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.R0),
+                    BCR=Dict("u" => CubicBSpline.R0))
+                grid = createGrid(gp)
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_no_time.nc")
+                write_netcdf(tmpfile, grid)
+                @test isfile(tmpfile)
+
+                NCDataset(tmpfile, "r") do ds
+                    @test !haskey(ds.dim, "time")
+                    @test size(ds["u"]) == (gp.i_regular_out,)
+                end
+            end
+
         end  # NetCDF I/O
 
     end  # SpringsteelGrid I/O
