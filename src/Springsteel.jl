@@ -211,21 +211,21 @@ Base.@kwdef struct SpringsteelGridParameters
     iDim::int = num_cells * mubar
     b_iDim::int = num_cells + 3
     l_q::Dict = Dict("default" => 2.0)
-    BCL::Dict = CubicBSpline.R0
-    BCR::Dict = CubicBSpline.R0
+    BCL::Dict = Dict("default" => CubicBSpline.R0)
+    BCR::Dict = Dict("default" => CubicBSpline.R0)
     jMin::real = 0.0
     jMax::real = 2 * π
     max_wavenumber::Dict = Dict("default" => -1) # Default is -1 to indicate ring specific
     jDim::int = 0
     b_jDim::int = 0
-    BCU::Dict = Fourier.PERIODIC
-    BCD::Dict = Fourier.PERIODIC
+    BCU::Dict = Dict("default" => Fourier.PERIODIC)
+    BCD::Dict = Dict("default" => Fourier.PERIODIC)
     kMin::real = 0.0
     kMax::real = 0.0
     kDim::int = 0
     b_kDim::int = min(kDim, floor(((2 * kDim) - 1) / 3) + 1)
-    BCB::Dict = Chebyshev.R0
-    BCT::Dict = Chebyshev.R0
+    BCB::Dict = Dict("default" => Chebyshev.R0)
+    BCT::Dict = Dict("default" => Chebyshev.R0)
     vars::Dict = Dict("u" => 1)
     # Spectral filters (per-variable, keyed by variable name or "default")
     fourier_filter::Dict = Dict()
@@ -310,21 +310,21 @@ Base.@kwdef struct GridParameters
     rDim::int = num_cells * mubar
     b_rDim::int = num_cells + 3
     l_q::Dict = Dict("default" => 2.0)
-    BCL::Dict = CubicBSpline.R0
-    BCR::Dict = CubicBSpline.R0
+    BCL::Dict = Dict("default" => CubicBSpline.R0)
+    BCR::Dict = Dict("default" => CubicBSpline.R0)
     ymin::real = 0.0
     ymax::real = 2 * π
     kmax::Dict = Dict("default" => -1) # Default is -1 to indicate ring specific
     lDim::int = 0
     b_lDim::int = 0
-    BCU::Dict = Fourier.PERIODIC
-    BCD::Dict = Fourier.PERIODIC
+    BCU::Dict = Dict("default" => Fourier.PERIODIC)
+    BCD::Dict = Dict("default" => Fourier.PERIODIC)
     zmin::real = 0.0
     zmax::real = 0.0
     zDim::int = 0
     b_zDim::int = min(zDim, floor(((2 * zDim) - 1) / 3) + 1)
-    BCB::Dict = Chebyshev.R0
-    BCT::Dict = Chebyshev.R0
+    BCB::Dict = Dict("default" => Chebyshev.R0)
+    BCT::Dict = Dict("default" => Chebyshev.R0)
     vars::Dict = Dict("u" => 1)
     # Spectral filters (per-variable, keyed by variable name or "default")
     fourier_filter::Dict = Dict()
