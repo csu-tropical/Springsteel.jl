@@ -176,6 +176,24 @@ function write_grid(grid::SpringsteelGrid{G, I, J, NoBasisArray},
             println(uf, row)
         end
     end
+
+    # ── regular grid file ─────────────────────────────────────────────────
+    reg_pts  = getRegularGridpoints(grid)   # Matrix{Float64}: (n_r*n_λ, 2)
+    reg_phys = regularGridTransform(grid, reg_pts)
+    open(joinpath(output_dir, "$(tag)_gridded.csv"), "w") do rf
+        hdr = "r,l"
+        for d in 1:nderiv
+            for (v, _) in vars_s; hdr *= ",$(v)$(suffix[d])"; end
+        end
+        println(rf, hdr)
+        for p in 1:size(reg_pts, 1)
+            row = "$(reg_pts[p, 1]),$(reg_pts[p, 2])"
+            for d in 1:nderiv
+                for (_, vi) in vars_s; row *= ",$(reg_phys[p, vi, d])"; end
+            end
+            println(rf, row)
+        end
+    end
 end
 
 # ────────────────────────────────────────────────────────────────────────────
