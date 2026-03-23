@@ -2813,3 +2813,235 @@ function calcHaloMap_multidim(patch::SpringsteelGrid, tile_L::SpringsteelGrid,
     end
     return hmap
 end
+
+# ════════════════════════════════════════════════════════════════════════════
+# 3-argument splineTransform!  (multi-tile B → A)
+#
+# The 2-argument splineTransform!(sharedSpectral, tile) applies the TILE's
+# SA matrix to convert B-coefficients → A-coefficients.  This is correct
+# only when tile = patch (single-tile mode), because the tile's SA matrix
+# does not match the patch-level B-coefficients in the shared spectral.
+#
+# These 3-argument methods use the PATCH's SA matrix on the full shared
+# spectral, then extract the tile's portion of A-coefficients.  This is the
+# correct approach for multi-tile distributed workflows where the tiles
+# are subdomains of the patch.
+#
+# After this call, tile.spectral contains valid A-coefficients for
+# tileTransform!.  patch.spectral is used as a scratch buffer.
+# ════════════════════════════════════════════════════════════════════════════
+
+"""
+    splineTransform!(sharedSpectral, patch, tile) -> Nothing
+
+Multi-tile variant: apply the SA transform using `patch`'s splines on the
+full `sharedSpectral`, then extract the tile's portion of A-coefficients into
+`tile.spectral`.
+
+Use this form in distributed workflows where `tile` is a subdomain of `patch`.
+The 2-argument form `splineTransform!(sharedSpectral, tile)` remains valid for
+single-tile (tile = patch) scenarios.
+
+# Arguments
+- `sharedSpectral::SharedArray{Float64}`: patch-sized shared spectral (B-coefficients).
+- `patch`: full-domain grid whose `ibasis.data` splines provide the SA matrix.
+- `tile`: tile grid whose `spectral` array receives the extracted A-coefficients.
+
+See also: [`tileTransform!`](@ref)
+"""
+function splineTransform!(sharedSpectral::SharedArray{real},
+                            patch::_1DCartesianGrid,
+                            tile::_1DCartesianGrid)
+    siL    = tile.params.spectralIndexL
+    b_iDim = tile.params.b_iDim
+
+    for v in 1:length(tile.params.vars)
+        patch.spectral[:, v] .= SAtransform(patch.ibasis.data[1, v],
+                                             view(sharedSpectral, :, v))
+        tile.spectral[1:b_iDim, v] .= patch.spectral[siL:siL+b_iDim-1, v]
+    end
+    return nothing
+end
+
+function splineTransform!(sharedSpectral::SharedArray{real},
+                            patch::_RLGrid,
+                            tile::_RLGrid)
+    b_iDim_tile  = tile.params.b_iDim
+    b_iDim_patch = patch.params.b_iDim
+    siL          = tile.params.spectralIndexL
+    kDim         = tile.params.iDim + tile.params.patchOffsetL
+    nvars        = length(tile.params.vars)
+
+    for v in 1:nvars
+        # k = 0 block
+        patch.spectral[1:b_iDim_patch, v] .=
+            SAtransform(patch.ibasis.data[1, v],
+                        view(sharedSpectral, 1:b_iDim_patch, v))
+        tile.spectral[1:b_iDim_tile, v] .=
+            patch.spectral[siL:siL+b_iDim_tile-1, v]
+
+        # k >= 1: real and imaginary blocks
+        for k in 1:kDim
+            p = k * 2
+
+            # Real part
+            pp1 = (p - 1) * b_iDim_patch + 1
+            tp1 = (p - 1) * b_iDim_tile + 1
+            patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                SAtransform(patch.ibasis.data[2, v],
+                            view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+            tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+
+            # Imaginary part
+            pp1 = p * b_iDim_patch + 1
+            tp1 = p * b_iDim_tile + 1
+            patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                SAtransform(patch.ibasis.data[3, v],
+                            view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+            tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+        end
+    end
+    return nothing
+end
+
+function splineTransform!(sharedSpectral::SharedArray{real},
+                            patch::_SLGrid,
+                            tile::_SLGrid)
+    b_iDim_tile  = tile.params.b_iDim
+    b_iDim_patch = patch.params.b_iDim
+    siL          = tile.params.spectralIndexL
+    kDim         = tile.params.iDim + tile.params.patchOffsetL
+    nvars        = length(tile.params.vars)
+
+    for v in 1:nvars
+        patch.spectral[1:b_iDim_patch, v] .=
+            SAtransform(patch.ibasis.data[1, v],
+                        view(sharedSpectral, 1:b_iDim_patch, v))
+        tile.spectral[1:b_iDim_tile, v] .=
+            patch.spectral[siL:siL+b_iDim_tile-1, v]
+
+        for k in 1:kDim
+            p = k * 2
+
+            pp1 = (p - 1) * b_iDim_patch + 1
+            tp1 = (p - 1) * b_iDim_tile + 1
+            patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                SAtransform(patch.ibasis.data[2, v],
+                            view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+            tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+
+            pp1 = p * b_iDim_patch + 1
+            tp1 = p * b_iDim_tile + 1
+            patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                SAtransform(patch.ibasis.data[3, v],
+                            view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+            tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+        end
+    end
+    return nothing
+end
+
+function splineTransform!(sharedSpectral::SharedArray{real},
+                            patch::_RLZGrid,
+                            tile::_RLZGrid)
+    b_iDim_tile  = tile.params.b_iDim
+    b_iDim_patch = patch.params.b_iDim
+    siL          = tile.params.spectralIndexL
+    b_kDim       = tile.params.b_kDim
+    kDim_wn      = tile.params.iDim + tile.params.patchOffsetL
+    nvars        = length(tile.params.vars)
+    nblocks      = 1 + kDim_wn * 2
+
+    for v in 1:nvars
+        for z_b in 1:b_kDim
+            # z-level base indices (tile-local and patch-level)
+            tr_base = (z_b - 1) * b_iDim_tile * nblocks
+            pr_base = (z_b - 1) * b_iDim_patch * nblocks
+
+            # k = 0 block
+            pr1 = pr_base + 1
+            tr1 = tr_base + 1
+            patch.spectral[pr1:pr1+b_iDim_patch-1, v] .=
+                SAtransform(patch.ibasis.data[1, v],
+                            view(sharedSpectral, pr1:pr1+b_iDim_patch-1, v))
+            tile.spectral[tr1:tr1+b_iDim_tile-1, v] .=
+                patch.spectral[pr1+siL-1:pr1+siL+b_iDim_tile-2, v]
+
+            # k >= 1: real and imaginary
+            for k in 1:kDim_wn
+                p = (k - 1) * 2
+
+                # Real part
+                pp1 = pr_base + b_iDim_patch + p * b_iDim_patch + 1
+                tp1 = tr_base + b_iDim_tile + p * b_iDim_tile + 1
+                patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                    SAtransform(patch.ibasis.data[2, v],
+                                view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+                tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                    patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+
+                # Imaginary part
+                pp1 = pp1 + b_iDim_patch
+                tp1 = tp1 + b_iDim_tile
+                patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                    SAtransform(patch.ibasis.data[3, v],
+                                view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+                tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                    patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+            end
+        end
+    end
+    return nothing
+end
+
+function splineTransform!(sharedSpectral::SharedArray{real},
+                            patch::_SLZGrid,
+                            tile::_SLZGrid)
+    b_iDim_tile  = tile.params.b_iDim
+    b_iDim_patch = patch.params.b_iDim
+    siL          = tile.params.spectralIndexL
+    b_kDim       = tile.params.b_kDim
+    kDim_wn      = tile.params.iDim + tile.params.patchOffsetL
+    nvars        = length(tile.params.vars)
+    nblocks      = 1 + kDim_wn * 2
+
+    for v in 1:nvars
+        for z_b in 1:b_kDim
+            tr_base = (z_b - 1) * b_iDim_tile * nblocks
+            pr_base = (z_b - 1) * b_iDim_patch * nblocks
+
+            pr1 = pr_base + 1
+            tr1 = tr_base + 1
+            patch.spectral[pr1:pr1+b_iDim_patch-1, v] .=
+                SAtransform(patch.ibasis.data[1, v],
+                            view(sharedSpectral, pr1:pr1+b_iDim_patch-1, v))
+            tile.spectral[tr1:tr1+b_iDim_tile-1, v] .=
+                patch.spectral[pr1+siL-1:pr1+siL+b_iDim_tile-2, v]
+
+            for k in 1:kDim_wn
+                p = (k - 1) * 2
+
+                pp1 = pr_base + b_iDim_patch + p * b_iDim_patch + 1
+                tp1 = tr_base + b_iDim_tile + p * b_iDim_tile + 1
+                patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                    SAtransform(patch.ibasis.data[2, v],
+                                view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+                tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                    patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+
+                pp1 = pp1 + b_iDim_patch
+                tp1 = tp1 + b_iDim_tile
+                patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                    SAtransform(patch.ibasis.data[3, v],
+                                view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+                tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                    patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+            end
+        end
+    end
+    return nothing
+end
