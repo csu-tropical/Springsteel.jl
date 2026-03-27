@@ -449,8 +449,8 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q_j,
-                BCL       = _get_bc(gp.BCU, key),
-                BCR       = _get_bc(gp.BCD, key)))
+                BCL       = _get_bc(gp.BCD, key),
+                BCR       = _get_bc(gp.BCU, key)))
         end
     end
     return grid
@@ -493,7 +493,7 @@ function _create_cartesian_3d_rrr(gp::SpringsteelGridParameters)
                 xmin      = gp.jMin, xmax = gp.jMax,
                 num_cells = nc_j, mubar = gp.mubar,
                 quadrature = gp.quadrature, l_q = var_l_q_j,
-                BCL       = _get_bc(gp.BCU, key), BCR = _get_bc(gp.BCD, key)))
+                BCL       = _get_bc(gp.BCD, key), BCR = _get_bc(gp.BCU, key)))
         end
         for r in 1:gp.iDim, l in 1:gp.jDim
             grid.kbasis.data[r, l, v] = Spline1D(SplineParameters(
@@ -904,8 +904,8 @@ function _create_cartesian_2d_chebyshev2d(gp::SpringsteelGridParameters)
             zmax = gp.jMax,
             zDim = gp.jDim,
             bDim = gp.b_jDim,
-            BCB  = _get_bc(gp.BCU, key),
-            BCT  = _get_bc(gp.BCD, key)))
+            BCB  = _get_bc(gp.BCD, key),
+            BCT  = _get_bc(gp.BCU, key)))
     end
     return grid
 end
@@ -938,7 +938,7 @@ function _create_cartesian_3d_chebyshev3d(gp::SpringsteelGridParameters)
             grid.jbasis.data[z, v] = Chebyshev1D(ChebyshevParameters(
                 zmin = gp.jMin, zmax = gp.jMax,
                 zDim = gp.jDim, bDim = gp.b_jDim,
-                BCB  = _get_bc(gp.BCU, key), BCT = _get_bc(gp.BCD, key)))
+                BCB  = _get_bc(gp.BCD, key), BCT = _get_bc(gp.BCU, key)))
         end
         grid.kbasis.data[v] = Chebyshev1D(ChebyshevParameters(
             zmin = gp.kMin, zmax = gp.kMax,

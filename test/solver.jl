@@ -861,6 +861,227 @@ using LinearAlgebra
             @test maximum(abs.(sol.physical .- u_analytic)) < 0.01
         end
 
+        # ─────────────────────────────────────────────────────────────────
+        # Asymmetric BC tests — catch BCU/BCD swap bugs
+        #
+        # These tests use DIFFERENT BCs on the j-dimension boundaries
+        # (Dirichlet on one side, Neumann on the other). If BCU/BCD are
+        # swapped in the factory, the solution will satisfy the wrong BCs
+        # and the accuracy test will fail with O(1) error.
+        #
+        # For RR grids, the mish points are Gaussian quadrature points
+        # that do NOT include the boundary endpoints. Boundary values are
+        # evaluated directly from the spectral coefficients using
+        # CubicBSpline.basis() at the actual boundary point.
+        # ─────────────────────────────────────────────────────────────────
+
+        @testset "2D RR asymmetric j-BCs: Dirichlet bottom, Neumann top" begin
+            # Solve ∂²u/∂x² + ∂²u/∂y² = f on [0,1]×[0,1]
+            # BCs: u=0 at x=0,1 (Dirichlet); u=0 at y=0 (BCD, Dirichlet);
+            #      ∂u/∂y=0 at y=1 (BCU, Neumann)
+            # Analytic solution: u(x,y) = sin(πx) sin(πy/2)
+            # u(x,0) = 0 ✓ (Dirichlet at bottom)
+            # ∂u/∂y(x,1) = sin(πx)(π/2)cos(π/2) = 0 ✓ (Neumann at top)
+            # f = -(π² + (π/2)²) sin(πx) sin(πy/2)
+            num_cells = 20
+            gp = SpringsteelGridParameters(
+                geometry = "RR",
+                num_cells = num_cells,
+                iMin = 0.0, iMax = 1.0,
+                jMin = 0.0, jMax = 1.0,
+                BCL = Dict("u" => CubicBSpline.R1T0),
+                BCR = Dict("u" => CubicBSpline.R1T0),
+                BCD = Dict("u" => CubicBSpline.R1T0),
+                BCU = Dict("u" => CubicBSpline.R1T1),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            pts_x = [grid.ibasis.data[1, 1].mishPoints[r] for r in 1:iDim]
+            pts_y = [grid.jbasis.data[1, 1].mishPoints[l] for l in 1:jDim]
+
+            rhs = zeros(iDim * jDim)
+            u_analytic = zeros(iDim * jDim)
+            for r in 1:iDim, l in 1:jDim
+                idx = (r-1)*jDim + l
+                rhs[idx] = -(π^2 + (π/2)^2) * sin(π * pts_x[r]) * sin(π/2 * pts_y[l])
+                u_analytic[idx] = sin(π * pts_x[r]) * sin(π/2 * pts_y[l])
+            end
+
+            L = assemble_from_equation(grid, "u"; d_ii=1.0, d_jj=1.0)
+            prob = SpringsteelProblem(grid; operator=L, rhs=rhs)
+            sol = solve(prob)
+
+            @test sol.converged == true
+            @test maximum(abs.(sol.physical .- u_analytic)) < 0.05
+
+            # Evaluate solution at actual boundary endpoints using B-spline basis
+            sp_j = grid.jbasis.data[1, 1].params
+            sp_i = grid.ibasis.data[1, 1].params
+            Nspec_j = sp_j.num_cells + 3
+            Nspec_i = sp_i.num_cells + 3
+
+            # Evaluate u at jMin (y=0) for each i-basis function
+            # by summing a_coeff * basis_i(x_r) * basis_j(y=0)
+            for r in 1:iDim
+                u_bottom = 0.0
+                for si in -1:(sp_i.num_cells+1)
+                    bi = CubicBSpline.basis(sp_i, si, pts_x[r], 0)
+                    bi == 0.0 && continue
+                    for sj in -1:(sp_j.num_cells+1)
+                        bj = CubicBSpline.basis(sp_j, sj, gp.jMin, 0)
+                        bj == 0.0 && continue
+                        coeff_idx = (si+2-1)*Nspec_j + (sj+2)
+                        u_bottom += sol.coefficients[coeff_idx] * bi * bj
+                    end
+                end
+                @test abs(u_bottom) < 1e-10  # Dirichlet at jMin: exact zero
+            end
+
+            # Evaluate u at jMax (y=1) — should be NONZERO (Neumann BC)
+            u_top_max = 0.0
+            for r in 1:iDim
+                u_top = 0.0
+                for si in -1:(sp_i.num_cells+1)
+                    bi = CubicBSpline.basis(sp_i, si, pts_x[r], 0)
+                    bi == 0.0 && continue
+                    for sj in -1:(sp_j.num_cells+1)
+                        bj = CubicBSpline.basis(sp_j, sj, gp.jMax, 0)
+                        bj == 0.0 && continue
+                        coeff_idx = (si+2-1)*Nspec_j + (sj+2)
+                        u_top += sol.coefficients[coeff_idx] * bi * bj
+                    end
+                end
+                u_top_max = max(u_top_max, abs(u_top))
+            end
+            @test u_top_max > 0.1  # Neumann side: nonzero
+        end
+
+        @testset "2D RR asymmetric j-BCs: Neumann bottom, Dirichlet top" begin
+            # Analytic solution: u(x,y) = sin(πx) cos(πy/2)
+            # ∂u/∂y(x,0) = 0 ✓ (Neumann at bottom)
+            # u(x,1) = 0 ✓ (Dirichlet at top)
+            # f = -(π² + (π/2)²) sin(πx) cos(πy/2)
+            num_cells = 20
+            gp = SpringsteelGridParameters(
+                geometry = "RR",
+                num_cells = num_cells,
+                iMin = 0.0, iMax = 1.0,
+                jMin = 0.0, jMax = 1.0,
+                BCL = Dict("u" => CubicBSpline.R1T0),
+                BCR = Dict("u" => CubicBSpline.R1T0),
+                BCD = Dict("u" => CubicBSpline.R1T1),
+                BCU = Dict("u" => CubicBSpline.R1T0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            jDim = grid.params.jDim
+            pts_x = [grid.ibasis.data[1, 1].mishPoints[r] for r in 1:iDim]
+            pts_y = [grid.jbasis.data[1, 1].mishPoints[l] for l in 1:jDim]
+
+            rhs = zeros(iDim * jDim)
+            u_analytic = zeros(iDim * jDim)
+            for r in 1:iDim, l in 1:jDim
+                idx = (r-1)*jDim + l
+                rhs[idx] = -(π^2 + (π/2)^2) * sin(π * pts_x[r]) * cos(π/2 * pts_y[l])
+                u_analytic[idx] = sin(π * pts_x[r]) * cos(π/2 * pts_y[l])
+            end
+
+            L = assemble_from_equation(grid, "u"; d_ii=1.0, d_jj=1.0)
+            prob = SpringsteelProblem(grid; operator=L, rhs=rhs)
+            sol = solve(prob)
+
+            @test sol.converged == true
+            @test maximum(abs.(sol.physical .- u_analytic)) < 0.05
+
+            # Evaluate solution at actual boundary endpoints
+            sp_j = grid.jbasis.data[1, 1].params
+            sp_i = grid.ibasis.data[1, 1].params
+            Nspec_j = sp_j.num_cells + 3
+
+            # Evaluate u at jMax (y=1) — should be zero (Dirichlet)
+            for r in 1:iDim
+                u_top = 0.0
+                for si in -1:(sp_i.num_cells+1)
+                    bi = CubicBSpline.basis(sp_i, si, pts_x[r], 0)
+                    bi == 0.0 && continue
+                    for sj in -1:(sp_j.num_cells+1)
+                        bj = CubicBSpline.basis(sp_j, sj, gp.jMax, 0)
+                        bj == 0.0 && continue
+                        coeff_idx = (si+2-1)*Nspec_j + (sj+2)
+                        u_top += sol.coefficients[coeff_idx] * bi * bj
+                    end
+                end
+                @test abs(u_top) < 1e-10  # Dirichlet at jMax: exact zero
+            end
+
+            # Evaluate u at jMin (y=0) — should be NONZERO (Neumann)
+            u_bot_max = 0.0
+            for r in 1:iDim
+                u_bot = 0.0
+                for si in -1:(sp_i.num_cells+1)
+                    bi = CubicBSpline.basis(sp_i, si, pts_x[r], 0)
+                    bi == 0.0 && continue
+                    for sj in -1:(sp_j.num_cells+1)
+                        bj = CubicBSpline.basis(sp_j, sj, gp.jMin, 0)
+                        bj == 0.0 && continue
+                        coeff_idx = (si+2-1)*Nspec_j + (sj+2)
+                        u_bot += sol.coefficients[coeff_idx] * bi * bj
+                    end
+                end
+                u_bot_max = max(u_bot_max, abs(u_bot))
+            end
+            @test u_bot_max > 0.1  # Neumann side: nonzero
+        end
+
+        @testset "2D ZZ asymmetric j-BCs: Dirichlet bottom, Neumann top" begin
+            # Same PDE on Chebyshev×Chebyshev grid
+            # u(x,y) = sin(πx) sin(πy/2)
+            # Chebyshev grids include the boundary endpoints, so direct check works
+            Ni = 20; Nj = 20
+            gp = SpringsteelGridParameters(
+                geometry = "ZZ",
+                iMin = 0.0, iMax = 1.0, iDim = Ni, b_iDim = Ni,
+                jMin = 0.0, jMax = 1.0, jDim = Nj, b_jDim = Nj,
+                BCL = Dict("u" => Chebyshev.R1T0),
+                BCR = Dict("u" => Chebyshev.R1T0),
+                BCD = Dict("u" => Chebyshev.R1T0),
+                BCU = Dict("u" => Chebyshev.R1T1),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+
+            pts_i = solver_gridpoints(grid, "u")
+            var_idx = grid.params.vars["u"]
+            obj_j = grid.jbasis.data[var_idx]
+            pts_j = Springsteel.gridpoints(obj_j)
+
+            rhs = zeros(Ni * Nj)
+            u_analytic = zeros(Ni * Nj)
+            for i in 1:Ni, j in 1:Nj
+                idx = (i-1)*Nj + j
+                rhs[idx] = -(π^2 + (π/2)^2) * sin(π * pts_i[i]) * sin(π/2 * pts_j[j])
+                u_analytic[idx] = sin(π * pts_i[i]) * sin(π/2 * pts_j[j])
+            end
+
+            L = assemble_from_equation(grid, "u"; d_ii=1.0, d_jj=1.0)
+            prob = SpringsteelProblem(grid; operator=L, rhs=rhs)
+            sol = solve(prob)
+
+            @test sol.converged == true
+            @test maximum(abs.(sol.physical .- u_analytic)) < 0.01
+
+            # Chebyshev grids include endpoints: first point is jMin, last is jMax
+            # Verify Dirichlet at jMin: u ≈ 0
+            bottom_vals = [sol.physical[(i-1)*Nj + 1] for i in 1:Ni]
+            @test maximum(abs.(bottom_vals)) < 1e-6
+
+            # Key asymmetry check: u at jMax should be NONZERO
+            top_vals = [sol.physical[(i-1)*Nj + Nj] for i in 1:Ni]
+            @test maximum(abs.(top_vals)) > 0.1
+        end
+
     end  # Multi-D Linear Solver
 
     # ─────────────────────────────────────────────────────────────────────────
