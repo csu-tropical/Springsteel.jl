@@ -33,6 +33,10 @@ jobs:
           - tiling
           - io
           - compat
+          - solver
+          - mubar
+          - interpolation
+          - filtering
     steps:
       - uses: actions/checkout@v4
 

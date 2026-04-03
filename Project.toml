@@ -1,6 +1,6 @@
 name = "Springsteel"
 uuid = "66b52f22-0fad-4358-9559-2105d4560aaf"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Michael Bell <mmbell@colostate.edu>"]
 
 [deps]
