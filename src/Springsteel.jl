@@ -16,6 +16,126 @@ const real = Float64
 const int = Int64
 const uint = UInt64
 
+# ── Boundary condition type system ────────────────────────────────────────────
+# A single struct encodes every supported BC.  Slots 1–3 constrain u, u', u'';
+# slot 4 is a Robin (αu + βu' = γ) condition; the periodic flag is separate.
+# `nothing` means "natural / unconstrained" in that slot.
+
+"""
+    BoundaryConditions
+
+Basis-agnostic boundary condition specification.  Four semantic slots:
+
+- `u`   : prescribed function value (Dirichlet) — `nothing` if unconstrained
+- `du`  : prescribed first derivative (Neumann)  — `nothing` if unconstrained
+- `d2u` : prescribed second derivative            — `nothing` if unconstrained
+- `robin`: `(α, β, γ)` for the Robin condition `αu + βu' = γ` — `nothing` if unused
+- `periodic`: `true` for periodic boundaries
+
+Robin is mutually exclusive with slots 1–3; periodic is mutually exclusive with
+all other slots.  Use the convenience constructors [`NaturalBC`](@ref),
+[`DirichletBC`](@ref), [`NeumannBC`](@ref), [`SecondDerivativeBC`](@ref),
+[`RobinBC`](@ref), [`PeriodicBC`](@ref), [`CauchyBC`](@ref),
+[`ExponentialBC`](@ref), [`SymmetricBC`](@ref), [`AntisymmetricBC`](@ref).
+
+The rank (number of constrained derivative orders) is computed automatically by
+[`bc_rank`](@ref).
+"""
+struct BoundaryConditions
+    u::Union{Nothing, Float64}
+    du::Union{Nothing, Float64}
+    d2u::Union{Nothing, Float64}
+    robin::Union{Nothing, Tuple{Float64, Float64, Float64}}
+    periodic::Bool
+
+    function BoundaryConditions(u, du, d2u, robin, periodic::Bool=false)
+        if robin !== nothing && any(!isnothing, (u, du, d2u))
+            throw(ArgumentError(
+                "Robin BC is mutually exclusive with u/du/d2u constraint slots"))
+        end
+        if periodic && any(!isnothing, (u, du, d2u, robin))
+            throw(ArgumentError(
+                "PeriodicBC must have all other slots as nothing"))
+        end
+        new(u, du, d2u, robin, periodic)
+    end
+end
+
+# ── Convenience constructors ─────────────────────────────────────────────────
+
+"""No boundary constraint (free). Equivalent to the legacy `R0`."""
+NaturalBC() = BoundaryConditions(nothing, nothing, nothing, nothing)
+
+"""Dirichlet BC: prescribe `u(x₀) = v`.  Default `v = 0`."""
+DirichletBC(v::Real=0.0) = BoundaryConditions(Float64(v), nothing, nothing, nothing)
+
+"""Neumann BC: prescribe `u'(x₀) = v`.  Default `v = 0`."""
+NeumannBC(v::Real=0.0) = BoundaryConditions(nothing, Float64(v), nothing, nothing)
+
+"""Prescribe the second derivative `u''(x₀) = v`.  Default `v = 0`."""
+SecondDerivativeBC(v::Real=0.0) = BoundaryConditions(nothing, nothing, Float64(v), nothing)
+
+"""Robin BC: `αu + βu' = γ`.  Default `γ = 0`."""
+RobinBC(α::Real, β::Real, γ::Real=0.0) =
+    BoundaryConditions(nothing, nothing, nothing,
+                       (Float64(α), Float64(β), Float64(γ)))
+
+"""Periodic boundary condition."""
+PeriodicBC() = BoundaryConditions(nothing, nothing, nothing, nothing, true)
+
+"""
+    CauchyBC(u, du)
+
+Cauchy (compound) BC constraining both value and first derivative.
+Equivalent to the legacy `R2T10` when `u = du = 0`.
+"""
+CauchyBC(u::Real, du::Real) =
+    BoundaryConditions(Float64(u), Float64(du), nothing, nothing)
+
+"""
+    ExponentialBC(λ)
+
+Ooyama (2002) R1T10(λ): outward exponential decay `u = +λ u'`.
+Implemented as `RobinBC(1, -λ, 0)`.
+"""
+ExponentialBC(λ::Real) = RobinBC(1.0, -Float64(λ), 0.0)
+
+"""Symmetric (reflecting) BC: `u'(x₀) = 0`.  Alias for `NeumannBC(0)`."""
+SymmetricBC() = NeumannBC(0.0)
+
+"""
+    AntisymmetricBC()
+
+Antisymmetric BC: `u(x₀) = 0` and `u''(x₀) = 0`.
+Equivalent to the legacy `R2T20`.
+"""
+AntisymmetricBC() = BoundaryConditions(0.0, nothing, 0.0, nothing)
+
+# ── Utility functions ────────────────────────────────────────────────────────
+
+"""
+    bc_rank(bc::BoundaryConditions) -> Int
+
+Number of derivative orders constrained.  Robin counts as rank 1.
+Periodic returns 0 (rank is handled internally by each basis).
+"""
+function bc_rank(bc::BoundaryConditions)
+    bc.periodic && return 0
+    bc.robin !== nothing && return 1
+    return count(!isnothing, (bc.u, bc.du, bc.d2u))
+end
+
+"""True if the BC is periodic."""
+is_periodic(bc::BoundaryConditions) = bc.periodic
+
+"""True if any constrained value is nonzero (inhomogeneous BC)."""
+function is_inhomogeneous(bc::BoundaryConditions)
+    bc.robin !== nothing && return bc.robin[3] != 0.0
+    any(x -> x !== nothing && x != 0.0, (bc.u, bc.du, bc.d2u))
+end
+
+# ── End boundary condition type system ───────────────────────────────────────
+
 # These are declared as submodules to avoid namespace clashes with each other and other packages
 include("CubicBSpline.jl")
 include("Fourier.jl")
@@ -83,6 +203,12 @@ export applyFilter!
 
 # Filter type exports
 export AbstractFilter, SpectralFilter, GaussianFilter
+
+# Boundary condition type system
+export BoundaryConditions, bc_rank, is_periodic, is_inhomogeneous
+export NaturalBC, DirichletBC, NeumannBC, SecondDerivativeBC
+export RobinBC, PeriodicBC, CauchyBC, ExponentialBC
+export SymmetricBC, AntisymmetricBC
 
 # Unified type system exports
 export AbstractGeometry, CartesianGeometry, CylindricalGeometry, SphericalGeometry
@@ -189,13 +315,41 @@ primary parameters (marked *auto* below).
 - `k_regular_out::Int64`: k-points for regular output (*auto*: `kDim + 1`)
 
 # Boundary Condition Options
-- **CubicBSpline**: `R0` (free), `R1T0` (Dirichlet), `R1T1` (Neumann),
-  `R1T2` (zero 2nd deriv), `R2T10`, `R2T20`, `R3` (homogeneous rank-3),
-  `R3X` (inhomogeneous rank-3), `PERIODIC`
-- **Fourier**: `PERIODIC`
-- **Chebyshev**: `R0` (free), `R1T0` (Dirichlet), `R1T1` (Neumann)
 
-# Example: 1D Spline Grid
+Boundary conditions can be specified using the basis-agnostic [`BoundaryConditions`](@ref)
+type or the legacy module-qualified Dict constants.  Both forms are accepted in the
+per-variable Dict values.
+
+**Generic constructors** (recommended):
+- `NaturalBC()` — no constraint (free)
+- `DirichletBC(v=0)` — fix value
+- `NeumannBC(v=0)` — fix first derivative
+- `SecondDerivativeBC(v=0)` — fix second derivative
+- `RobinBC(α, β, γ=0)` — linear combination `αu + βu' = γ` (CubicBSpline only)
+- `ExponentialBC(λ)` — outward decay `u = +λu'` (CubicBSpline only)
+- `PeriodicBC()` — periodic
+- `CauchyBC(u, du)` — compound: fix value and first derivative (CubicBSpline only)
+- `SymmetricBC()` — alias for `NeumannBC(0)`
+- `AntisymmetricBC()` — fix value and second derivative to zero (CubicBSpline only)
+
+**Legacy Dict constants** (still supported):
+- **CubicBSpline**: `R0`, `R1T0`, `R1T1`, `R1T2`, `R2T10`, `R2T20`, `R3`, `R3X`, `PERIODIC`
+- **Fourier**: `PERIODIC`
+- **Chebyshev**: `R0`, `R1T0`, `R1T1`
+
+# Example: 1D Spline Grid (generic BCs)
+```julia
+gp = SpringsteelGridParameters(
+    geometry = "R",
+    iMin = 0.0, iMax = 10.0,
+    num_cells = 20,
+    BCL = Dict("u" => DirichletBC()),
+    BCR = Dict("u" => DirichletBC()),
+    vars = Dict("u" => 1))
+grid = createGrid(gp)
+```
+
+# Example: 1D Spline Grid (legacy BCs)
 ```julia
 gp = SpringsteelGridParameters(
     geometry = "R",

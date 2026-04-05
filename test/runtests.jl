@@ -21,4 +21,5 @@ const TEST_GROUP = get(ENV, "TEST_GROUP", "all")
     TEST_GROUP in ("all", "interpolation") && include("interpolation.jl")
     TEST_GROUP in ("all", "filtering")      && include("filtering.jl")
     TEST_GROUP in ("all", "r3x")            && include("r3x.jl")
+    TEST_GROUP in ("all", "bc")             && include("boundary_conditions.jl")
 end

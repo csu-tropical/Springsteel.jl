@@ -184,8 +184,8 @@ function _i_mishpoints(gp::SpringsteelGridParameters)
         mubar    = gp.mubar,
         quadrature = gp.quadrature,
         l_q      = 2.0,
-        BCL      = _get_bc(gp.BCL, first_key),
-        BCR      = _get_bc(gp.BCR, first_key)))
+        BCL      = _get_spline_bc(gp.BCL, first_key),
+        BCR      = _get_spline_bc(gp.BCR, first_key)))
     return tmp.mishPoints
 end
 
@@ -331,6 +331,100 @@ end
     return bc_dict["default"]
 end
 
+# Typed BC helpers: look up the per-variable BC and convert to internal Dict
+@inline _get_spline_bc(bc_dict::Dict, key) = _convert_bc(_get_bc(bc_dict, key), :spline)
+@inline _get_chebyshev_bc(bc_dict::Dict, key) = _convert_bc(_get_bc(bc_dict, key), :chebyshev)
+
+# ────────────────────────────────────────────────────────────────────────────
+# BoundaryConditions → internal Dict conversion layer
+# ────────────────────────────────────────────────────────────────────────────
+
+"""Convert a `BoundaryConditions` to the CubicBSpline internal Dict."""
+function _bc_to_spline_dict(bc::BoundaryConditions)
+    bc.periodic && return CubicBSpline.PERIODIC
+
+    r = bc_rank(bc)
+    if r == 0
+        return CubicBSpline.R0
+    elseif r == 1
+        if bc.u !== nothing
+            return Dict("α1" => -4.0, "β1" => -1.0)       # Dirichlet (R1T0)
+        elseif bc.du !== nothing
+            return Dict("α1" => 0.0, "β1" => 1.0)          # Neumann (R1T1)
+        elseif bc.d2u !== nothing
+            return Dict("α1" => 2.0, "β1" => -1.0)         # 2nd deriv (R1T2)
+        elseif bc.robin !== nothing
+            α, β, _ = bc.robin
+            λ = -β / α                                      # Ooyama λ parameter
+            return Dict("α1" => -4.0/(3λ + 1),
+                        "β1" => (3λ - 1)/(3λ + 1))         # Robin (R1T10(λ))
+        end
+    elseif r == 2
+        if bc.u !== nothing && bc.du !== nothing
+            return Dict("α2" => 1.0, "β2" => -0.5)         # R2T10
+        elseif bc.u !== nothing && bc.d2u !== nothing
+            return Dict("α2" => -1.0, "β2" => 0.0)         # R2T20
+        else
+            throw(ArgumentError(
+                "Unsupported rank-2 BC combination for CubicBSpline: " *
+                "du + d2u without u is not defined"))
+        end
+    elseif r == 3
+        return is_inhomogeneous(bc) ? Dict("R3X" => 0) : Dict("R3" => 0)
+    end
+end
+
+"""Convert a `BoundaryConditions` to the Chebyshev internal Dict."""
+function _bc_to_chebyshev_dict(bc::BoundaryConditions)
+    bc.periodic && throw(ArgumentError("PeriodicBC is not supported for Chebyshev basis"))
+    bc.robin !== nothing && throw(ArgumentError("RobinBC is not supported for Chebyshev basis"))
+
+    r = bc_rank(bc)
+    if r == 0
+        return Chebyshev.R0
+    elseif r == 1
+        if bc.u !== nothing
+            return Dict("α0" => bc.u)           # R1T0 (Dirichlet)
+        elseif bc.du !== nothing
+            return Dict("α1" => bc.du)           # R1T1 (Neumann)
+        elseif bc.d2u !== nothing
+            return Dict("α2" => bc.d2u)          # R1T2 (2nd derivative)
+        end
+    else
+        throw(ArgumentError("Rank-$r BCs are not yet implemented for Chebyshev basis"))
+    end
+end
+
+"""Validate that a `BoundaryConditions` is periodic (the only valid Fourier BC)."""
+function _validate_fourier_bc(bc::BoundaryConditions)
+    if !bc.periodic
+        throw(ArgumentError("Fourier basis requires PeriodicBC"))
+    end
+    return Fourier.PERIODIC
+end
+
+"""
+    _convert_bc(bc, basis_type::Symbol)
+
+Convert a boundary condition to the internal Dict representation for the given
+basis type (`:spline`, `:chebyshev`, or `:fourier`).  Legacy Dict BCs are
+passed through unchanged.
+"""
+function _convert_bc(bc::BoundaryConditions, basis_type::Symbol)
+    if basis_type === :spline
+        return _bc_to_spline_dict(bc)
+    elseif basis_type === :chebyshev
+        return _bc_to_chebyshev_dict(bc)
+    elseif basis_type === :fourier
+        return _validate_fourier_bc(bc)
+    else
+        throw(ArgumentError("Unknown basis type: $basis_type"))
+    end
+end
+
+# Pass-through for legacy Dict BCs
+_convert_bc(bc::Dict, ::Symbol) = bc
+
 # ────────────────────────────────────────────────────────────────────────────
 # Per-geometry internal creation functions
 # ────────────────────────────────────────────────────────────────────────────
@@ -357,8 +451,8 @@ function _create_cartesian_1d(gp::SpringsteelGridParameters)
             mubar     = gp.mubar,
             quadrature = gp.quadrature,
             l_q       = var_l_q,
-            BCL       = _get_bc(gp.BCL, key),
-            BCR       = _get_bc(gp.BCR, key)))
+            BCL       = _get_spline_bc(gp.BCL, key),
+            BCR       = _get_spline_bc(gp.BCR, key)))
     end
     return grid
 end
@@ -393,16 +487,16 @@ function _create_cartesian_2d_rz(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q,
-                BCL       = _get_bc(gp.BCL, key),
-                BCR       = _get_bc(gp.BCR, key)))
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
         end
         grid.kbasis.data[v] = Chebyshev1D(ChebyshevParameters(
             zmin = gp.kMin,
             zmax = gp.kMax,
             zDim = gp.kDim,
             bDim = gp.b_kDim,
-            BCB  = _get_bc(gp.BCB, key),
-            BCT  = _get_bc(gp.BCT, key)))
+            BCB  = _get_chebyshev_bc(gp.BCB, key),
+            BCT  = _get_chebyshev_bc(gp.BCT, key)))
     end
     return grid
 end
@@ -438,8 +532,8 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q_i,
-                BCL       = _get_bc(gp.BCL, key),
-                BCR       = _get_bc(gp.BCR, key)))
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
         end
         for r in 1:gp.iDim
             grid.jbasis.data[r, v] = Spline1D(SplineParameters(
@@ -449,8 +543,8 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q_j,
-                BCL       = _get_bc(gp.BCD, key),
-                BCR       = _get_bc(gp.BCU, key)))
+                BCL       = _get_spline_bc(gp.BCD, key),
+                BCR       = _get_spline_bc(gp.BCU, key)))
         end
     end
     return grid
@@ -486,21 +580,21 @@ function _create_cartesian_3d_rrr(gp::SpringsteelGridParameters)
                 xmin      = gp.iMin, xmax = gp.iMax,
                 num_cells = gp.num_cells, mubar = gp.mubar,
                 quadrature = gp.quadrature, l_q = var_l_q_i,
-                BCL       = _get_bc(gp.BCL, key), BCR = _get_bc(gp.BCR, key)))
+                BCL       = _get_spline_bc(gp.BCL, key), BCR = _get_spline_bc(gp.BCR, key)))
         end
         for r in 1:gp.iDim, z in 1:gp.b_kDim
             grid.jbasis.data[r, z, v] = Spline1D(SplineParameters(
                 xmin      = gp.jMin, xmax = gp.jMax,
                 num_cells = nc_j, mubar = gp.mubar,
                 quadrature = gp.quadrature, l_q = var_l_q_j,
-                BCL       = _get_bc(gp.BCD, key), BCR = _get_bc(gp.BCU, key)))
+                BCL       = _get_spline_bc(gp.BCD, key), BCR = _get_spline_bc(gp.BCU, key)))
         end
         for r in 1:gp.iDim, l in 1:gp.jDim
             grid.kbasis.data[r, l, v] = Spline1D(SplineParameters(
                 xmin      = gp.kMin, xmax = gp.kMax,
                 num_cells = nc_k, mubar = gp.mubar,
                 quadrature = gp.quadrature, l_q = var_l_q_k,
-                BCL       = _get_bc(gp.BCB, key), BCR = _get_bc(gp.BCT, key)))
+                BCL       = _get_spline_bc(gp.BCB, key), BCR = _get_spline_bc(gp.BCT, key)))
         end
     end
     return grid
@@ -572,8 +666,8 @@ function _create_cylindrical_2d_rl(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q,
-                BCL       = _get_bc(gp.BCL, key),
-                BCR       = _get_bc(gp.BCR, key)))
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
         end
         var_kmax = get(gp.max_wavenumber, key, get(gp.max_wavenumber, "default", -1))
         _fill_fourier_rings_cyl!(grid.jbasis.data, gp, var_kmax, v)
@@ -613,16 +707,16 @@ function _create_cylindrical_3d_rlz(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q,
-                BCL       = _get_bc(gp.BCL, key),
-                BCR       = _get_bc(gp.BCR, key)))
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
         end
         grid.kbasis.data[v] = Chebyshev1D(ChebyshevParameters(
             zmin = gp.kMin,
             zmax = gp.kMax,
             zDim = gp.kDim,
             bDim = gp.b_kDim,
-            BCB  = _get_bc(gp.BCB, key),
-            BCT  = _get_bc(gp.BCT, key)))
+            BCB  = _get_chebyshev_bc(gp.BCB, key),
+            BCT  = _get_chebyshev_bc(gp.BCT, key)))
     end
     # Rings shared across vars: use default (or last) var_kmax
     var_kmax = get(gp.max_wavenumber, "default", -1)
@@ -668,8 +762,8 @@ function _create_spherical_2d_sl(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q,
-                BCL       = _get_bc(gp.BCL, key),
-                BCR       = _get_bc(gp.BCR, key)))
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
         end
         var_kmax = get(gp.max_wavenumber, key, get(gp.max_wavenumber, "default", -1))
         _fill_fourier_rings_sph!(grid.jbasis.data, gp, mishpts, var_kmax, v)
@@ -709,16 +803,16 @@ function _create_spherical_3d_slz(gp::SpringsteelGridParameters)
                 mubar     = gp.mubar,
                 quadrature = gp.quadrature,
                 l_q       = var_l_q,
-                BCL       = _get_bc(gp.BCL, key),
-                BCR       = _get_bc(gp.BCR, key)))
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
         end
         grid.kbasis.data[v] = Chebyshev1D(ChebyshevParameters(
             zmin = gp.kMin,
             zmax = gp.kMax,
             zDim = gp.kDim,
             bDim = gp.b_kDim,
-            BCB  = _get_bc(gp.BCB, key),
-            BCT  = _get_bc(gp.BCT, key)))
+            BCB  = _get_chebyshev_bc(gp.BCB, key),
+            BCT  = _get_chebyshev_bc(gp.BCT, key)))
     end
     var_kmax = get(gp.max_wavenumber, "default", -1)
     for key in keys(gp.vars)
@@ -839,8 +933,8 @@ function _create_cartesian_3d_doublyperiodic(gp::SpringsteelGridParameters)
             zmax = gp.kMax,
             zDim = gp.kDim,
             bDim = gp.b_kDim,
-            BCB  = _get_bc(gp.BCB, key),
-            BCT  = _get_bc(gp.BCT, key)))
+            BCB  = _get_chebyshev_bc(gp.BCB, key),
+            BCT  = _get_chebyshev_bc(gp.BCT, key)))
     end
     return grid
 end
@@ -866,8 +960,8 @@ function _create_cartesian_1d_chebyshev(gp::SpringsteelGridParameters)
             zmax = gp.iMax,
             zDim = gp.iDim,
             bDim = gp.b_iDim,
-            BCB  = _get_bc(gp.BCL, key),
-            BCT  = _get_bc(gp.BCR, key)))
+            BCB  = _get_chebyshev_bc(gp.BCL, key),
+            BCT  = _get_chebyshev_bc(gp.BCR, key)))
     end
     return grid
 end
@@ -896,16 +990,16 @@ function _create_cartesian_2d_chebyshev2d(gp::SpringsteelGridParameters)
                 zmax = gp.iMax,
                 zDim = gp.iDim,
                 bDim = gp.b_iDim,
-                BCB  = _get_bc(gp.BCL, key),
-                BCT  = _get_bc(gp.BCR, key)))
+                BCB  = _get_chebyshev_bc(gp.BCL, key),
+                BCT  = _get_chebyshev_bc(gp.BCR, key)))
         end
         grid.jbasis.data[v] = Chebyshev1D(ChebyshevParameters(
             zmin = gp.jMin,
             zmax = gp.jMax,
             zDim = gp.jDim,
             bDim = gp.b_jDim,
-            BCB  = _get_bc(gp.BCD, key),
-            BCT  = _get_bc(gp.BCU, key)))
+            BCB  = _get_chebyshev_bc(gp.BCD, key),
+            BCT  = _get_chebyshev_bc(gp.BCU, key)))
     end
     return grid
 end
@@ -932,18 +1026,18 @@ function _create_cartesian_3d_chebyshev3d(gp::SpringsteelGridParameters)
             grid.ibasis.data[j, z, v] = Chebyshev1D(ChebyshevParameters(
                 zmin = gp.iMin, zmax = gp.iMax,
                 zDim = gp.iDim, bDim = gp.b_iDim,
-                BCB  = _get_bc(gp.BCL, key), BCT = _get_bc(gp.BCR, key)))
+                BCB  = _get_chebyshev_bc(gp.BCL, key), BCT = _get_chebyshev_bc(gp.BCR, key)))
         end
         for z in 1:gp.b_kDim
             grid.jbasis.data[z, v] = Chebyshev1D(ChebyshevParameters(
                 zmin = gp.jMin, zmax = gp.jMax,
                 zDim = gp.jDim, bDim = gp.b_jDim,
-                BCB  = _get_bc(gp.BCD, key), BCT = _get_bc(gp.BCU, key)))
+                BCB  = _get_chebyshev_bc(gp.BCD, key), BCT = _get_chebyshev_bc(gp.BCU, key)))
         end
         grid.kbasis.data[v] = Chebyshev1D(ChebyshevParameters(
             zmin = gp.kMin, zmax = gp.kMax,
             zDim = gp.kDim, bDim = gp.b_kDim,
-            BCB  = _get_bc(gp.BCB, key), BCT = _get_bc(gp.BCT, key)))
+            BCB  = _get_chebyshev_bc(gp.BCB, key), BCT = _get_chebyshev_bc(gp.BCT, key)))
     end
     return grid
 end
