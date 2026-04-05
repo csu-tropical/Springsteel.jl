@@ -22,6 +22,35 @@ include("Fourier.jl")
 include("Chebyshev.jl")
 using .CubicBSpline, .Fourier, .Chebyshev
 
+# Define unified generic transform functions at the Springsteel module level.
+# Each submodule defines its own version (e.g., CubicBSpline.Btransform!,
+# Chebyshev.Btransform!) but those are separate function objects. These
+# wrappers create a single dispatch point so downstream code can call
+# Btransform!(col) regardless of basis type.
+Btransform(obj::CubicBSpline.Spline1D, u::Vector{Float64})  = CubicBSpline.Btransform(obj, u)
+Btransform(obj::Chebyshev.Chebyshev1D, u::Vector{Float64})  = Chebyshev.Btransform(obj, u)
+Btransform!(obj::CubicBSpline.Spline1D)  = CubicBSpline.Btransform!(obj)
+Btransform!(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Btransform!(obj)
+
+Atransform(obj::CubicBSpline.Spline1D, b::AbstractVector)  = CubicBSpline.Atransform(obj, b)
+Atransform(obj::Chebyshev.Chebyshev1D, b::AbstractVector)  = Chebyshev.Atransform(obj, b)
+Atransform!(obj::CubicBSpline.Spline1D)  = CubicBSpline.Atransform!(obj)
+Atransform!(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Atransform!(obj)
+
+Itransform(obj::CubicBSpline.Spline1D, u::AbstractVector)  = CubicBSpline.Itransform(obj, u)
+Itransform(obj::Chebyshev.Chebyshev1D, u::AbstractVector)  = Chebyshev.Itransform(obj, u)
+Itransform!(obj::CubicBSpline.Spline1D)  = CubicBSpline.Itransform!(obj)
+Itransform!(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Itransform!(obj)
+
+Ixtransform(obj::CubicBSpline.Spline1D)  = CubicBSpline.Ixtransform(obj)
+Ixtransform(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Ixtransform(obj)
+
+Ixxtransform(obj::CubicBSpline.Spline1D)  = CubicBSpline.Ixxtransform(obj)
+Ixxtransform(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Ixxtransform(obj)
+
+IInttransform(obj::CubicBSpline.Spline1D, u::Vector{Float64}, C0::Float64=0.0) = CubicBSpline.IInttransform(obj, u, C0)
+IInttransform(obj::Chebyshev.Chebyshev1D, C0::Float64=0.0) = Chebyshev.IInttransform(obj, C0)
+
 export AbstractGrid, GridParameters
 export SpringsteelGrid, SpringsteelGridParameters
 export CubicBSpline, SplineParameters, Spline1D
@@ -32,11 +61,14 @@ export setMishValues
 export FourierParameters, Fourier1D, Fourier
 export FBtransform, FBtransform!, FAtransform!, FItransform!
 export FBxtransform, FIxtransform, FIxxtransform, FIInttransform
-export IInttransform
 
 export Chebyshev, ChebyshevParameters, Chebyshev1D
 export CBtransform, CBtransform!, CAtransform!, CItransform!
 export CBxtransform, CIxtransform, CIxxtransform, CIInttransform
+
+# Generic (basis-agnostic) transform wrappers — dispatch on 1D basis object type
+export Btransform, Btransform!, Atransform, Atransform!
+export Itransform, Itransform!, Ixtransform, Ixxtransform, IInttransform
 
 export SplineParameters, Spline1D
 export createGrid, getGridpoints, calcTileSizes
