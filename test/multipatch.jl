@@ -1202,4 +1202,39 @@ using LinearAlgebra
         end
     end
 
+    # ── FixedBC convenience constructor with multipatch ────────────────────
+
+    @testset "PatchChain with FixedBC and NaturalBC" begin
+        # Same as the 3-patch linear test but using BoundaryConditions API
+        f(x) = 3x + 5
+
+        gp1 = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=10.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=20.0, num_cells=20,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => FixedBC()),
+            vars=Dict("u" => 1))
+        gp3 = SpringsteelGridParameters(
+            geometry="R", iMin=20.0, iMax=30.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2); g3 = createGrid(gp3)
+        for (g, pts) in [(g1, getGridpoints(g1)), (g2, getGridpoints(g2)), (g3, getGridpoints(g3))]
+            for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchChain([g1, g2, g3])
+        multiGridTransform!(mpg)
+
+        # Linear should be exact
+        pts2 = getGridpoints(g2)
+        for i in eachindex(pts2)
+            @test g2.physical[i, 1, 1] ≈ f(pts2[i]) atol=1e-10
+        end
+    end
+
 end

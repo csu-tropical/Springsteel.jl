@@ -111,6 +111,30 @@ Equivalent to the legacy `R2T20`.
 """
 AntisymmetricBC() = BoundaryConditions(0.0, nothing, 0.0, nothing)
 
+"""
+    ZerosBC()
+
+Homogeneous rank-3 BC: `u(x₀) = u'(x₀) = u''(x₀) = 0`.
+Equivalent to the legacy `R3`.  Permanently eliminates the 3 border degrees
+of freedom — no `ahat` mechanism is used.
+"""
+ZerosBC() = BoundaryConditions(0.0, 0.0, 0.0, nothing)
+
+"""
+    FixedBC()
+    FixedBC(u::Real, du::Real=0.0, d2u::Real=0.0)
+
+Rank-3 BC constraining value, first derivative, and second derivative.
+
+- `FixedBC()` — interface BC with values determined at runtime by
+  `update_interface!`.  Uses NaN sentinels to ensure the R3X (inhomogeneous)
+  code path is activated, so the `ahat` mechanism is available.
+- `FixedBC(u, du, d2u)` — prescribe specific boundary values.
+"""
+FixedBC() = BoundaryConditions(NaN, NaN, NaN, nothing)
+FixedBC(u::Real, du::Real=0.0, d2u::Real=0.0) =
+    BoundaryConditions(Float64(u), Float64(du), Float64(d2u), nothing)
+
 # ── Utility functions ────────────────────────────────────────────────────────
 
 """
@@ -213,7 +237,7 @@ export PatchChain, PatchEmbedded
 export BoundaryConditions, bc_rank, is_periodic, is_inhomogeneous
 export NaturalBC, DirichletBC, NeumannBC, SecondDerivativeBC
 export RobinBC, PeriodicBC, CauchyBC, ExponentialBC
-export SymmetricBC, AntisymmetricBC
+export SymmetricBC, AntisymmetricBC, ZerosBC, FixedBC
 
 # Unified type system exports
 export AbstractGeometry, CartesianGeometry, CylindricalGeometry, SphericalGeometry

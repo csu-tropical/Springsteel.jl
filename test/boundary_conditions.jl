@@ -18,6 +18,12 @@
         @test AntisymmetricBC() == BoundaryConditions(0.0, nothing, 0.0, nothing, false)
         @test CauchyBC(0.0, 0.0) == BoundaryConditions(0.0, 0.0, nothing, nothing, false)
         @test ExponentialBC(2.0) == RobinBC(1.0, -2.0, 0.0)
+        @test ZerosBC() == BoundaryConditions(0.0, 0.0, 0.0, nothing, false)
+        @test FixedBC().u === NaN  # Sentinel for runtime-determined values
+        @test bc_rank(FixedBC()) == 3
+        @test FixedBC(1.0, 2.0, 3.0) == BoundaryConditions(1.0, 2.0, 3.0, nothing, false)
+        @test FixedBC(5.0) == BoundaryConditions(5.0, 0.0, 0.0, nothing, false)
+        @test FixedBC(0.0, 0.0, 0.0) == BoundaryConditions(0.0, 0.0, 0.0, nothing, false)
 
         # Robin exclusivity: cannot combine with u/du/d2u
         @test_throws ArgumentError BoundaryConditions(1.0, nothing, nothing, (1.0, 2.0, 0.0))
@@ -40,6 +46,9 @@
         @test bc_rank(CauchyBC(0.0, 0.0)) == 2         # R2T10
         @test bc_rank(AntisymmetricBC()) == 2            # R2T20
         @test bc_rank(BoundaryConditions(0.0, 0.0, 0.0, nothing)) == 3  # R3
+        @test bc_rank(ZerosBC()) == 3
+        @test bc_rank(FixedBC()) == 3
+        @test bc_rank(FixedBC(1.0, 2.0, 3.0)) == 3
         @test bc_rank(PeriodicBC()) == 0
     end
 
@@ -56,6 +65,11 @@
         @test is_inhomogeneous(NeumannBC(0.5)) == true
         @test is_inhomogeneous(BoundaryConditions(1.0, 2.0, 3.0, nothing)) == true
         @test is_inhomogeneous(BoundaryConditions(0.0, 0.0, 0.0, nothing)) == false
+        @test is_inhomogeneous(ZerosBC()) == false
+        @test is_inhomogeneous(FixedBC()) == true  # NaN sentinels are inhomogeneous
+        @test is_inhomogeneous(FixedBC(0.0, 0.0, 0.0)) == false  # Explicit zeros are homogeneous
+        @test is_inhomogeneous(FixedBC(1.0)) == true
+        @test is_inhomogeneous(FixedBC(0.0, 0.5)) == true
         @test is_inhomogeneous(RobinBC(1.0, -1.0, 0.0)) == false
         @test is_inhomogeneous(RobinBC(1.0, -1.0, 5.0)) == true
     end
@@ -101,6 +115,14 @@
         # R3X (inhomogeneous rank-3)
         d = to_spline(BoundaryConditions(1.0, 2.0, 3.0, nothing))
         @test d == Dict("R3X" => 0)
+
+        # ZerosBC → R3
+        @test to_spline(ZerosBC()) == CubicBSpline.R3
+
+        # FixedBC convenience constructors
+        @test to_spline(FixedBC()) == Dict("R3X" => 0)  # NaN sentinels → R3X
+        @test to_spline(FixedBC(1.0, 0.0, 0.0)) == Dict("R3X" => 0)
+        @test to_spline(FixedBC(0.0, 0.0, 0.0)) == CubicBSpline.R3  # Explicit zeros → R3
 
         # Periodic
         d = to_spline(PeriodicBC())
