@@ -204,6 +204,11 @@ export applyFilter!
 # Filter type exports
 export AbstractFilter, SpectralFilter, GaussianFilter
 
+# Multi-patch exports
+export PatchInterface, MultiPatchGrid
+export update_interface!, multiGridTransform!
+export HollowNest, InteriorNest
+
 # Boundary condition type system
 export BoundaryConditions, bc_rank, is_periodic, is_inhomogeneous
 export NaturalBC, DirichletBC, NeumannBC, SecondDerivativeBC
@@ -465,6 +470,10 @@ include("interpolation.jl")
 # ── Filtering framework ─────────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses grid type aliases)
 include("filtering.jl")
+
+# ── Multi-patch grid connections ───────────────────────────────────────────────────
+# Must be included after transforms_*.jl and types.jl (uses grid types and gridTransform!)
+include("multipatch.jl")
 
 
 """
