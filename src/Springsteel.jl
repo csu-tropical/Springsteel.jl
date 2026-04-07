@@ -207,7 +207,7 @@ export AbstractFilter, SpectralFilter, GaussianFilter
 # Multi-patch exports
 export PatchInterface, MultiPatchGrid
 export update_interface!, multiGridTransform!
-export HollowNest, InteriorNest
+export PatchChain, PatchEmbedded
 
 # Boundary condition type system
 export BoundaryConditions, bc_rank, is_periodic, is_inhomogeneous

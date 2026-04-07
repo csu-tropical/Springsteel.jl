@@ -22,18 +22,32 @@ const COUPLING_MATRIX_2X = [0.5   0.5   0.0;
                             0.0   0.5   0.5]
 
 """
+    COUPLING_MATRIX_1X
+
+Identity 3×3 coupling matrix for 1:1 same-resolution B-spline basis conversion.
+
+Used for domain decomposition where adjacent patches have the same cell width.
+The border coefficients are copied directly without transformation.
+"""
+const COUPLING_MATRIX_1X = Float64[1 0 0; 0 1 0; 0 0 1]
+
+"""
     _build_coupling_matrix(primary_DX, secondary_DX) -> Matrix{Float64}
 
 Return the 3×3 coupling matrix for the given cell-width ratio.
-Currently only supports 2:1 (coarse:fine) ratio; throws an error otherwise.
+Supports 1:1 (identity) and 2:1 (coarse-to-fine) ratios.
+Throws an error for unsupported ratios.
 """
 function _build_coupling_matrix(primary_DX::Float64, secondary_DX::Float64)
     ratio = primary_DX / secondary_DX
-    if abs(ratio - 2.0) < 1e-12 * max(primary_DX, secondary_DX)
+    tol = 1e-12 * max(primary_DX, secondary_DX)
+    if abs(ratio - 1.0) < tol
+        return copy(COUPLING_MATRIX_1X)
+    elseif abs(ratio - 2.0) < tol
         return copy(COUPLING_MATRIX_2X)
     else
         throw(ArgumentError(
-            "Only 2:1 coarse-to-fine ratio is supported, got $(ratio):1"))
+            "Only 1:1 and 2:1 coarse-to-fine ratios are supported, got $(ratio):1"))
     end
 end
 
@@ -63,7 +77,7 @@ secondary.
 - `primary_node_indices::Tuple{Int,Int,Int}` — indices into primary `.a` for coefficient extraction
 
 See also: [`MultiPatchGrid`](@ref), [`update_interface!`](@ref),
-[`HollowNest`](@ref), [`InteriorNest`](@ref)
+[`PatchChain`](@ref), [`PatchEmbedded`](@ref)
 """
 struct PatchInterface
     primary::SpringsteelGrid
@@ -367,7 +381,7 @@ transformed before their dependents.
 - `transform_order::Vector{Vector{Int}}` — topological layers of patch indices
 
 See also: [`PatchInterface`](@ref), [`multiGridTransform!`](@ref),
-[`HollowNest`](@ref), [`InteriorNest`](@ref)
+[`PatchChain`](@ref), [`PatchEmbedded`](@ref)
 """
 struct MultiPatchGrid
     patches::Vector{<:SpringsteelGrid}
@@ -522,67 +536,134 @@ function multiGridTransform!(mpg::MultiPatchGrid)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
-# Convenience constructors
+# Topology constructors
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    HollowNest(primary_left, secondary, primary_right; dimension=:i)
+    PatchChain(grids; dimension=:i)
 
-Create a `MultiPatchGrid` for a hollow nest configuration:
-`primary_left — secondary — primary_right`.
+Create a `MultiPatchGrid` from a sequence of grids connected end-to-end.
 
-The secondary patch sits between two primary patches, receiving R3X boundary
-data from each.  The primary patches have R0 (free) BCs at their interface
-sides.
+Grids are provided in spatial order (e.g., left to right).  At each interface
+between adjacent grids, the coarser grid is automatically selected as primary
+(R0 BC side) and the finer grid as secondary (R3X BC side).  For 1:1 ratio
+(same resolution), the left grid is primary by convention.
 
-Returns a `MultiPatchGrid` with two `PatchInterface` objects.
+Supports asymmetric refinement chains like `8-4-2-1-2-4-8` DX, where the
+primary/secondary direction flips at the finest grid.
+
+# Arguments
+- `grids::Vector{<:SpringsteelGrid}`: Two or more grids in spatial order.
+- `dimension::Symbol=:i`: Connected dimension (`:i` only for now).
+
+# BC requirements
+- At each interface: the primary side must have R0, the secondary side R3X.
+- End grids may have any user-chosen BCs on their outer (non-interface) edges.
 
 # Example
 ```julia
-mpg = HollowNest(left_grid, center_grid, right_grid)
+# 3-grid chain: coarse — fine — coarse
+mpg = PatchChain([left_grid, center_grid, right_grid])
 multiGridTransform!(mpg)
+
+# 7-grid chain: 8-4-2-1-2-4-8 DX
+mpg = PatchChain([g8a, g4a, g2a, g1, g2b, g4b, g8b])
 ```
 
-See also: [`InteriorNest`](@ref), [`PatchInterface`](@ref)
+See also: [`PatchEmbedded`](@ref), [`PatchInterface`](@ref), [`MultiPatchGrid`](@ref)
 """
-function HollowNest(primary_left::SpringsteelGrid, secondary::SpringsteelGrid,
-                    primary_right::SpringsteelGrid; dimension::Symbol=:i)
-    iface_left = PatchInterface(primary_left, secondary, :right, :left, dimension)
-    iface_right = PatchInterface(primary_right, secondary, :left, :right, dimension)
+function PatchChain(grids::Vector{<:SpringsteelGrid}; dimension::Symbol=:i)
+    n = length(grids)
+    if n < 2
+        throw(ArgumentError("PatchChain requires at least 2 grids, got $n"))
+    end
 
-    patches = [primary_left, secondary, primary_right]
-    interfaces = [iface_left, iface_right]
-    return MultiPatchGrid(patches, interfaces)
+    interfaces = PatchInterface[]
+    for k in 1:(n-1)
+        DX_left = _get_spline_DX(grids[k], dimension)
+        DX_right = _get_spline_DX(grids[k+1], dimension)
+
+        if DX_left >= DX_right
+            # Left is coarser (or same resolution) → left is primary
+            primary = grids[k]
+            secondary = grids[k+1]
+            primary_side = :right
+            secondary_side = :left
+        else
+            # Right is coarser → right is primary
+            primary = grids[k+1]
+            secondary = grids[k]
+            primary_side = :left
+            secondary_side = :right
+        end
+
+        push!(interfaces, PatchInterface(primary, secondary,
+                                         primary_side, secondary_side, dimension))
+    end
+
+    return MultiPatchGrid(grids, interfaces)
 end
 
 """
-    InteriorNest(primary, secondary; dimension=:i)
+    PatchEmbedded(grids; dimension=:i)
 
-Create a `MultiPatchGrid` for a stacked nest configuration where the secondary
-(fine) patch sits entirely inside the primary (coarse) patch.
+Create a `MultiPatchGrid` from a sequence of grids nested inside each other.
 
-The primary patch covers the full domain.  The secondary patch receives R3X
-boundary data from the primary's interior nodes at both its left and right
-boundaries.
+Grids are provided from outermost to innermost.  Each inner grid is spatially
+contained within its predecessor and receives R3X boundary data from it on
+both sides.  The outermost grid keeps its user-specified BCs.
 
-Returns a `MultiPatchGrid` with two `PatchInterface` objects.
+All inner grids must have strictly finer resolution than their parent
+(1:1 ratio is not allowed for embedded patches).
+
+# Arguments
+- `grids::Vector{<:SpringsteelGrid}`: Two or more grids, outermost first.
+- `dimension::Symbol=:i`: Connected dimension (`:i` only for now).
+
+# BC requirements
+- Inner grids must have R3X on both sides in the connected dimension.
+- The outermost grid may have any user-chosen BCs.
 
 # Example
 ```julia
-mpg = InteriorNest(coarse_grid, fine_grid)
+# 2-level embedding
+mpg = PatchEmbedded([coarse_grid, fine_grid])
+
+# 3-level embedding
+mpg = PatchEmbedded([coarse_grid, medium_grid, fine_grid])
 multiGridTransform!(mpg)
 ```
 
-See also: [`HollowNest`](@ref), [`PatchInterface`](@ref)
+See also: [`PatchChain`](@ref), [`PatchInterface`](@ref), [`MultiPatchGrid`](@ref)
 """
-function InteriorNest(primary::SpringsteelGrid, secondary::SpringsteelGrid;
-                     dimension::Symbol=:i)
-    iface_left = PatchInterface(primary, secondary, :right, :left, dimension;
-                                is_stacked=true)
-    iface_right = PatchInterface(primary, secondary, :left, :right, dimension;
-                                 is_stacked=true)
+function PatchEmbedded(grids::Vector{<:SpringsteelGrid}; dimension::Symbol=:i)
+    n = length(grids)
+    if n < 2
+        throw(ArgumentError("PatchEmbedded requires at least 2 grids, got $n"))
+    end
 
-    patches = [primary, secondary]
-    interfaces = [iface_left, iface_right]
-    return MultiPatchGrid(patches, interfaces)
+    interfaces = PatchInterface[]
+    for k in 1:(n-1)
+        outer = grids[k]
+        inner = grids[k+1]
+
+        # Verify strict refinement (no 1:1)
+        DX_outer = _get_spline_DX(outer, dimension)
+        DX_inner = _get_spline_DX(inner, dimension)
+        ratio = DX_outer / DX_inner
+        tol = 1e-12 * max(DX_outer, DX_inner)
+        if abs(ratio - 1.0) < tol
+            throw(ArgumentError(
+                "PatchEmbedded requires refinement at each level. " *
+                "Grids $k and $(k+1) have the same resolution (DX=$DX_outer)"))
+        end
+
+        # Create left and right interfaces (both stacked)
+        push!(interfaces, PatchInterface(outer, inner, :right, :left, dimension;
+                                         is_stacked=true))
+        push!(interfaces, PatchInterface(outer, inner, :left, :right, dimension;
+                                         is_stacked=true))
+    end
+
+    return MultiPatchGrid(grids, interfaces)
 end

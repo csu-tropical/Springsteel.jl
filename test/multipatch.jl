@@ -20,9 +20,18 @@ using LinearAlgebra
         @test M == Springsteel.COUPLING_MATRIX_2X
     end
 
-    @testset "_build_coupling_matrix rejects wrong ratio" begin
+    @testset "_build_coupling_matrix 1:1 ratio" begin
+        M = Springsteel._build_coupling_matrix(1.0, 1.0)
+        @test M == Springsteel.COUPLING_MATRIX_1X
+        @test M == Float64[1 0 0; 0 1 0; 0 0 1]
+        # Also works for non-unit same-resolution
+        M2 = Springsteel._build_coupling_matrix(0.5, 0.5)
+        @test M2 == Springsteel.COUPLING_MATRIX_1X
+    end
+
+    @testset "_build_coupling_matrix rejects unsupported ratio" begin
         @test_throws ArgumentError Springsteel._build_coupling_matrix(3.0, 1.0)
-        @test_throws ArgumentError Springsteel._build_coupling_matrix(1.0, 1.0)
+        @test_throws ArgumentError Springsteel._build_coupling_matrix(4.0, 1.0)
     end
 
     # ── PatchInterface validation ──────────────────────────────────────────
@@ -107,7 +116,7 @@ using LinearAlgebra
 
     # ── Valid PatchInterface construction ───────────────────────────────────
 
-    @testset "PatchInterface hollow nest construction" begin
+    @testset "PatchInterface patch chain construction" begin
         # Primary: 10 cells, DX = 1.0
         gp1 = SpringsteelGridParameters(
             geometry="R", iMin=0.0, iMax=10.0, num_cells=10,
@@ -136,9 +145,9 @@ using LinearAlgebra
         @test iface.primary_node_indices == (bDim - 2, bDim - 1, bDim)
     end
 
-    # ── 1D hollow nest: linear polynomial exactness ─────────────────────────
+    # ── 1D patch chain: linear polynomial exactness ─────────────────────────
 
-    @testset "1D hollow nest linear polynomial exactness" begin
+    @testset "1D patch chain linear polynomial exactness" begin
         # A linear polynomial is reproduced exactly (machine precision)
         # through the interface — no quadrature error for linear functions
         f(x) = 3x + 5
@@ -183,7 +192,7 @@ using LinearAlgebra
         spectralTransform!(g_sec)
         spectralTransform!(g_right)
 
-        mpg = HollowNest(g_left, g_sec, g_right)
+        mpg = PatchChain([g_left, g_sec, g_right])
         multiGridTransform!(mpg)
 
         # Linear function: machine precision on secondary
@@ -206,9 +215,9 @@ using LinearAlgebra
         end
     end
 
-    # ── 1D hollow nest: cubic polynomial exactness with l_q=0 ──────────────
+    # ── 1D patch chain: cubic polynomial exactness with l_q=0 ──────────────
 
-    @testset "1D hollow nest cubic polynomial exactness (l_q=0)" begin
+    @testset "1D patch chain cubic polynomial exactness (l_q=0)" begin
         # With l_q=0 (no smoothing), the coupling matrix is exact for cubics.
         # The l_q smoothing parameter modifies A-coefficients away from the true
         # B-spline amplitudes; the coupling matrix assumes unsmoothed amplitudes.
@@ -244,7 +253,7 @@ using LinearAlgebra
             spectralTransform!(g)
         end
 
-        mpg = HollowNest(g_left, g_sec, g_right)
+        mpg = PatchChain([g_left, g_sec, g_right])
         multiGridTransform!(mpg)
 
         pts_sec = getGridpoints(g_sec)
@@ -252,9 +261,9 @@ using LinearAlgebra
         @test max_err < 1e-8
     end
 
-    # ── 1D hollow nest: smoothing effect on coupling ──────────────────────
+    # ── 1D patch chain: smoothing effect on coupling ──────────────────────
 
-    @testset "1D hollow nest coupling with default l_q" begin
+    @testset "1D patch chain coupling with default l_q" begin
         # With default l_q=2, the smoothing modifies A-coefficients.
         # Coupled error is bounded by a constant factor of single-grid error.
         f(x) = sin(2π * x / 30.0) + 1.0
@@ -288,7 +297,7 @@ using LinearAlgebra
             spectralTransform!(g)
         end
 
-        mpg = HollowNest(g_left, g_sec, g_right)
+        mpg = PatchChain([g_left, g_sec, g_right])
         multiGridTransform!(mpg)
 
         pts_sec = getGridpoints(g_sec)
@@ -333,7 +342,7 @@ using LinearAlgebra
         end
 
         # Method 1: multiGridTransform!
-        mpg = HollowNest(g1_l, g1_s, g1_r)
+        mpg = PatchChain([g1_l, g1_s, g1_r])
         multiGridTransform!(mpg)
 
         # Method 2: manual independent transforms
@@ -352,9 +361,9 @@ using LinearAlgebra
         @test g1_s.physical[:, 1, 3] ≈ g2_s.physical[:, 1, 3] atol=1e-14
     end
 
-    # ── 1D stacked nest ────────────────────────────────────────────────────
+    # ── 1D embedded ────────────────────────────────────────────────────
 
-    @testset "1D stacked nest construction" begin
+    @testset "1D embedded construction" begin
         # Primary: [0, 30], 30 cells, DX = 1.0
         gp_primary = SpringsteelGridParameters(
             geometry="R", iMin=0.0, iMax=30.0, num_cells=30,
@@ -371,7 +380,7 @@ using LinearAlgebra
         g_primary = createGrid(gp_primary)
         g_sec = createGrid(gp_sec)
 
-        mpg = InteriorNest(g_primary, g_sec)
+        mpg = PatchEmbedded([g_primary, g_sec])
         @test length(mpg.interfaces) == 2
         @test length(mpg.patches) == 2
         @test length(mpg.transform_order) == 2
@@ -379,7 +388,7 @@ using LinearAlgebra
         @test 1 in mpg.transform_order[1]
     end
 
-    @testset "1D stacked nest linear polynomial exactness" begin
+    @testset "1D embedded linear polynomial exactness" begin
         f(x) = -2x + 15  # Linear for exact reproduction
 
         gp_primary = SpringsteelGridParameters(
@@ -408,7 +417,7 @@ using LinearAlgebra
         spectralTransform!(g_primary)
         spectralTransform!(g_sec)
 
-        mpg = InteriorNest(g_primary, g_sec)
+        mpg = PatchEmbedded([g_primary, g_sec])
         multiGridTransform!(mpg)
 
         # Linear function: machine precision on secondary
@@ -417,7 +426,7 @@ using LinearAlgebra
         end
     end
 
-    @testset "1D stacked nest rejects misaligned grids" begin
+    @testset "1D embedded rejects misaligned grids" begin
         # Primary: DX = 1.0, secondary starts at 10.3 (not aligned)
         gp_primary = SpringsteelGridParameters(
             geometry="R", iMin=0.0, iMax=30.0, num_cells=30,
@@ -431,7 +440,7 @@ using LinearAlgebra
             vars=Dict("u" => 1))
         g_primary = createGrid(gp_primary)
         g_sec = createGrid(gp_sec)
-        @test_throws ArgumentError InteriorNest(g_primary, g_sec)
+        @test_throws ArgumentError PatchEmbedded([g_primary, g_sec])
     end
 
     # ── MultiPatchGrid topological sort ────────────────────────────────────
@@ -600,7 +609,7 @@ using LinearAlgebra
 
     # ── Multi-variable support ─────────────────────────────────────────────
 
-    @testset "Multi-variable hollow nest" begin
+    @testset "Multi-variable patch chain" begin
         f_u(x) = 2x + 1
         f_v(x) = -x + 3
 
@@ -634,7 +643,7 @@ using LinearAlgebra
             spectralTransform!(g)
         end
 
-        mpg = HollowNest(g1, g2, g3)
+        mpg = PatchChain([g1, g2, g3])
         multiGridTransform!(mpg)
 
         pts_sec = getGridpoints(g2)
@@ -651,8 +660,8 @@ using LinearAlgebra
     # because the cubic polynomial is in the null space of the third-derivative
     # penalty and the R3X clamping provides exact border coefficients.
 
-    # Helper: build a hollow nest with independent l_q on primary vs secondary
-    function _run_mixed_lq_hollow(f, nc_p, nc_s, lq_primary, lq_secondary)
+    # Helper: build a patch chain with independent l_q on primary vs secondary
+    function _run_mixed_lq_chain(f, nc_p, nc_s, lq_primary, lq_secondary)
         lq_p = Dict("u" => lq_primary)
         lq_s = Dict("u" => lq_secondary)
         gp1 = SpringsteelGridParameters(
@@ -673,7 +682,7 @@ using LinearAlgebra
             for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
             spectralTransform!(g)
         end
-        mpg = HollowNest(g1, g2, g3)
+        mpg = PatchChain([g1, g2, g3])
         multiGridTransform!(mpg)
 
         pts2 = getGridpoints(g2)
@@ -683,7 +692,7 @@ using LinearAlgebra
 
     @testset "Cubic exactness: primary l_q=0, secondary l_q=0" begin
         f(x) = x^3 - 2x^2 + x - 1
-        err = _run_mixed_lq_hollow(f, 10, 20, 0.0, 0.0)
+        err = _run_mixed_lq_chain(f, 10, 20, 0.0, 0.0)
         @test err < 1e-8
     end
 
@@ -691,20 +700,20 @@ using LinearAlgebra
         # Primary provides exact coefficients; secondary l_q is irrelevant
         # for cubics (null space of third-derivative penalty)
         f(x) = x^3 - 2x^2 + x - 1
-        err = _run_mixed_lq_hollow(f, 10, 20, 0.0, 2.0)
+        err = _run_mixed_lq_chain(f, 10, 20, 0.0, 2.0)
         @test err < 1e-8
     end
 
     @testset "Cubic error: primary l_q=2, secondary l_q=0" begin
         # Primary l_q=2 shifts coefficients; coupling propagates the error
         f(x) = x^3 - 2x^2 + x - 1
-        err = _run_mixed_lq_hollow(f, 10, 20, 2.0, 0.0)
+        err = _run_mixed_lq_chain(f, 10, 20, 2.0, 0.0)
         @test err > 0.1  # Large error from primary smoothing
     end
 
     @testset "Cubic error: primary l_q=2, secondary l_q=2" begin
         f(x) = x^3 - 2x^2 + x - 1
-        err = _run_mixed_lq_hollow(f, 10, 20, 2.0, 2.0)
+        err = _run_mixed_lq_chain(f, 10, 20, 2.0, 2.0)
         @test err > 0.1  # Large error from primary smoothing
     end
 
@@ -714,7 +723,7 @@ using LinearAlgebra
         # which is zero for quadratics). Exact for all l_q values.
         f(x) = x^2 - 3x + 7
         for (lq_p, lq_s) in [(0.0, 0.0), (0.0, 2.0), (2.0, 0.0), (2.0, 2.0)]
-            err = _run_mixed_lq_hollow(f, 10, 20, lq_p, lq_s)
+            err = _run_mixed_lq_chain(f, 10, 20, lq_p, lq_s)
             @test err < 1e-10
         end
     end
@@ -723,9 +732,9 @@ using LinearAlgebra
         # Even for non-polynomial functions, primary l_q=0 ensures accurate
         # coupling. Secondary l_q doesn't affect coupling accuracy.
         f(x) = sin(2π * x / 30.0) + 1.0
-        err_00 = _run_mixed_lq_hollow(f, 10, 20, 0.0, 0.0)
-        err_02 = _run_mixed_lq_hollow(f, 10, 20, 0.0, 2.0)
-        err_20 = _run_mixed_lq_hollow(f, 10, 20, 2.0, 0.0)
+        err_00 = _run_mixed_lq_chain(f, 10, 20, 0.0, 0.0)
+        err_02 = _run_mixed_lq_chain(f, 10, 20, 0.0, 2.0)
+        err_20 = _run_mixed_lq_chain(f, 10, 20, 2.0, 0.0)
 
         # Primary l_q=0: coupling error is at the level of quadrature error
         @test err_00 < 1e-4
@@ -756,7 +765,7 @@ using LinearAlgebra
             spectralTransform!(g)
         end
 
-        mpg = InteriorNest(g_coarse, g_fine)
+        mpg = PatchEmbedded([g_coarse, g_fine])
         multiGridTransform!(mpg)
 
         pts_f = getGridpoints(g_fine)
@@ -893,6 +902,304 @@ using LinearAlgebra
         # Primary l_q=0 gives exact i-coupling; j-direction R0 with 5 cells
         # still has limited accuracy but much better than l_q=2 primary
         @test max_err < 1e-3
+    end
+
+    # ── PatchChain: multi-grid chains ──────────────────────────────────────
+
+    @testset "PatchChain rejects single grid" begin
+        gp = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=10.0, num_cells=10,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        g = createGrid(gp)
+        @test_throws ArgumentError PatchChain([g])
+    end
+
+    @testset "PatchChain 7-grid asymmetric: 8-4-2-1-2-4-8 DX" begin
+        f(x) = 3x + 7  # Linear for exact test
+        lq = Dict("u" => 0.0)
+
+        # Build 7 grids: DX = 8, 4, 2, 1, 2, 4, 8
+        # Domain: [0,80] [80,120] [120,140] [140,150] [150,170] [170,210] [210,290]
+        configs = [
+            (0.0,   80.0,  10),  # DX=8
+            (80.0,  120.0, 10),  # DX=4
+            (120.0, 140.0, 10),  # DX=2
+            (140.0, 150.0, 10),  # DX=1
+            (150.0, 170.0, 10),  # DX=2
+            (170.0, 210.0, 10),  # DX=4
+            (210.0, 290.0, 10),  # DX=8
+        ]
+
+        # BCs: ends are R0, interfaces are R3X (secondary side) or R0 (primary side)
+        # Grid 1 (DX=8): R0 left, R0 right (primary to grid 2)
+        # Grid 2 (DX=4): R3X left (from grid 1), R0 right (primary to grid 3)
+        # Grid 3 (DX=2): R3X left (from grid 2), R0 right (primary to grid 4)
+        # Grid 4 (DX=1): R3X left (from grid 3), R3X right (from grid 5)
+        # Grid 5 (DX=2): R0 left (primary to grid 4), R3X right (from grid 6)
+        # Grid 6 (DX=4): R0 left (primary to grid 5), R3X right (from grid 7)
+        # Grid 7 (DX=8): R0 left (primary to grid 6), R0 right
+        bcl_specs = [CubicBSpline.R0, CubicBSpline.R3X, CubicBSpline.R3X,
+                     CubicBSpline.R3X, CubicBSpline.R0, CubicBSpline.R0, CubicBSpline.R0]
+        bcr_specs = [CubicBSpline.R0, CubicBSpline.R0, CubicBSpline.R0,
+                     CubicBSpline.R3X, CubicBSpline.R3X, CubicBSpline.R3X, CubicBSpline.R0]
+
+        grids = SpringsteelGrid[]
+        for (k, (imin, imax, nc)) in enumerate(configs)
+            gp = SpringsteelGridParameters(
+                geometry="R", iMin=imin, iMax=imax, num_cells=nc, l_q=lq,
+                BCL=Dict("u" => bcl_specs[k]), BCR=Dict("u" => bcr_specs[k]),
+                vars=Dict("u" => 1))
+            push!(grids, createGrid(gp))
+        end
+
+        for g in grids
+            pts = getGridpoints(g)
+            for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchChain(grids)
+        @test length(mpg.interfaces) == 6
+        @test length(mpg.transform_order) == 4  # 4 layers: DX=8 → DX=4 → DX=2 → DX=1
+
+        multiGridTransform!(mpg)
+
+        # All grids should reproduce linear function exactly
+        for (k, g) in enumerate(grids)
+            pts = getGridpoints(g)
+            max_err = maximum(abs(g.physical[i, 1, 1] - f(pts[i])) for i in eachindex(pts))
+            @test max_err < 1e-10
+        end
+    end
+
+    @testset "PatchChain 7-grid cubic exactness with l_q=0" begin
+        f(x) = x^3 - 2x^2 + x - 1
+        lq = Dict("u" => 0.0)
+
+        configs = [
+            (0.0,   80.0,  10),
+            (80.0,  120.0, 10),
+            (120.0, 140.0, 10),
+            (140.0, 150.0, 10),
+            (150.0, 170.0, 10),
+            (170.0, 210.0, 10),
+            (210.0, 290.0, 10),
+        ]
+        bcl_specs = [CubicBSpline.R0, CubicBSpline.R3X, CubicBSpline.R3X,
+                     CubicBSpline.R3X, CubicBSpline.R0, CubicBSpline.R0, CubicBSpline.R0]
+        bcr_specs = [CubicBSpline.R0, CubicBSpline.R0, CubicBSpline.R0,
+                     CubicBSpline.R3X, CubicBSpline.R3X, CubicBSpline.R3X, CubicBSpline.R0]
+
+        grids = SpringsteelGrid[]
+        for (k, (imin, imax, nc)) in enumerate(configs)
+            gp = SpringsteelGridParameters(
+                geometry="R", iMin=imin, iMax=imax, num_cells=nc, l_q=lq,
+                BCL=Dict("u" => bcl_specs[k]), BCR=Dict("u" => bcr_specs[k]),
+                vars=Dict("u" => 1))
+            push!(grids, createGrid(gp))
+        end
+
+        for g in grids
+            pts = getGridpoints(g)
+            for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchChain(grids)
+        multiGridTransform!(mpg)
+
+        # All grids should reproduce cubic with l_q=0
+        for g in grids
+            pts = getGridpoints(g)
+            max_err = maximum(abs(g.physical[i, 1, 1] - f(pts[i])) for i in eachindex(pts))
+            @test max_err < 1e-6
+        end
+    end
+
+    @testset "PatchChain 1:1 domain decomposition" begin
+        f(x) = sin(2π * x / 20.0) + 1.0
+
+        # Two grids with same resolution, domain [0,10] and [10,20]
+        gp1 = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=10.0, num_cells=20,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=20.0, num_cells=20,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        for (g, pts) in [(g1, getGridpoints(g1)), (g2, getGridpoints(g2))]
+            for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchChain([g1, g2])
+        @test length(mpg.interfaces) == 1
+        multiGridTransform!(mpg)
+
+        # Compare against single-grid result
+        gp_single = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=20.0, num_cells=20,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        g_single = createGrid(gp_single)
+        pts_s = getGridpoints(g_single)
+        for i in eachindex(pts_s); g_single.physical[i, 1, 1] = f(pts_s[i]); end
+        spectralTransform!(g_single); gridTransform!(g_single)
+
+        single_err = maximum(abs(g_single.physical[i, 1, 1] - f(pts_s[i])) for i in eachindex(pts_s))
+        pts2 = getGridpoints(g2)
+        coupled_err = maximum(abs(g2.physical[i, 1, 1] - f(pts2[i])) for i in eachindex(pts2))
+
+        # 1:1 coupling error should be comparable to single-grid
+        # (with default l_q, smoothing amplifies slightly through interface)
+        @test coupled_err < 100 * single_err
+    end
+
+    @testset "PatchChain mixed 1:1 and 2:1" begin
+        f(x) = 2x + 3  # Linear for exact test
+
+        # 3 grids: [0,10] DX=1, [10,20] DX=1 (1:1), [20,25] DX=0.5 (2:1)
+        gp1 = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=10.0, num_cells=10,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=20.0, num_cells=10,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp3 = SpringsteelGridParameters(
+            geometry="R", iMin=20.0, iMax=25.0, num_cells=10,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2); g3 = createGrid(gp3)
+        for (g, pts) in [(g1, getGridpoints(g1)), (g2, getGridpoints(g2)), (g3, getGridpoints(g3))]
+            for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchChain([g1, g2, g3])
+        @test length(mpg.interfaces) == 2
+        multiGridTransform!(mpg)
+
+        # Linear should be exact on all grids
+        for g in [g1, g2, g3]
+            pts = getGridpoints(g)
+            max_err = maximum(abs(g.physical[i, 1, 1] - f(pts[i])) for i in eachindex(pts))
+            @test max_err < 1e-10
+        end
+    end
+
+    # ── PatchEmbedded: multi-level embedding ───────────────────────────────
+
+    @testset "PatchEmbedded rejects single grid" begin
+        gp = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=30.0, num_cells=30,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        g = createGrid(gp)
+        @test_throws ArgumentError PatchEmbedded([g])
+    end
+
+    @testset "PatchEmbedded rejects 1:1 ratio" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=30.0, num_cells=30,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=20.0, num_cells=10,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R3X),
+            vars=Dict("u" => 1))
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        @test_throws ArgumentError PatchEmbedded([g1, g2])
+    end
+
+    @testset "PatchEmbedded 3-level nesting" begin
+        f(x) = 2x + 1  # Linear for exact test
+        lq = Dict("u" => 0.0)
+
+        # Outer: [0, 30], 30 cells (DX=1.0)
+        gp_outer = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=30.0, num_cells=30, l_q=lq,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        # Mid: [10, 20], 20 cells (DX=0.5)
+        gp_mid = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=20.0, num_cells=20, l_q=lq,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R3X),
+            vars=Dict("u" => 1))
+        # Inner: [13, 17], 16 cells (DX=0.25)
+        gp_inner = SpringsteelGridParameters(
+            geometry="R", iMin=13.0, iMax=17.0, num_cells=16, l_q=lq,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R3X),
+            vars=Dict("u" => 1))
+
+        g_outer = createGrid(gp_outer)
+        g_mid = createGrid(gp_mid)
+        g_inner = createGrid(gp_inner)
+
+        for (g, pts) in [(g_outer, getGridpoints(g_outer)),
+                         (g_mid, getGridpoints(g_mid)),
+                         (g_inner, getGridpoints(g_inner))]
+            for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchEmbedded([g_outer, g_mid, g_inner])
+        @test length(mpg.interfaces) == 4  # 2 per level
+        @test length(mpg.transform_order) == 3  # outer → mid → inner
+
+        multiGridTransform!(mpg)
+
+        # All levels should reproduce linear exactly
+        for g in [g_outer, g_mid, g_inner]
+            pts = getGridpoints(g)
+            max_err = maximum(abs(g.physical[i, 1, 1] - f(pts[i])) for i in eachindex(pts))
+            @test max_err < 1e-10
+        end
+    end
+
+    @testset "PatchEmbedded 3-level cubic exactness with l_q=0" begin
+        f(x) = x^3 - 2x^2 + x - 1
+        lq = Dict("u" => 0.0)
+
+        gp_outer = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=30.0, num_cells=30, l_q=lq,
+            BCL=Dict("u" => CubicBSpline.R0), BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp_mid = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=20.0, num_cells=20, l_q=lq,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R3X),
+            vars=Dict("u" => 1))
+        gp_inner = SpringsteelGridParameters(
+            geometry="R", iMin=13.0, iMax=17.0, num_cells=16, l_q=lq,
+            BCL=Dict("u" => CubicBSpline.R3X), BCR=Dict("u" => CubicBSpline.R3X),
+            vars=Dict("u" => 1))
+
+        g_outer = createGrid(gp_outer)
+        g_mid = createGrid(gp_mid)
+        g_inner = createGrid(gp_inner)
+
+        for (g, pts) in [(g_outer, getGridpoints(g_outer)),
+                         (g_mid, getGridpoints(g_mid)),
+                         (g_inner, getGridpoints(g_inner))]
+            for i in eachindex(pts); g.physical[i, 1, 1] = f(pts[i]); end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchEmbedded([g_outer, g_mid, g_inner])
+        multiGridTransform!(mpg)
+
+        # Cubic with l_q=0 should be near machine precision
+        for g in [g_outer, g_mid, g_inner]
+            pts = getGridpoints(g)
+            max_err = maximum(abs(g.physical[i, 1, 1] - f(pts[i])) for i in eachindex(pts))
+            @test max_err < 1e-6
+        end
     end
 
 end
