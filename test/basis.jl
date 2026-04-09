@@ -1212,6 +1212,92 @@
             @test uint_c == uint_g
         end
 
+        @testset "dct_matrix properties" begin
+            N = 8
+            M = Chebyshev.dct_matrix(N)
+            @test size(M) == (N, N)
+            # First row (t=0): 2*cos((j-1)*0) = 2, endpoint scaling halves columns 1 & N → 1, 2, 2, ..., 2, 1
+            @test M[1, 1] ≈ 1.0
+            @test M[1, N] ≈ 1.0
+            @test all(M[1, 2:N-1] .≈ 2.0)
+            # Last row (t=π): 2*cos((j-1)*π) = 2*(-1)^(j-1); endpoints halved
+            @test M[N, 1] ≈ 1.0
+            @test M[N, 2] ≈ -2.0
+            @test M[N, N] ≈ ((-1.0)^(N-1))
+            # First column is constant (1.0 after halving) for all rows
+            @test all(M[:, 1] .≈ 1.0)
+        end
+
+        @testset "dct_1st_derivative against analytic sin(πz/L)" begin
+            # Use Chebyshev grid and compare spectral 1st derivative matrix
+            # applied to A-coefficients against analytic derivative.
+            L = 2.0
+            N = 33
+            cp = Chebyshev.ChebyshevParameters(zmin=0.0, zmax=L, zDim=N, bDim=N,
+                                                 BCB=Chebyshev.R0, BCT=Chebyshev.R0)
+            col = Chebyshev.Chebyshev1D(cp)
+            f_vals = sin.(π .* col.mishPoints ./ L)
+            col.uMish .= f_vals
+            Chebyshev.CBtransform!(col)
+            Chebyshev.CAtransform!(col)
+
+            D1 = Chebyshev.dct_1st_derivative(N, L)
+            @test size(D1) == (N, N)
+            df_spec = D1 * col.a
+            df_exact = (π/L) .* cos.(π .* col.mishPoints ./ L)
+            @test maximum(abs.(df_spec .- df_exact)) < 1e-8
+        end
+
+        @testset "dct_2nd_derivative against analytic sin(πz/L)" begin
+            L = 2.0
+            N = 33
+            cp = Chebyshev.ChebyshevParameters(zmin=0.0, zmax=L, zDim=N, bDim=N,
+                                                 BCB=Chebyshev.R0, BCT=Chebyshev.R0)
+            col = Chebyshev.Chebyshev1D(cp)
+            f_vals = sin.(π .* col.mishPoints ./ L)
+            col.uMish .= f_vals
+            Chebyshev.CBtransform!(col)
+            Chebyshev.CAtransform!(col)
+
+            D2 = Chebyshev.dct_2nd_derivative(N, L)
+            @test size(D2) == (N, N)
+            d2f_spec = D2 * col.a
+            d2f_exact = -(π/L)^2 .* sin.(π .* col.mishPoints ./ L)
+            @test maximum(abs.(d2f_spec .- d2f_exact)) < 1e-6
+        end
+
+        @testset "CItransform_matrix evaluates at arbitrary points" begin
+            # Verify CItransform_matrix matches a round-trip CB/CA/CI transform at arbitrary
+            # points by comparing against transforming a known smooth field and using
+            # CIxtransform for the first derivative.
+            cp = Chebyshev.ChebyshevParameters(zmin=0.0, zmax=Float64(π), zDim=33, bDim=33,
+                                                 BCB=Chebyshev.R0, BCT=Chebyshev.R0)
+            col = Chebyshev.Chebyshev1D(cp)
+            col.uMish .= sin.(2 .* col.mishPoints)
+            Chebyshev.CBtransform!(col)
+            Chebyshev.CAtransform!(col)
+
+            # At mishPoints, M0 * a should recover the original values.
+            M0_mish = Chebyshev.CItransform_matrix(col, col.mishPoints, 0)
+            @test size(M0_mish) == (cp.zDim, cp.zDim)
+            vals_mish = M0_mish * col.a
+            @test maximum(abs.(vals_mish .- sin.(2 .* col.mishPoints))) < 1e-10
+
+            # At arbitrary interior points, M0 * a should match sin(2z) closely.
+            zpts = [0.3, 0.8, 1.5, 2.2, 2.9]
+            M0 = Chebyshev.CItransform_matrix(col, zpts, 0)
+            M1 = Chebyshev.CItransform_matrix(col, zpts, 1)
+            @test size(M0) == (length(zpts), cp.zDim)
+            @test size(M1) == (length(zpts), cp.zDim)
+
+            vals = M0 * col.a
+            @test maximum(abs.(vals .- sin.(2 .* zpts))) < 1e-10
+
+            # First derivative: analytic d/dz sin(2z) = 2 cos(2z).
+            ders = M1 * col.a
+            @test maximum(abs.(ders .- 2 .* cos.(2 .* zpts))) < 1e-8
+        end
+
     end  # Chebyshev Tests
 
     @testset "Basis Interface" begin

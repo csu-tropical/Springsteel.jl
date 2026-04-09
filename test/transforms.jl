@@ -2075,6 +2075,105 @@
 
     end  # Spherical Transforms
 
+    @testset "num_deriv_slots dispatch" begin
+        # 1D (R_Grid): NoBasisArray × NoBasisArray → 3 slots
+        gp_1d = SpringsteelGridParameters(
+            geometry = "R",
+            num_cells = 4,
+            iMin = 0.0, iMax = 1.0,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0))
+        grid_1d = createGrid(gp_1d)
+        @test size(grid_1d.physical, 3) == 3
+        @test Springsteel.num_deriv_slots(grid_1d.jbasis, grid_1d.kbasis) == 3
+
+        # 2D active-j spline (RR_Grid): SplineBasisArray × NoBasisArray → 5 slots
+        gp_rr = SpringsteelGridParameters(
+            geometry = "RR",
+            num_cells = 4,
+            iMin = 0.0, iMax = 1.0,
+            jMin = 0.0, jMax = 1.0, jDim = 12,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCU = Dict("u" => CubicBSpline.R0),
+            BCD = Dict("u" => CubicBSpline.R0))
+        grid_rr = createGrid(gp_rr)
+        @test size(grid_rr.physical, 3) == 5
+        @test grid_rr.jbasis isa Springsteel.SplineBasisArray
+        @test grid_rr.kbasis isa Springsteel.NoBasisArray
+        @test Springsteel.num_deriv_slots(grid_rr.jbasis, grid_rr.kbasis) == 5
+
+        # 2D active-j Fourier (RL_Grid): FourierBasisArray × NoBasisArray → 5 slots
+        gp_rl = SpringsteelGridParameters(
+            geometry = "RL",
+            iMin = 0.0, iMax = 20.0,
+            num_cells = 4,
+            patchOffsetL = 0,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0))
+        grid_rl = createGrid(gp_rl)
+        @test size(grid_rl.physical, 3) == 5
+        @test grid_rl.jbasis isa Springsteel.FourierBasisArray
+        @test grid_rl.kbasis isa Springsteel.NoBasisArray
+        @test Springsteel.num_deriv_slots(grid_rl.jbasis, grid_rl.kbasis) == 5
+
+        # 2D active-k (RZ_Grid): NoBasisArray × ChebyshevBasisArray → 5 slots
+        gp_rz = SpringsteelGridParameters(
+            geometry = "RZ",
+            num_cells = 4,
+            iMin = 0.0, iMax = 1.0,
+            kMin = 0.0, kMax = 1.0, kDim = 8,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => Chebyshev.R0),
+            BCT = Dict("u" => Chebyshev.R0))
+        grid_rz = createGrid(gp_rz)
+        @test size(grid_rz.physical, 3) == 5
+        @test grid_rz.jbasis isa Springsteel.NoBasisArray
+        @test grid_rz.kbasis isa Springsteel.ChebyshevBasisArray
+        @test Springsteel.num_deriv_slots(grid_rz.jbasis, grid_rz.kbasis) == 5
+
+        # 3D (RLZ_Grid): FourierBasisArray × ChebyshevBasisArray → 7 slots
+        gp_rlz = SpringsteelGridParameters(
+            geometry = "RLZ",
+            num_cells = 3,
+            iMin = 0.0, iMax = 20.0,
+            patchOffsetL = 0,
+            kMin = 0.0, kMax = 10.0, kDim = 8,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => Chebyshev.R0),
+            BCT = Dict("u" => Chebyshev.R0))
+        grid_rlz = createGrid(gp_rlz)
+        @test size(grid_rlz.physical, 3) == 7
+        @test grid_rlz.jbasis isa Springsteel.FourierBasisArray
+        @test grid_rlz.kbasis isa Springsteel.ChebyshevBasisArray
+        @test Springsteel.num_deriv_slots(grid_rlz.jbasis, grid_rlz.kbasis) == 7
+
+        # 3D (RRR_Grid): SplineBasisArray × SplineBasisArray → 7 slots
+        gp_rrr = SpringsteelGridParameters(
+            geometry = "RRR",
+            num_cells = 3,
+            iMin = 0.0, iMax = 1.0,
+            jMin = 0.0, jMax = 1.0,
+            kMin = 0.0, kMax = 1.0,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCU = Dict("u" => CubicBSpline.R0),
+            BCD = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => CubicBSpline.R0),
+            BCT = Dict("u" => CubicBSpline.R0))
+        grid_rrr = createGrid(gp_rrr)
+        @test size(grid_rrr.physical, 3) == 7
+        @test Springsteel.num_deriv_slots(grid_rrr.jbasis, grid_rrr.kbasis) == 7
+    end  # num_deriv_slots dispatch
+
     # ────────────────────────────────────────────────────────────────────────
     # SpringsteelGrid Tiling
     # ────────────────────────────────────────────────────────────────────────

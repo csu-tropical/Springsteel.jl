@@ -795,6 +795,85 @@ using Springsteel.Chebyshev
             @test !isnan(result_fill[2, 1])
         end
 
+        @testset "RL axisymmetric" begin
+            # Axisymmetric function f(r) = sin(pi*r/rMax) — independent of λ
+            rMin, rMax = 0.0, 40.0
+            gp = SpringsteelGridParameters(
+                geometry = "RL",
+                iMin = rMin, iMax = rMax,
+                num_cells = 10,
+                patchOffsetL = 0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            mish_pts = getGridpoints(grid)
+            for i in 1:size(mish_pts, 1)
+                r_val = mish_pts[i, 1]
+                grid.physical[i, 1, 1] = sin(π * r_val / rMax)
+            end
+            spectralTransform!(grid)
+
+            # Evaluate at a few known (r, λ) points
+            test_pts = Float64[
+                10.0  0.0;
+                15.0  π/4;
+                20.0  π/2;
+                25.0  π;
+                30.0  3π/2;
+                 5.0  0.3;
+            ]
+            result = Springsteel.evaluate_unstructured(grid, test_pts)
+            @test size(result) == (6, 1)
+            for i in 1:size(test_pts, 1)
+                r_val = test_pts[i, 1]
+                expected = sin(π * r_val / rMax)
+                @test result[i, 1] ≈ expected atol=0.05
+            end
+        end
+
+        @testset "RLZ axisymmetric" begin
+            # f(r, λ, z) = sin(pi*r/rMax) — independent of λ and z
+            rMin, rMax = 0.0, 30.0
+            zMin, zMax = 0.0, 10.0
+            gp = SpringsteelGridParameters(
+                geometry = "RLZ",
+                iMin = rMin, iMax = rMax,
+                num_cells = 8,
+                patchOffsetL = 0,
+                kMin = zMin, kMax = zMax, kDim = 10,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0),
+                BCT = Dict("u" => Chebyshev.R0))
+            grid = createGrid(gp)
+
+            mish_pts = getGridpoints(grid)
+            for i in 1:size(mish_pts, 1)
+                r_val = mish_pts[i, 1]
+                grid.physical[i, 1, 1] = sin(π * r_val / rMax)
+            end
+            spectralTransform!(grid)
+
+            # Evaluate at a few known (r, λ, z) points
+            test_pts = Float64[
+                 5.0  0.0   5.0;
+                10.0  π/4   2.0;
+                15.0  π/2   7.0;
+                20.0  π     4.0;
+                25.0  3π/2  8.0;
+            ]
+            result = Springsteel.evaluate_unstructured(grid, test_pts)
+            @test size(result) == (5, 1)
+            for i in 1:size(test_pts, 1)
+                r_val = test_pts[i, 1]
+                expected = sin(π * r_val / rMax)
+                @test result[i, 1] ≈ expected atol=0.05
+            end
+        end
+
     end  # "evaluate_unstructured"
 
     # ════════════════════════════════════════════════════════════════════════
@@ -992,6 +1071,49 @@ using Springsteel.Chebyshev
 
             # Without coordinate_map, cross-geometry should fail
             @test_throws ArgumentError interpolate_to_grid(source, target)
+        end
+
+        @testset "RL -> RL identity map" begin
+            # Same-geometry RL→RL with explicit identity coordinate_map
+            # exercises the unstructured path with cross-geometry routing.
+            rMin, rMax = 5.0, 35.0
+            gp_src = SpringsteelGridParameters(
+                geometry = "RL",
+                iMin = rMin, iMax = rMax,
+                num_cells = 8,
+                patchOffsetL = 0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            source = createGrid(gp_src)
+
+            mish_pts = getGridpoints(source)
+            for i in 1:size(mish_pts, 1)
+                r_val = mish_pts[i, 1]
+                source.physical[i, 1, 1] = sin(π * (r_val - rMin) / (rMax - rMin))
+            end
+            spectralTransform!(source)
+
+            gp_tgt = SpringsteelGridParameters(
+                geometry = "RL",
+                iMin = 10.0, iMax = 30.0,
+                num_cells = 6,
+                patchOffsetL = 0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            target = createGrid(gp_tgt)
+
+            identity_rl(r, λ) = (r, λ)
+            result = interpolate_to_grid(source, target; coordinate_map=identity_rl)
+
+            # Check accuracy against the analytic axisymmetric function
+            t_pts = getGridpoints(target)
+            for i in 1:size(t_pts, 1)
+                r_val = t_pts[i, 1]
+                expected = sin(π * (r_val - rMin) / (rMax - rMin))
+                @test result[i, 1] ≈ expected atol=0.05
+            end
         end
 
     end  # "Cross-geometry interpolation"

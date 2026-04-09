@@ -1099,6 +1099,33 @@ using LinearAlgebra
             @test ob2.options["maxiters"] == 500
         end
 
+        @testset "solve() 1D Fourier (L grid) periodic BVP" begin
+            # Solve u'' - u = f on [0, 2π] with periodic BCs.
+            # Analytic: u(x) = sin(2x) + cos(3x), u''(x) = -4 sin(2x) - 9 cos(3x)
+            # f = u'' - u = -5 sin(2x) - 10 cos(3x)
+            # Subtracting the 0th-order term makes the operator non-singular
+            # (pure d²/dx² has a zero eigenvalue on the constant mode).
+            gp = SpringsteelGridParameters(
+                geometry = "L",
+                iMin = 0.0, iMax = 2π, iDim = 64, b_iDim = 21,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => Fourier.PERIODIC),
+                BCR = Dict("u" => Fourier.PERIODIC),
+                max_wavenumber = Dict("default" => 10))
+            grid = createGrid(gp)
+            pts = solver_gridpoints(grid, "u")
+
+            L = assemble_from_equation(grid, "u"; d_ii=1.0, d0=-1.0)
+            f = -5.0 .* sin.(2 .* pts) .- 10.0 .* cos.(3 .* pts)
+
+            prob = SpringsteelProblem(grid; operator=L, rhs=f)
+            sol = solve(prob)
+
+            u_analytic = sin.(2 .* pts) .+ cos.(3 .* pts)
+            @test sol.converged == true
+            @test maximum(abs.(sol.physical .- u_analytic)) < 1e-8
+        end
+
         @testset "error without Optimization.jl loaded" begin
             gp = SpringsteelGridParameters(
                 geometry = "Z",
