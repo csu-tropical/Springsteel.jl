@@ -769,6 +769,98 @@ using SparseArrays
         @test g2.physical[:, 1, 1] ≈ g2_ref.physical[:, 1, 1] atol=1e-12
     end
 
+    # ── SL tiled chain ───────────────────────────────────────────────────
+
+    @testset "SL tiled chain: non-axisymmetric tiled vs non-tiled" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SL", iMin=0.0, iMax=Float64(π)/2, num_cells=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SL", iMin=Float64(π)/2, iMax=Float64(π), num_cells=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        # Non-tiled reference
+        g1_ref = createGrid(gp1); g2_ref = createGrid(gp2)
+        pts1 = getGridpoints(g1_ref); pts2 = getGridpoints(g2_ref)
+        for i in 1:size(pts1, 1)
+            g1_ref.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2_ref.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2])
+        end
+        spectralTransform!(g1_ref); spectralTransform!(g2_ref)
+        mpg_ref = PatchChain([g1_ref, g2_ref])
+        multiGridTransform!(mpg_ref)
+
+        # Tiled version
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2])
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        tiles1 = calcTileSizes(g1, 4); @test length(tiles1) == 4
+        tiles2 = calcTileSizes(g2, 4); @test length(tiles2) == 4
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        @test g2.physical[:, 1, 1] ≈ g2_ref.physical[:, 1, 1] atol=1e-12
+    end
+
+    # ── SLZ tiled chain ──────────────────────────────────────────────────
+
+    @testset "SLZ tiled chain: non-axisymmetric tiled vs non-tiled" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=0.0, iMax=Float64(π)/2, num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=Float64(π)/2, iMax=Float64(π), num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        # Non-tiled reference
+        g1_ref = createGrid(gp1); g2_ref = createGrid(gp2)
+        pts1 = getGridpoints(g1_ref); pts2 = getGridpoints(g2_ref)
+        for i in 1:size(pts1, 1)
+            g1_ref.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2_ref.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1_ref); spectralTransform!(g2_ref)
+        mpg_ref = PatchChain([g1_ref, g2_ref])
+        multiGridTransform!(mpg_ref)
+
+        # Tiled version
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        tiles1 = calcTileSizes(g1, 4); @test length(tiles1) == 4
+        tiles2 = calcTileSizes(g2, 4); @test length(tiles2) == 4
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        @test g2.physical[:, 1, 1] ≈ g2_ref.physical[:, 1, 1] atol=1e-12
+    end
+
     # ── sumSpectralTile! / setSpectralTile! on multipatch grids ──────────
 
     @testset "Spectral tile accumulation on secondary patch" begin

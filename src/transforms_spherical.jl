@@ -218,10 +218,15 @@ function gridTransform(grid::_SLGrid, physical::Array{real}, spectral::Array{rea
     spline_r  = zeros(Float64, iDim, kDim * 2 + 1)
     spline_rr = zeros(Float64, iDim, kDim * 2 + 1)
 
+    has_wn_ahat = _has_wavenumber_ahat(grid)
+
     for v in values(grid.params.vars)
 
         # ── Wavenumber 0 ─────────────────────────────────────────────────────
         grid.ibasis.data[1, v].b .= spectral[1:b_iDim, v]
+        if has_wn_ahat
+            grid.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(grid, v, 0)
+        end
         SAtransform!(grid.ibasis.data[1, v])
         SItransform!(grid.ibasis.data[1, v])
         spline_r[:, 1]  .= SIxtransform(grid.ibasis.data[1, v])
@@ -237,6 +242,9 @@ function gridTransform(grid::_SLGrid, physical::Array{real}, spectral::Array{rea
             p1 = ((p - 1) * b_iDim) + 1
             p2 = p * b_iDim
             grid.ibasis.data[2, v].b .= spectral[p1:p2, v]
+            if has_wn_ahat
+                grid.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(grid, v, p)
+            end
             SAtransform!(grid.ibasis.data[2, v])
             SItransform!(grid.ibasis.data[2, v])
             spline_r[:, p]  .= SIxtransform(grid.ibasis.data[2, v])
@@ -245,6 +253,9 @@ function gridTransform(grid::_SLGrid, physical::Array{real}, spectral::Array{rea
             p1 = (p * b_iDim) + 1
             p2 = (p + 1) * b_iDim
             grid.ibasis.data[3, v].b .= spectral[p1:p2, v]
+            if has_wn_ahat
+                grid.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(grid, v, p + 1)
+            end
             SAtransform!(grid.ibasis.data[3, v])
             SItransform!(grid.ibasis.data[3, v])
             spline_r[:, p + 1]  .= SIxtransform(grid.ibasis.data[3, v])
@@ -542,6 +553,9 @@ function gridTransform(grid::_SLZGrid, physical::Array{real}, spectral::Array{re
     # Spline evaluation buffer [iDim, 3]: slot 1=k0, 2=k_real, 3=k_imag
     splineBuffer = zeros(Float64, iDim, 3)
 
+    has_wn_ahat = _has_wavenumber_ahat(grid)
+    slots_per_z = 1 + 2 * kDim_wn
+
     for v in values(grid.params.vars)
         for dr in 0:2
 
@@ -549,9 +563,13 @@ function gridTransform(grid::_SLZGrid, physical::Array{real}, spectral::Array{re
             for z_b in 1:b_kDim
                 r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
                 r2 = r1 + b_iDim - 1
+                z_slot_base = (z_b - 1) * slots_per_z
 
                 # Wavenumber 0
                 grid.ibasis.data[1, v].b .= spectral[r1:r2, v]
+                if has_wn_ahat
+                    grid.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 0)
+                end
                 SAtransform!(grid.ibasis.data[1, v])
                 if dr == 0
                     splineBuffer[:, 1] .= SItransform!(grid.ibasis.data[1, v])
@@ -572,6 +590,9 @@ function gridTransform(grid::_SLZGrid, physical::Array{real}, spectral::Array{re
                     p2 = p1 + b_iDim - 1
 
                     grid.ibasis.data[2, v].b .= spectral[p1:p2, v]
+                    if has_wn_ahat
+                        grid.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p)
+                    end
                     SAtransform!(grid.ibasis.data[2, v])
                     if dr == 0
                         splineBuffer[:, 2] .= SItransform!(grid.ibasis.data[2, v])
@@ -584,6 +605,9 @@ function gridTransform(grid::_SLZGrid, physical::Array{real}, spectral::Array{re
                     p1 = p2 + 1
                     p2 = p1 + b_iDim - 1
                     grid.ibasis.data[3, v].b .= spectral[p1:p2, v]
+                    if has_wn_ahat
+                        grid.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p + 1)
+                    end
                     SAtransform!(grid.ibasis.data[3, v])
                     if dr == 0
                         splineBuffer[:, 3] .= SItransform!(grid.ibasis.data[3, v])

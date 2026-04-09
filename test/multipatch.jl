@@ -1616,4 +1616,195 @@ using LinearAlgebra
         @test max_err < 1e-6
     end
 
+    # ── 2D SL (spherical) multipatch ──────────────────────────────────────
+
+    @testset "SL chain construction" begin
+        # SL: i = colatitude θ ∈ [0, π]
+        # Split at θ = π/2 (equator)
+        gp1 = SpringsteelGridParameters(
+            geometry="SL", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SL", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        mpg = PatchChain([g1, g2])
+        @test length(mpg.interfaces) == 1
+        @test length(mpg.patches) == 2
+    end
+
+    @testset "SL chain axisymmetric: f(θ) = sin(θ)" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SL", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SL", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = sin(pts1[i, 1]); end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = sin(pts2[i, 1]); end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - sin(pts2[i, 1]))
+            for i in 1:size(pts2, 1))
+        @test max_err < 1e-3
+    end
+
+    @testset "SL chain non-axisymmetric: f(θ,λ) = sin(θ)·cos(λ)" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SL", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SL", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2])
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - sin(pts2[i, 1]) * cos(pts2[i, 2]))
+            for i in 1:size(pts2, 1))
+        @test max_err < 0.1
+    end
+
+    # ── 3D SLZ (spherical) multipatch ─────────────────────────────────────
+
+    @testset "SLZ chain construction" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        mpg = PatchChain([g1, g2])
+        @test length(mpg.interfaces) == 1
+        @test length(mpg.patches) == 2
+    end
+
+    @testset "SLZ chain axisymmetric: f(θ) = sin(θ)" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = sin(pts1[i, 1]); end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = sin(pts2[i, 1]); end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - sin(pts2[i, 1]))
+            for i in 1:size(pts2, 1))
+        @test max_err < 1e-3
+    end
+
+    @testset "SLZ chain non-axisymmetric: f(θ,λ) = sin(θ)·cos(λ)" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2])
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - sin(pts2[i, 1]) * cos(pts2[i, 2]))
+            for i in 1:size(pts2, 1))
+        @test max_err < 0.1
+    end
+
+    @testset "SLZ chain full 3D: f(θ,λ,z) = sin(θ)·cos(λ)·z" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SLZ", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3])
+            for i in 1:size(pts2, 1))
+        @test max_err < 1.0
+    end
+
 end
