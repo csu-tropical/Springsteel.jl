@@ -1,6 +1,6 @@
 name = "Springsteel"
 uuid = "66b52f22-0fad-4358-9559-2105d4560aaf"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Michael Bell <mmbell@colostate.edu>"]
 
 [deps]
@@ -16,7 +16,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 SuiteSparse = "4607b0f0-06f3-5cda-b6b1-a6196a1729e9"
 
 [weakdeps]
-Optimization = "7f7a1694-90dd-40f0-9382-eb1f857b2b1e"
+Optimization = "7f7a1694-90dd-40f0-9382-eb1efda571ba"
 
 [extensions]
 SpringsteelOptimizationExt = "Optimization"

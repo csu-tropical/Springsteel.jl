@@ -12,17 +12,34 @@ Springsteel has some limited distributed grid capabilities. The grid can be deco
 
 ### Installation
 
-After cloning this repository, start Julia using Springsteel.jl as the project directory. This can be done on the command line using `julia --project` or set the JULIA_PROJECT environmental variable:
+Springsteel is a registered Julia package. To install, open the Julia REPL, enter Package mode by pressing `]`, and run:
 
-`export JULIA_PROJECT=/path/to/Springsteel.jl`
+```
+pkg> add Springsteel
+```
 
-To install Springsteel, in the REPL, go into Package mode by pressing `]`. You will see the REPL change color and indicate `pkg` mode. 
+Or equivalently from Julia code:
 
-If you are actively developing or modifying Springsteel then you can install the module using `dev /path/to/Springsteel.jl` in `pkg` mode. This will update the module as changes are made to the code. You should see the dependencies being installed, and then the Springsteel package will be precompiled. Exit Package mode with ctrl-C.
+```julia
+using Pkg
+Pkg.add("Springsteel")
+```
 
-If you wish to just install a static version of the latest code, run `activate` to activate the package environment. Then, run `instantiate` to install the necessary dependencies. Exit Package mode with ctrl-C.
+#### Development installation
 
-Test to make sure the precompilation was successful by running `using Springsteel` in the REPL. If everything is successful then you should get no errors and it will just move to a new line.
+If you are actively developing or modifying Springsteel, clone the repository and install in development mode:
+
+```
+git clone https://github.com/csu-tropical/Springsteel.jl.git
+```
+
+Then in the Julia REPL Package mode:
+
+```
+pkg> dev /path/to/Springsteel.jl
+```
+
+This will track your local changes and recompile as needed.
 
 ### Springsteel API
 
