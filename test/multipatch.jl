@@ -1438,4 +1438,182 @@ using LinearAlgebra
         @test ring1.params.yDim > 10 * ring1_no.params.yDim
     end
 
+    # ── 3D RLZ (cylindrical) multipatch ───────────────────────────────────
+
+    @testset "RLZ chain construction" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        mpg = PatchChain([g1, g2])
+        @test length(mpg.interfaces) == 1
+        @test length(mpg.patches) == 2
+    end
+
+    @testset "RLZ chain axisymmetric linear: f(r) = 3r + 7" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        # pts columns: [r, λ, z]
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = 3*pts1[i, 1] + 7; end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = 3*pts2[i, 1] + 7; end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - (3*pts2[i, 1] + 7))
+            for i in 1:size(pts2, 1))
+        @test max_err < 1e-6
+    end
+
+    @testset "RLZ chain z-dependent: f(r,z) = r·z" begin
+        # Axisymmetric but z-varying — tests Chebyshev coupling path
+        gp1 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = pts1[i, 1] * pts1[i, 3]; end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = pts2[i, 1] * pts2[i, 3]; end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - pts2[i, 1] * pts2[i, 3])
+            for i in 1:size(pts2, 1))
+        @test max_err < 0.5
+    end
+
+    @testset "RLZ chain non-axisymmetric: f(r,λ) = r·cos(λ)" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2])
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - pts2[i, 1] * cos(pts2[i, 2]))
+            for i in 1:size(pts2, 1))
+        @test max_err < 0.5
+    end
+
+    @testset "RLZ chain full 3D: f(r,λ,z) = r·cos(λ)·z" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3])
+            for i in 1:size(pts2, 1))
+        @test max_err < 5.0
+    end
+
+    @testset "RLZ coarse-fine chain: 2:1 ratio axisymmetric" begin
+        # DX: 5.0 → 2.5 (exact 2:1)
+        gp1 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLZ", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=6,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = 2*pts1[i, 1] + 5; end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = 2*pts2[i, 1] + 5; end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - (2*pts2[i, 1] + 5))
+            for i in 1:size(pts2, 1))
+        @test max_err < 1e-6
+    end
+
 end

@@ -620,6 +620,9 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
     # Spline evaluation buffer: [iDim, 3] for (k=0, k_real, k_imag) working columns
     splineBuffer = zeros(Float64, iDim, 3)
 
+    has_wn_ahat = _has_wavenumber_ahat(grid)
+    slots_per_z = 1 + 2 * kDim_wn
+
     for v in values(grid.params.vars)
         for dr in 0:2
             # ── Spline + FAtransform stage ────────────────────────────────────
@@ -627,9 +630,13 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
                 # Spectral base offset for this z-coefficient level
                 r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
                 r2 = r1 + b_iDim - 1
+                z_slot_base = (z_b - 1) * slots_per_z
 
                 # Wavenumber 0
                 grid.ibasis.data[1, v].b .= spectral[r1:r2, v]
+                if has_wn_ahat
+                    grid.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 0)
+                end
                 SAtransform!(grid.ibasis.data[1, v])
                 if dr == 0
                     splineBuffer[:, 1] .= SItransform!(grid.ibasis.data[1, v])
@@ -650,6 +657,9 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
                     p2 = p1 + b_iDim - 1
 
                     grid.ibasis.data[2, v].b .= spectral[p1:p2, v]
+                    if has_wn_ahat
+                        grid.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p)
+                    end
                     SAtransform!(grid.ibasis.data[2, v])
                     if dr == 0
                         splineBuffer[:, 2] .= SItransform!(grid.ibasis.data[2, v])
@@ -662,6 +672,9 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
                     p1 = p2 + 1
                     p2 = p1 + b_iDim - 1
                     grid.ibasis.data[3, v].b .= spectral[p1:p2, v]
+                    if has_wn_ahat
+                        grid.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p + 1)
+                    end
                     SAtransform!(grid.ibasis.data[3, v])
                     if dr == 0
                         splineBuffer[:, 3] .= SItransform!(grid.ibasis.data[3, v])

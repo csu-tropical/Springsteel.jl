@@ -33,13 +33,16 @@ function _get_wavenumber_ahat(grid::SpringsteelGrid, v::Int, slot::Int)
 end
 
 """
-    _set_wavenumber_ahat!(grid, v, slot, ahat_vals, kDim)
+    _set_wavenumber_ahat!(grid, v, slot, ahat_vals, n_slots)
 
 Store per-wavenumber ahat for variable `v` at spectral slot `slot`.
-Creates the buffer if it doesn't exist yet.
+Creates the buffer with `n_slots` columns if it doesn't exist yet.
+
+For RL: `n_slots = 2 + 2*kDim` (max slot = 2*kDim+1).
+For RLZ: `n_slots = b_kDim * (1 + 2*kDim)` (Chebyshev levels × wavenumber slots).
 """
 function _set_wavenumber_ahat!(grid::SpringsteelGrid, v::Int, slot::Int,
-                               ahat_vals::Vector{Float64}, kDim::Int)
+                               ahat_vals::Vector{Float64}, n_slots::Int)
     id = objectid(grid)
     if !haskey(_WN_AHAT_REGISTRY, id)
         _WN_AHAT_REGISTRY[id] = Dict{Int, Matrix{Float64}}()
@@ -47,9 +50,7 @@ function _set_wavenumber_ahat!(grid::SpringsteelGrid, v::Int, slot::Int,
     buf = _WN_AHAT_REGISTRY[id]
     if !haskey(buf, v)
         ahat_len = length(ahat_vals)
-        # RL uses p=k*2 for wavenumber k, with slots p (real) and p+1 (imag).
-        # Maximum slot = 2*kDim + 1, so we need 2*kDim + 2 columns (1-indexed).
-        buf[v] = zeros(Float64, ahat_len, 2 + 2 * kDim)
+        buf[v] = zeros(Float64, ahat_len, n_slots)
     end
     buf[v][:, slot + 1] .= ahat_vals
 end
