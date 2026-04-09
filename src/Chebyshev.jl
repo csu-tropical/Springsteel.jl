@@ -150,16 +150,16 @@ See also: [`ChebyshevParameters`](@ref), [`CBtransform`](@ref), [`CAtransform`](
 struct Chebyshev1D
     # Parameters for the column
     params::ChebyshevParameters
-    
+
     # Pre-calculated Chebyshev–Gauss–Lobatto points (extrema of Chebyshev polynomials)
     mishPoints::Vector{real}
-    
+
     # Scalar, vector, or matrix that enforces boundary conditions
     gammaBC::Array{real}
-    
+
     # Measured FFTW Plan
     fftPlan::FFTW.r2rFFTWPlan
-    
+
     # Filter matrix
     filter::Matrix{real}
 
@@ -171,6 +171,11 @@ struct Chebyshev1D
     b::Vector{real}
     a::Vector{real}
     ax::Vector{real}
+    # Scratch buffers for in-place CBtransform!/CAtransform!. _scratch_dct holds
+    # the unfiltered DCT result of length zDim. _scratch_bfill holds the
+    # zero-padded b vector of length zDim used in the BC fold.
+    _scratch_dct::Vector{real}
+    _scratch_bfill::Vector{real}
 end
 
 """
@@ -223,8 +228,13 @@ function Chebyshev1D(cp::ChebyshevParameters)
     # Pre-calculate the filter matrix
     filter = calcFilterMatrix(cp)
 
+    # Scratch buffers for in-place transforms
+    scratch_dct = zeros(real, cp.zDim)
+    scratch_bfill = zeros(real, cp.zDim)
+
     # Construct a 1D Chebyshev column
-    column = Chebyshev1D(cp,mishPoints,gammaBC,fftPlan,filter,uMish,b,a,ax)
+    column = Chebyshev1D(cp,mishPoints,gammaBC,fftPlan,filter,uMish,b,a,ax,
+                         scratch_dct,scratch_bfill)
     return column
 end
 
@@ -334,10 +344,14 @@ function CBtransform(cp::ChebyshevParameters, fftPlan, uMish::Vector{real})
 end
 
 function CBtransform!(column::Chebyshev1D)
-
-    # Do an in-place DCT transform
-    b = (column.fftPlan * column.uMish) ./ (2 * (column.params.zDim -1))
-    column.b .= column.filter * b
+    # In-place forward DCT + filter, using pre-allocated scratch buffers.
+    # _scratch_dct holds the raw DCT output (length zDim); column.b receives
+    # the filtered result (length bDim).
+    mul!(column._scratch_dct, column.fftPlan, column.uMish)
+    scale = 1.0 / (2 * (column.params.zDim - 1))
+    @. column._scratch_dct *= scale
+    mul!(column.b, column.filter, column._scratch_dct)
+    return column.b
 end
 
 function CBtransform(column::Chebyshev1D, uMish::Vector{real})
@@ -386,12 +400,31 @@ function CAtransform(column::Chebyshev1D, b::AbstractVector)
 end
 
 function CAtransform!(column::Chebyshev1D)
-
-    # In place CA transform
-    bfill = [column.b ; zeros(Float64, column.params.zDim-column.params.bDim)]
-    #bfill = column.filter' * column.b
-    a = bfill .+ (column.gammaBC' * bfill)
-    column.a .= a
+    # In-place CA transform using pre-allocated scratch.
+    # bfill = b padded with zeros up to zDim; a = bfill + gammaBC' * bfill.
+    #
+    # gammaBC may be a zero Vector (R0/R0), a rank-1 Vector (simple Neumann),
+    # or a full Matrix (Wang global Neumann method). We dispatch by type to
+    # avoid the matrix-build that would otherwise happen for Vector cases.
+    bfill = column._scratch_bfill
+    bDim = column.params.bDim
+    zDim = column.params.zDim
+    @inbounds for i in 1:bDim
+        bfill[i] = column.b[i]
+    end
+    @inbounds for i in (bDim+1):zDim
+        bfill[i] = 0.0
+    end
+    γ = column.gammaBC
+    if γ isa Matrix
+        # column.a = γ' * bfill, then add bfill in-place
+        mul!(column.a, γ', bfill)
+        @. column.a += bfill
+    else
+        # Vector or scalar gammaBC: fall back to broadcast (one alloc).
+        column.a .= bfill .+ (γ' * bfill)
+    end
+    return column.a
 end
     
 """

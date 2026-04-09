@@ -310,6 +310,13 @@ struct Spline1D
     b::Vector{real}
     a::Vector{real}
     ahat::Vector{real}
+    # Scratch buffers for in-place SAtransform!. Allocated once at construction.
+    # `_scratch_btilde` (length bDim) holds (b - pq·ahat) for the R3X path.
+    # `_scratch_Min`/`_scratch_Mout` (length Minterior) hold the input/output
+    # of the CHOLMOD pqFactor solve in interior space.
+    _scratch_btilde::Vector{real}
+    _scratch_Min::Vector{real}
+    _scratch_Mout::Vector{real}
 end
 
 """
@@ -680,7 +687,14 @@ function Spline1D(sp::SplineParameters)
     a = zeros(real,sp.bDim)
     ahat = zeros(real,sp.bDim)
 
-    spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,uMish,b,a,ahat)
+    # Scratch buffers for in-place SAtransform!.
+    Minterior = size(gammaBC, 1)
+    scratch_btilde = zeros(real, sp.bDim)       # bDim-length: holds b - pq·ahat
+    scratch_Min    = zeros(real, Minterior)     # γ * (b or btilde)
+    scratch_Mout   = zeros(real, Minterior)     # pqFactor \ scratch_Min
+
+    spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,
+                      uMish,b,a,ahat,scratch_btilde,scratch_Min,scratch_Mout)
     return spline
 end
 
@@ -760,9 +774,29 @@ function SBtransform(spline::Spline1D, uMish::Vector{real})
 end
 
 function SBtransform!(spline::Spline1D)
+    # In-place forward transform using the spline's cached quadrature rule.
+    # Avoids the per-call allocation of qpts/qwts by `_quadrature_rule`.
+    sp = spline.params
+    qpts = spline.quadpoints
+    qwts = spline.quadweights
+    Mdim = sp.num_cells + 3
+    fill!(spline.b, 0.0)
 
-    b = SBtransform(spline.params,spline.uMish)
-    spline.b .= b
+    @inbounds for mi = 1:Mdim
+        m = mi - 2
+        for mc = 0:(sp.num_cells - 1)
+            if (mc < (m - 2)) || (mc > (m + 1))
+                continue
+            end
+            for mu = 1:sp.mubar
+                i = mu + (sp.mubar * mc)
+                x = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
+                bm = basis(sp, m, x, 0)
+                spline.b[mi] += sp.DX * qwts[mu] * bm * spline.uMish[i]
+            end
+        end
+    end
+    return spline.b
 end
 
 """
@@ -944,13 +978,33 @@ Return `true` if either boundary condition is R3X (inhomogeneous rank-3).
 _has_r3x(sp::SplineParameters) = haskey(sp.BCL, "R3X") || haskey(sp.BCR, "R3X")
 
 function SAtransform!(spline::Spline1D)
+    # In-place SA transform: writes spline.a from spline.b (and spline.ahat for R3X).
+    # Uses pre-allocated scratch buffers and `mul!`/`ldiv!` for fully in-place ops.
+    # CHOLMOD's 3-arg `ldiv!(x, F, b)` writes the solve result without allocating.
+    #
+    #   Non-R3X path:    a = γ' (PQ \ (γ b))
+    #   R3X path:        a = γ' (PQ \ (γ (b - pq·ahat))) + ahat
+    γ = spline.gammaBC
     if _has_r3x(spline.params)
-        btilde = spline.gammaBC * (spline.b .- (spline.pq * spline.ahat))
-        spline.a .= (spline.gammaBC' * (spline.pqFactor \ btilde)) .+ spline.ahat
+        # _scratch_btilde = b - pq·ahat   (bDim-length)
+        mul!(spline._scratch_btilde, spline.pq, spline.ahat)
+        @. spline._scratch_btilde = spline.b - spline._scratch_btilde
+        # _scratch_Min = γ * _scratch_btilde   (Minterior-length)
+        mul!(spline._scratch_Min, γ, spline._scratch_btilde)
+        # _scratch_Mout = pqFactor \ _scratch_Min   (in-place CHOLMOD solve)
+        ldiv!(spline._scratch_Mout, spline.pqFactor, spline._scratch_Min)
+        # spline.a = γ' * _scratch_Mout + ahat
+        mul!(spline.a, γ', spline._scratch_Mout)
+        @. spline.a += spline.ahat
     else
-        # In-place version of the SA transform
-        spline.a .= spline.gammaBC' * (spline.pqFactor \ (spline.gammaBC * spline.b))
+        # _scratch_Min = γ * spline.b
+        mul!(spline._scratch_Min, γ, spline.b)
+        # _scratch_Mout = pqFactor \ _scratch_Min   (in-place CHOLMOD solve)
+        ldiv!(spline._scratch_Mout, spline.pqFactor, spline._scratch_Min)
+        # spline.a = γ' * _scratch_Mout
+        mul!(spline.a, γ', spline._scratch_Mout)
     end
+    return spline.a
 end
 
 function SAtransform(spline::Spline1D, b::Vector{real}, ahat::Vector{real})

@@ -112,13 +112,16 @@ struct Fourier1D
     invphasefilter::Matrix{real}
 
     # In this context, uMish is the physical values
-    # b is the filtered Fourier coefficients 
+    # b is the filtered Fourier coefficients
     # a is the Fourier coefficients with zeros padding up to physical size
     # ax is a buffer for derivative and integral coefficients
     uMish::Vector{real}
     b::Vector{real}
     a::Vector{real}
     ax::Vector{real}
+    # Scratch buffer for in-place FBtransform!/FAtransform!. Length yDim,
+    # holds the raw FFT output before applying the phase filter.
+    _scratch_fft::Vector{real}
 end
 
 """
@@ -169,8 +172,12 @@ function Fourier1D(fp::FourierParameters)
     phasefilter = calcPhaseFilter(fp)
     invphasefilter = calcInvPhaseFilter(fp)
 
+    # Scratch buffer for in-place FBtransform!/FAtransform!
+    scratch_fft = zeros(real, fp.yDim)
+
     # Construct the Fourier1D ring object
-    ring = Fourier1D(fp,mishPoints,fftPlan,ifftPlan,phasefilter,invphasefilter,uMish,b,a,ax)
+    ring = Fourier1D(fp,mishPoints,fftPlan,ifftPlan,phasefilter,invphasefilter,
+                     uMish,b,a,ax,scratch_fft)
     return ring
 end
 
@@ -315,10 +322,14 @@ function FBtransform(ring::Fourier1D, uMish::Vector{real})
 end
 
 function FBtransform!(ring::Fourier1D)
-
-    # Do the forward Fourier transform, scale, and filter in place for a ring object
-    b = (ring.fftPlan * ring.uMish) ./ ring.params.yDim
-    ring.b .= (b' * ring.phasefilter)'
+    # In-place forward FFT, scale, and phase-filter using pre-allocated scratch.
+    # _scratch_fft holds the raw FFT result; ring.b receives phasefilter' * scaled.
+    mul!(ring._scratch_fft, ring.fftPlan, ring.uMish)
+    scale = 1.0 / ring.params.yDim
+    @. ring._scratch_fft *= scale
+    # ring.b = phasefilter' * _scratch_fft (replaces (scratch' * phasefilter)' pattern)
+    mul!(ring.b, ring.phasefilter', ring._scratch_fft)
+    return ring.b
 end
 
 """
@@ -357,9 +368,10 @@ function FAtransform(ring::Fourier1D, b::AbstractVector)
 end
 
 function FAtransform!(ring::Fourier1D)
-
-    # Apply the inverse phasefilter in place
-    ring.a .= (ring.b' * ring.invphasefilter)'
+    # In-place inverse phase-filter via mul!.
+    # ring.a = invphasefilter' * ring.b (replaces (b' * invphasefilter)' pattern)
+    mul!(ring.a, ring.invphasefilter', ring.b)
+    return ring.a
 end
 
 """
