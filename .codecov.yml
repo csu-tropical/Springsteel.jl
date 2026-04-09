@@ -1,0 +1,11 @@
+coverage:
+  precision: 2
+  round: down
+  range: "60..100"
+
+ignore:
+  - "src/legacy"
+  - "src/.ipynb_checkpoints"
+  - "test"
+  - "ext"
+  - "notebooks"
