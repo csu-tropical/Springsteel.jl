@@ -23,4 +23,5 @@ const TEST_GROUP = get(ENV, "TEST_GROUP", "all")
     TEST_GROUP in ("all", "r3x")            && include("r3x.jl")
     TEST_GROUP in ("all", "bc")             && include("boundary_conditions.jl")
     TEST_GROUP in ("all", "multipatch")     && include("multipatch.jl")
+    TEST_GROUP in ("all", "tile_multipatch") && include("tile_multipatch.jl")
 end
