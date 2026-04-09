@@ -2,6 +2,7 @@ module Springsteel
 
 # Functions to define a spectral grid
 abstract type AbstractGrid end
+abstract type AbstractMultiGrid end
 
 using CSV
 using Dates
@@ -232,6 +233,7 @@ export AbstractFilter, SpectralFilter, GaussianFilter
 export PatchInterface, MultiPatchGrid
 export update_interface!, multiGridTransform!
 export PatchChain, PatchEmbedded
+export AbstractMultiGrid, SpringsteelMultiGrid, createMultiGrid
 
 # Boundary condition type system
 export BoundaryConditions, bc_rank, is_periodic, is_inhomogeneous

@@ -887,3 +887,336 @@ function PatchEmbedded(grids::Vector{<:SpringsteelGrid}; dimension::Symbol=:i)
 
     return MultiPatchGrid(grids, interfaces)
 end
+
+# ────────────────────────────────────────────────────────────────────────────
+# SpringsteelMultiGrid and createMultiGrid factory
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    SpringsteelMultiGrid <: AbstractMultiGrid
+
+High-level multi-patch grid container, analogous to `SpringsteelGrid` for single
+grids.  Wraps a [`MultiPatchGrid`](@ref) (low-level typed internals) plus the
+construction config Dict for serialization and query.
+
+Created by [`createMultiGrid`](@ref).
+
+# Fields
+- `config::Dict{Symbol, Any}` — construction configuration
+- `mpg::MultiPatchGrid` — patches, interfaces, and topological transform order
+"""
+struct SpringsteelMultiGrid <: AbstractMultiGrid
+    config::Dict{Symbol, Any}
+    mpg::MultiPatchGrid
+end
+
+function spectralTransform!(mg::SpringsteelMultiGrid)
+    for p in mg.mpg.patches
+        spectralTransform!(p)
+    end
+    return nothing
+end
+
+function multiGridTransform!(mg::SpringsteelMultiGrid)
+    multiGridTransform!(mg.mpg)
+    return nothing
+end
+
+# ── Config validation ─────────────────────────────────────────────────────
+
+const _REQUIRED_KEYS = Set([:topology, :geometry, :cells, :vars, :BCL, :BCR])
+const _CYLINDRICAL_GEOMETRIES = Set(["RL", "RLZ", "SL", "SLZ"])
+
+function _validate_multigrid_config(config::Dict{Symbol, Any})
+    for key in _REQUIRED_KEYS
+        haskey(config, key) || throw(ArgumentError("Missing required config key: :$key"))
+    end
+    topology = config[:topology]
+    topology in (:chain, :embedded) ||
+        throw(ArgumentError("Unknown topology: $topology. Must be :chain or :embedded"))
+
+    if topology == :chain
+        haskey(config, :boundaries) ||
+            throw(ArgumentError("Chain topology requires :boundaries key"))
+        boundaries = config[:boundaries]
+        length(boundaries) >= 3 ||
+            throw(ArgumentError("Chain requires at least 3 boundaries (2 patches), got $(length(boundaries))"))
+        issorted(boundaries; lt = <) ||
+            throw(ArgumentError("Boundaries must be strictly increasing"))
+    elseif topology == :embedded
+        haskey(config, :domains) ||
+            throw(ArgumentError("Embedded topology requires :domains key"))
+        domains = config[:domains]
+        length(domains) >= 2 ||
+            throw(ArgumentError("Embedded requires at least 2 domains, got $(length(domains))"))
+    end
+
+    cells = config[:cells]
+    if cells isa Integer
+        cells > 0 || throw(ArgumentError("cells must be positive, got $cells"))
+    elseif cells isa Vector
+        all(c -> c > 0, cells) || throw(ArgumentError("All cell counts must be positive"))
+    else
+        throw(ArgumentError("cells must be Int or Vector{Int}, got $(typeof(cells))"))
+    end
+end
+
+# ── patchOffsetL computation ──────────────────────────────────────────────
+
+function _compute_patch_offsets(geometry::String, boundaries::Vector{Float64},
+                                cells_vec::Vector{Int}, mubar::Int)
+    N = length(cells_vec)
+    offsets = zeros(Int, N)
+    if geometry in _CYLINDRICAL_GEOMETRIES
+        cumulative = 0
+        if boundaries[1] > 0
+            DX_first = (boundaries[2] - boundaries[1]) / cells_vec[1]
+            cumulative = round(Int, boundaries[1] / DX_first) * mubar
+        end
+        for k in 1:N
+            offsets[k] = cumulative
+            cumulative += cells_vec[k] * mubar
+        end
+    end
+    return offsets
+end
+
+# ── Chain factory ─────────────────────────────────────────────────────────
+
+function _create_chain(config::Dict{Symbol, Any})
+    geometry = config[:geometry]::String
+    boundaries = Float64.(config[:boundaries])
+    N = length(boundaries) - 1
+    cells_input = config[:cells]
+    cells_vec = cells_input isa Integer ? fill(cells_input, N) : Int.(cells_input)
+    length(cells_vec) == N ||
+        throw(ArgumentError("cells vector length $(length(cells_vec)) != $N patches"))
+
+    vars = config[:vars]::Dict
+    BCL_outer = config[:BCL]::Dict
+    BCR_outer = config[:BCR]::Dict
+    mubar = get(config, :mubar, 3)::Int
+    l_q = get(config, :l_q, Dict("default" => 2.0))
+
+    # Compute DX per patch and validate ratios
+    DX = [(boundaries[k+1] - boundaries[k]) / cells_vec[k] for k in 1:N]
+    for k in 1:(N-1)
+        ratio = max(DX[k], DX[k+1]) / min(DX[k], DX[k+1])
+        tol = 1e-10 * max(DX[k], DX[k+1])
+        (abs(ratio - 1.0) < tol || abs(ratio - 2.0) < tol) ||
+            throw(ArgumentError(
+                "Adjacent DX ratio between patches $k and $(k+1) is $(round(ratio, digits=4)):1, " *
+                "must be 1:1 or 2:1. DX[$k]=$(DX[k]), DX[$(k+1)]=$(DX[k+1])"))
+    end
+
+    # Determine primary/secondary at each interface → assign BCs
+    bc_left  = Vector{Dict}(undef, N)
+    bc_right = Vector{Dict}(undef, N)
+    for k in 1:N
+        bc_left[k]  = Dict(key => NaturalBC() for key in keys(vars))
+        bc_right[k] = Dict(key => NaturalBC() for key in keys(vars))
+    end
+    for k in 1:(N-1)
+        if DX[k] >= DX[k+1]
+            bc_left[k+1] = Dict(key => FixedBC() for key in keys(vars))
+        else
+            bc_right[k] = Dict(key => FixedBC() for key in keys(vars))
+        end
+    end
+
+    # Override outer BCs with user-specified values
+    bc_left[1]  = BCL_outer
+    bc_right[N] = BCR_outer
+
+    # Compute patchOffsetL for cylindrical/spherical geometries
+    offsets = _compute_patch_offsets(geometry, boundaries, cells_vec, mubar)
+
+    # Optional shared params
+    kMin = get(config, :kMin, 0.0)
+    kMax = get(config, :kMax, 0.0)
+    kDim = get(config, :kDim, 0)
+    BCB = get(config, :BCB, Dict{String,Any}())
+    BCT = get(config, :BCT, Dict{String,Any}())
+    quadrature = get(config, :quadrature, :gauss)
+    fourier_filter = get(config, :fourier_filter, Dict{String,Any}())
+    chebyshev_filter = get(config, :chebyshev_filter, Dict{String,Any}())
+    max_wavenumber = get(config, :max_wavenumber, Dict("default" => -1))
+
+    grids = SpringsteelGrid[]
+    for k in 1:N
+        gp_kwargs = Dict{Symbol, Any}(
+            :geometry       => geometry,
+            :iMin           => boundaries[k],
+            :iMax           => boundaries[k+1],
+            :num_cells      => cells_vec[k],
+            :mubar          => mubar,
+            :quadrature     => quadrature,
+            :l_q            => l_q,
+            :BCL            => bc_left[k],
+            :BCR            => bc_right[k],
+            :vars           => vars,
+            :max_wavenumber => max_wavenumber,
+            :fourier_filter => fourier_filter,
+            :chebyshev_filter => chebyshev_filter,
+        )
+        if offsets[k] > 0
+            gp_kwargs[:patchOffsetL] = offsets[k]
+        end
+        if kDim > 0
+            gp_kwargs[:kMin] = kMin
+            gp_kwargs[:kMax] = kMax
+            gp_kwargs[:kDim] = kDim
+            if !isempty(BCB); gp_kwargs[:BCB] = BCB; end
+            if !isempty(BCT); gp_kwargs[:BCT] = BCT; end
+        end
+        gp = SpringsteelGridParameters(; gp_kwargs...)
+        push!(grids, createGrid(gp))
+    end
+
+    return PatchChain(grids)
+end
+
+# ── Embedded factory ──────────────────────────────────────────────────────
+
+function _create_embedded(config::Dict{Symbol, Any})
+    geometry = config[:geometry]::String
+    domains = config[:domains]
+    N = length(domains)
+    cells_input = config[:cells]
+    cells_vec = cells_input isa Integer ? fill(cells_input, N) : Int.(cells_input)
+    length(cells_vec) == N ||
+        throw(ArgumentError("cells vector length $(length(cells_vec)) != $N domains"))
+
+    vars = config[:vars]::Dict
+    BCL_outer = config[:BCL]::Dict
+    BCR_outer = config[:BCR]::Dict
+    mubar = get(config, :mubar, 3)::Int
+    l_q = get(config, :l_q, Dict("default" => 2.0))
+
+    # Validate containment
+    for k in 2:N
+        p_min, p_max = Float64(domains[k-1][1]), Float64(domains[k-1][2])
+        c_min, c_max = Float64(domains[k][1]), Float64(domains[k][2])
+        (c_min >= p_min && c_max <= p_max) ||
+            throw(ArgumentError(
+                "Domain $k ($c_min, $c_max) not contained in domain $(k-1) ($p_min, $p_max)"))
+    end
+
+    # Validate strict refinement
+    DX = [(Float64(domains[k][2]) - Float64(domains[k][1])) / cells_vec[k] for k in 1:N]
+    for k in 2:N
+        ratio = DX[k-1] / DX[k]
+        tol = 1e-10 * max(DX[k-1], DX[k])
+        abs(ratio - 1.0) < tol &&
+            throw(ArgumentError(
+                "Embedded requires strict refinement. Domains $(k-1) and $k have same DX=$(DX[k])"))
+    end
+
+    # Assign BCs
+    bc_left  = Vector{Dict}(undef, N)
+    bc_right = Vector{Dict}(undef, N)
+    bc_left[1]  = BCL_outer
+    bc_right[1] = BCR_outer
+    for k in 2:N
+        bc_left[k]  = Dict(key => FixedBC() for key in keys(vars))
+        bc_right[k] = Dict(key => FixedBC() for key in keys(vars))
+    end
+
+    # patchOffsetL — use outermost domain start as reference
+    boundaries_flat = Float64[Float64(domains[k][1]) for k in 1:N]
+    push!(boundaries_flat, Float64(domains[N][2]))
+    offsets = _compute_patch_offsets(geometry, boundaries_flat, cells_vec, mubar)
+
+    # Optional shared params
+    kMin = get(config, :kMin, 0.0)
+    kMax = get(config, :kMax, 0.0)
+    kDim = get(config, :kDim, 0)
+    BCB = get(config, :BCB, Dict{String,Any}())
+    BCT = get(config, :BCT, Dict{String,Any}())
+    quadrature = get(config, :quadrature, :gauss)
+    fourier_filter = get(config, :fourier_filter, Dict{String,Any}())
+    chebyshev_filter = get(config, :chebyshev_filter, Dict{String,Any}())
+    max_wavenumber = get(config, :max_wavenumber, Dict("default" => -1))
+
+    grids = SpringsteelGrid[]
+    for k in 1:N
+        gp_kwargs = Dict{Symbol, Any}(
+            :geometry       => geometry,
+            :iMin           => Float64(domains[k][1]),
+            :iMax           => Float64(domains[k][2]),
+            :num_cells      => cells_vec[k],
+            :mubar          => mubar,
+            :quadrature     => quadrature,
+            :l_q            => l_q,
+            :BCL            => bc_left[k],
+            :BCR            => bc_right[k],
+            :vars           => vars,
+            :max_wavenumber => max_wavenumber,
+            :fourier_filter => fourier_filter,
+            :chebyshev_filter => chebyshev_filter,
+        )
+        if offsets[k] > 0
+            gp_kwargs[:patchOffsetL] = offsets[k]
+        end
+        if kDim > 0
+            gp_kwargs[:kMin] = kMin
+            gp_kwargs[:kMax] = kMax
+            gp_kwargs[:kDim] = kDim
+            if !isempty(BCB); gp_kwargs[:BCB] = BCB; end
+            if !isempty(BCT); gp_kwargs[:BCT] = BCT; end
+        end
+        gp = SpringsteelGridParameters(; gp_kwargs...)
+        push!(grids, createGrid(gp))
+    end
+
+    return PatchEmbedded(grids)
+end
+
+# ── Public factory ────────────────────────────────────────────────────────
+
+"""
+    createMultiGrid(config::Dict{Symbol, Any}) -> SpringsteelMultiGrid
+
+Construct a multi-patch grid from a configuration dictionary.
+
+Auto-computes interface BCs (NaturalBC for primary sides, FixedBC for secondary),
+patchOffsetL for cylindrical/spherical geometries, and validates DX ratios.
+
+# Required keys
+- `:topology` — `:chain` or `:embedded`
+- `:geometry` — `"R"`, `"RL"`, `"RLZ"`, `"SL"`, `"SLZ"`, `"RR"`, `"RRR"`
+- `:cells` — `Int` (all equal) or `Vector{Int}` (per-patch)
+- `:vars` — variable map
+- `:BCL`, `:BCR` — outer BCs (per-variable Dict, required)
+
+# Chain: `:boundaries => [x₁, x₂, ..., xₙ₊₁]` (N+1 values → N patches)
+# Embedded: `:domains => [(min₁,max₁), ..., (minₙ,maxₙ)]` (outermost first)
+
+# Example
+```julia
+mg = createMultiGrid(Dict(
+    :topology   => :chain,
+    :geometry   => "RL",
+    :boundaries => [0.0, 50.0, 75.0],
+    :cells      => 10,
+    :vars       => Dict("u" => 1),
+    :BCL        => Dict("u" => NaturalBC()),
+    :BCR        => Dict("u" => NaturalBC())))
+spectralTransform!(mg)
+multiGridTransform!(mg)
+```
+
+See also: [`SpringsteelMultiGrid`](@ref), [`PatchChain`](@ref), [`PatchEmbedded`](@ref)
+"""
+function createMultiGrid(config::Dict{Symbol, Any})
+    _validate_multigrid_config(config)
+    topology = config[:topology]
+    if topology == :chain
+        mpg = _create_chain(config)
+    elseif topology == :embedded
+        mpg = _create_embedded(config)
+    else
+        throw(ArgumentError("Unknown topology: $topology"))
+    end
+    return SpringsteelMultiGrid(copy(config), mpg)
+end

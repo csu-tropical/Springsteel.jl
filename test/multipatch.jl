@@ -1807,4 +1807,268 @@ using LinearAlgebra
         @test max_err < 1.0
     end
 
+    # ── createMultiGrid factory ───────────────────────────────────────────
+
+    @testset "createMultiGrid chain: 1D R" begin
+        config = Dict{Symbol,Any}(
+            :topology   => :chain,
+            :geometry   => "R",
+            :boundaries => [0.0, 10.0, 15.0, 25.0],
+            :cells      => 10,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()),
+            :l_q        => Dict("u" => 0.0))
+        mg = createMultiGrid(config)
+
+        @test mg isa SpringsteelMultiGrid
+        @test mg.config[:geometry] == "R"
+        @test length(mg.mpg.patches) == 3
+        @test length(mg.mpg.interfaces) == 2
+
+        # Linear exactness test
+        f(x) = 3x + 7
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in eachindex(pts); p.physical[i, 1, 1] = f(pts[i]); end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            max_err = maximum(abs(p.physical[i, 1, 1] - f(pts[i])) for i in eachindex(pts))
+            @test max_err < 1e-10
+        end
+    end
+
+    @testset "createMultiGrid chain: scalar cells broadcast" begin
+        config = Dict{Symbol,Any}(
+            :topology   => :chain,
+            :geometry   => "R",
+            :boundaries => [0.0, 10.0, 15.0],
+            :cells      => 10,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        @test mg.mpg.patches[1].params.num_cells == 10
+        @test mg.mpg.patches[2].params.num_cells == 10
+    end
+
+    @testset "createMultiGrid chain: vector cells" begin
+        # DX: 10/10=1.0, 5/10=0.5 → 2:1 ratio ✓
+        config = Dict{Symbol,Any}(
+            :topology   => :chain,
+            :geometry   => "R",
+            :boundaries => [0.0, 10.0, 15.0],
+            :cells      => [10, 10],
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        @test mg.mpg.patches[1].params.num_cells == 10
+        @test mg.mpg.patches[2].params.num_cells == 10
+    end
+
+    @testset "createMultiGrid chain: RL with patchOffsetL" begin
+        config = Dict{Symbol,Any}(
+            :topology   => :chain,
+            :geometry   => "RL",
+            :boundaries => [0.0, 50.0, 75.0],
+            :cells      => 10,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+
+        # First patch at r=0: patchOffsetL should be 0
+        @test mg.mpg.patches[1].params.patchOffsetL == 0
+        # Second patch: patchOffsetL should be first patch's iDim
+        @test mg.mpg.patches[2].params.patchOffsetL == mg.mpg.patches[1].params.iDim
+        # Ring sizes should be larger on second patch
+        ring1_p1 = mg.mpg.patches[1].jbasis.data[1, 1].params.yDim
+        ring1_p2 = mg.mpg.patches[2].jbasis.data[1, 1].params.yDim
+        @test ring1_p2 > ring1_p1
+    end
+
+    @testset "createMultiGrid chain: RL axisymmetric exactness" begin
+        config = Dict{Symbol,Any}(
+            :topology   => :chain,
+            :geometry   => "RL",
+            :boundaries => [0.0, 50.0, 75.0],
+            :cells      => 10,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in 1:size(pts, 1); p.physical[i, 1, 1] = 3*pts[i, 1] + 7; end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            max_err = maximum(abs(p.physical[i, 1, 1] - (3*pts[i, 1] + 7)) for i in 1:size(pts, 1))
+            @test max_err < 1e-6
+        end
+    end
+
+    @testset "createMultiGrid chain: RLZ 3D" begin
+        config = Dict{Symbol,Any}(
+            :topology   => :chain,
+            :geometry   => "RLZ",
+            :boundaries => [0.0, 50.0, 75.0],
+            :cells      => 10,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()),
+            :kMin       => 0.0,
+            :kMax       => 10.0,
+            :kDim       => 6,
+            :BCB        => Dict("u" => Chebyshev.R0),
+            :BCT        => Dict("u" => Chebyshev.R0))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        @test mg.mpg.patches[1].params.kDim == 6
+    end
+
+    @testset "createMultiGrid embedded: 1D R" begin
+        config = Dict{Symbol,Any}(
+            :topology => :embedded,
+            :geometry => "R",
+            :domains  => [(0.0, 30.0), (10.0, 20.0)],
+            :cells    => [30, 20],
+            :vars     => Dict("u" => 1),
+            :BCL      => Dict("u" => NaturalBC()),
+            :BCR      => Dict("u" => NaturalBC()),
+            :l_q      => Dict("u" => 0.0))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        @test length(mg.mpg.interfaces) == 2  # left + right stacked
+
+        # Linear exactness
+        f(x) = -2x + 15
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in eachindex(pts); p.physical[i, 1, 1] = f(pts[i]); end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+
+        pts_inner = getGridpoints(mg.mpg.patches[2])
+        for i in eachindex(pts_inner)
+            @test mg.mpg.patches[2].physical[i, 1, 1] ≈ f(pts_inner[i]) atol=1e-10
+        end
+    end
+
+    @testset "createMultiGrid embedded: RL with patchOffsetL" begin
+        # Outer: [0, 100] DX=5.0, Inner: [20, 80] DX=2.5 → 2:1 ✓
+        config = Dict{Symbol,Any}(
+            :topology => :embedded,
+            :geometry => "RL",
+            :domains  => [(0.0, 100.0), (20.0, 80.0)],
+            :cells    => [20, 24],
+            :vars     => Dict("u" => 1),
+            :BCL      => Dict("u" => NaturalBC()),
+            :BCR      => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        # Inner patch should have patchOffsetL > 0
+        # (its domain starts at 20.0, not 0.0)
+        @test mg.mpg.patches[2].params.patchOffsetL > 0
+    end
+
+    # ── Factory validation tests ──────────────────────────────────────────
+
+    @testset "createMultiGrid rejects missing keys" begin
+        @test_throws ArgumentError createMultiGrid(Dict{Symbol,Any}(
+            :topology => :chain, :geometry => "R"))
+    end
+
+    @testset "createMultiGrid rejects bad topology" begin
+        @test_throws ArgumentError createMultiGrid(Dict{Symbol,Any}(
+            :topology => :tree, :geometry => "R",
+            :boundaries => [0.0, 10.0, 20.0], :cells => 10,
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()),
+            :BCR => Dict("u" => NaturalBC())))
+    end
+
+    @testset "createMultiGrid rejects non-monotonic boundaries" begin
+        @test_throws ArgumentError createMultiGrid(Dict{Symbol,Any}(
+            :topology => :chain, :geometry => "R",
+            :boundaries => [0.0, 20.0, 10.0], :cells => 10,
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()),
+            :BCR => Dict("u" => NaturalBC())))
+    end
+
+    @testset "createMultiGrid rejects bad DX ratio" begin
+        # DX: 10/10=1.0 vs 7/10=0.7 → 1.43:1 ratio
+        @test_throws ArgumentError createMultiGrid(Dict{Symbol,Any}(
+            :topology => :chain, :geometry => "R",
+            :boundaries => [0.0, 10.0, 17.0], :cells => 10,
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()),
+            :BCR => Dict("u" => NaturalBC())))
+    end
+
+    @testset "createMultiGrid embedded rejects non-contained domain" begin
+        @test_throws ArgumentError createMultiGrid(Dict{Symbol,Any}(
+            :topology => :embedded, :geometry => "R",
+            :domains => [(0.0, 30.0), (25.0, 40.0)],
+            :cells => [30, 20],
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()),
+            :BCR => Dict("u" => NaturalBC())))
+    end
+
+    @testset "createMultiGrid chain matches manual construction" begin
+        # Build manually
+        gp1 = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=10.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1), l_q=Dict("u" => 0.0))
+        gp2 = SpringsteelGridParameters(
+            geometry="R", iMin=10.0, iMax=15.0, num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1), l_q=Dict("u" => 0.0))
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+
+        # Build via factory
+        config = Dict{Symbol,Any}(
+            :topology => :chain, :geometry => "R",
+            :boundaries => [0.0, 10.0, 15.0], :cells => 10,
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()),
+            :BCR => Dict("u" => NaturalBC()),
+            :l_q => Dict("u" => 0.0))
+        mg = createMultiGrid(config)
+
+        # Same function on both
+        f(x) = 3x + 7
+        for i in eachindex(getGridpoints(g1)); g1.physical[i, 1, 1] = f(getGridpoints(g1)[i]); end
+        for i in eachindex(getGridpoints(g2)); g2.physical[i, 1, 1] = f(getGridpoints(g2)[i]); end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in eachindex(pts); p.physical[i, 1, 1] = f(pts[i]); end
+        end
+        spectralTransform!(mg)
+
+        # Manual coupling
+        mpg_manual = PatchChain([g1, g2])
+        multiGridTransform!(mpg_manual)
+        multiGridTransform!(mg)
+
+        # Results should match
+        @test mg.mpg.patches[2].physical[:, 1, 1] ≈ g2.physical[:, 1, 1] atol=1e-14
+    end
+
 end
