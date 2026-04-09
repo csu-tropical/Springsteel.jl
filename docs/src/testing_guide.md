@@ -44,11 +44,10 @@ end
 | File | Contents | Approximate tests |
 |:-----|:---------|:-----------------|
 | `test/basis.jl` | Low-level basis module tests (CubicBSpline, Fourier, Chebyshev): parameter structs, 1D object construction, basis function evaluation, all transform dispatch variants, matrix representations, BC types | ~1200 |
-| `test/grids.jl` | Grid creation tests for all geometries via both `GridParameters` (legacy) and `SpringsteelGridParameters` (new): dimensions, variable counts, multi-variable support | ~1600 |
+| `test/grids.jl` | Grid creation tests for all geometries via `SpringsteelGridParameters`: dimensions, variable counts, multi-variable support | ~1600 |
 | `test/transforms.jl` | Grid-level roundtrip accuracy, derivative accuracy, boundary condition enforcement, regular grid transforms for all grid types | ~2100 |
 | `test/tiling.jl` | Distributed computing: `calcTileSizes`, `calcPatchMap`, `calcHaloMap`, `splineTransform!`, `tileTransform!`, spectral tile assembly | ~700 |
 | `test/io.jl` | CSV, JLD2, and NetCDF I/O roundtrips | ~800 |
-| `test/compat.jl` | Backward compatibility: legacy `GridParameters` vs new `SpringsteelGridParameters` | ~400 |
 | `test/solver.jl` | Solver framework: operator matrix assembly, `SpringsteelProblem` construction, `solve()` for linear and nonlinear problems, multi-dimensional BVP tests | new |
 
 ### 1.3 Running Individual Test Groups

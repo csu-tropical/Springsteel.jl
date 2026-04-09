@@ -1244,67 +1244,6 @@ function bvp_basis(x::Float64, nbasis::Int64, phi::Array{Float64}, phix::Array{F
     return phi, phix, phixx
 end
 
-"""
-    evaluate_chebyshev(z, b)
-
-Evaluate the Chebyshev expansion at arbitrary points `z` given B-coefficients `b`.
-
-Builds a DCT evaluation matrix for the requested `z` points, applies the BC transform via
-`CAtransform!`, then multiplies. Useful for off-grid evaluations and debugging.
-"""
-function evaluate_chebyshev(z, b)
-
-    dct = zeros(Float64,length(z), cp.zDim)
-    scale = -0.5 * (cp.zmax - cp.zmin)
-    offset = 0.5 * (cp.zmin + cp.zmax)
-    for i in 1:length(z)
-        t = acos((z[i] - offset)/scale)
-        # t = (i-1) * π / (Nbasis - 1)
-        for j = 1:cp.zDim
-            dct[i,j] = 2*cos((j-1)*t)
-        end
-    end
-    dct[:,1] *= 0.5
-    dct[:,cp.zDim] *= 0.5
-
-    column.b .= b
-    a = CAtransform!(column)
-    dct * a
-end
-
-"""
-    evaluate_chebyshev_1st_derivative(z, b)
-
-Evaluate the first derivative of the Chebyshev expansion at arbitrary points `z`.
-
-Analogous to [`evaluate_chebyshev`](@ref) but uses the spectral first-derivative matrix.
-"""
-function evaluate_chebyshev_1st_derivative(z, b)
-
-    dct = zeros(Float64,length(z), cp.zDim)
-    scale = -0.5 * (cp.zmax - cp.zmin)
-    offset = 0.5 * (cp.zmin + cp.zmax)
-    for i in 1:length(z)
-        t = acos((z[i] - offset)/scale)
-        # t = (i-1) * π / (Nbasis - 1)
-        for j = 1:cp.zDim
-            N = j-1
-            if (i == 1)
-                dct[i,j] = -N*N
-            elseif (i == cp.zDim)
-                dct[i,j] = -N*N*(-1.0)^(N+1)
-            else
-                dct[i,j] = -N*sin(N*t)/sin(t)
-            end
-        end
-    end
-    dct = dct ./ ((cp.zmax - cp.zmin)/4.0)
-    column.b .= b
-    a = CAtransform!(column)
-    dct * a
-end
-
-
 # ---------------------------------------------------------------------------
 # Generic wrappers (no "C" prefix) dispatching on Chebyshev1D
 # These enable abstract 1D basis code that calls Btransform!, Itransform!, etc.

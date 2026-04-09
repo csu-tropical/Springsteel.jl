@@ -30,7 +30,6 @@ NoBasisArray
 
 ```@docs
 SpringsteelGridParameters
-GridParameters
 ```
 
 ## Grid Struct and Aliases

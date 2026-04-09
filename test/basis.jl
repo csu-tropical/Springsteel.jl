@@ -1303,9 +1303,9 @@
     @testset "Basis Interface" begin
 
         @testset "Spline1D accessors" begin
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0, xmax = 10.0, num_cells = 5,
+                iMin = 0.0, iMax = 10.0, num_cells = 5,
                 BCL = Dict("u" => CubicBSpline.R0),
                 BCR = Dict("u" => CubicBSpline.R0),
                 vars = Dict("u" => 1)
@@ -1324,9 +1324,9 @@
         end
 
         @testset "Fourier1D accessors" begin
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "RL",
-                xmin = 0.0, xmax = 10.0, num_cells = 4,
+                iMin = 0.0, iMax = 10.0, num_cells = 4,
                 BCL = Dict("u" => CubicBSpline.R0),
                 BCR = Dict("u" => CubicBSpline.R0),
                 vars = Dict("u" => 1)
@@ -1343,10 +1343,10 @@
         end
 
         @testset "Chebyshev1D accessors" begin
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "RZ",
-                xmin = 0.0, xmax = 10.0, num_cells = 4,
-                zmin = 0.0, zmax = 5.0, zDim = 10,
+                iMin = 0.0, iMax = 10.0, num_cells = 4,
+                kMin = 0.0, kMax = 5.0, kDim = 10,
                 BCL = Dict("u" => CubicBSpline.R0),
                 BCR = Dict("u" => CubicBSpline.R0),
                 BCB = Dict("u" => Chebyshev.R0),

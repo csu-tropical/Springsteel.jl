@@ -2,18 +2,18 @@
         
         @testset "Grid Creation" begin
             # Test basic grid creation
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0,
-                xmax = 10.0,
+                iMin = 0.0,
+                iMax = 10.0,
                 num_cells = 10,
                 BCL = Dict("u" => CubicBSpline.R0),
                 BCR = Dict("u" => CubicBSpline.R0),
                 vars = Dict("u" => 1)
             )
-            
+
             grid = createGrid(gp)
-            
+
             @test typeof(grid) <: Springsteel.R_Grid
             @test grid.params.iDim == 30  # num_cells * mubar (10 * 3)
             @test grid.params.b_iDim == 13  # num_cells + 3
@@ -24,10 +24,10 @@
         end
         
         @testset "Grid Creation - Multiple Variables" begin
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = -5.0,
-                xmax = 5.0,
+                iMin = -5.0,
+                iMax = 5.0,
                 num_cells = 20,
                 BCL = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0, "w" => CubicBSpline.R0),
                 BCR = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0, "w" => CubicBSpline.R0),
@@ -41,42 +41,42 @@
         end
         
         @testset "Gridpoints" begin
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0,
-                xmax = 10.0,
+                iMin = 0.0,
+                iMax = 10.0,
                 num_cells = 10,
                 BCL = Dict("u" => CubicBSpline.R0),
                 BCR = Dict("u" => CubicBSpline.R0),
                 vars = Dict("u" => 1)
             )
-            
+
             grid = createGrid(gp)
             gridpoints = getGridpoints(grid)
-            
+
             @test length(gridpoints) == grid.params.iDim
-            @test gridpoints[1] >= gp.xmin
-            @test gridpoints[end] <= gp.xmax
+            @test gridpoints[1] >= gp.iMin
+            @test gridpoints[end] <= gp.iMax
             # Test that gridpoints are monotonically increasing
             @test all(diff(gridpoints) .> 0)
         end
         
         @testset "Transform Round-trip" begin
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0,
-                xmax = 10.0,
+                iMin = 0.0,
+                iMax = 10.0,
                 num_cells = 20,
                 BCL = Dict("u" => CubicBSpline.PERIODIC),
                 BCR = Dict("u" => CubicBSpline.PERIODIC),
                 vars = Dict("u" => 1)
             )
-            
+
             grid = createGrid(gp)
             gridpoints = getGridpoints(grid)
-            
+
             # Set a simple test function: f(x) = sin(2π*x/L)
-            L = gp.xmax - gp.xmin
+            L = gp.iMax - gp.iMin
             for i = 1:length(gridpoints)
                 grid.physical[i, 1, 1] = sin(2π * gridpoints[i] / L)
             end
@@ -102,10 +102,10 @@
         
         @testset "Spectral Transform - Polynomial" begin
             # Test that polynomials up to degree 3 are represented exactly
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0,
-                xmax = 1.0,
+                iMin = 0.0,
+                iMax = 1.0,
                 num_cells = 10,
                 BCL = Dict("u" => CubicBSpline.R0),
                 BCR = Dict("u" => CubicBSpline.R0),
@@ -132,10 +132,10 @@
         end
         
         @testset "Derivatives" begin
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0,
-                xmax = 2π,
+                iMin = 0.0,
+                iMax = 2π,
                 num_cells = 30,
                 BCL = Dict("u" => CubicBSpline.PERIODIC),
                 BCR = Dict("u" => CubicBSpline.PERIODIC),
@@ -178,10 +178,10 @@
             # Note: grid.physical[1] and grid.physical[end] are inner mish-points,
             # NOT the boundary. To verify the BC, evaluate at the exact boundary
             # using regularGridTransform.
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0,
-                xmax = 10.0,
+                iMin = 0.0,
+                iMax = 10.0,
                 num_cells = 10,
                 BCL = Dict("u" => CubicBSpline.R1T0),
                 BCR = Dict("u" => CubicBSpline.R1T0),
@@ -193,24 +193,24 @@
 
             # sin(π⋅x/L) vanishes at both endpoints — consistent with R1T0 BC
             for i = 1:length(gridpoints)
-                grid.physical[i, 1, 1] = sin(π * (gridpoints[i] - gp.xmin) / (gp.xmax - gp.xmin))
+                grid.physical[i, 1, 1] = sin(π * (gridpoints[i] - gp.iMin) / (gp.iMax - gp.iMin))
             end
 
             spectralTransform!(grid)
             gridTransform!(grid)
 
             # Evaluate exactly at the boundaries to verify R1T0 enforcement
-            boundary_vals = regularGridTransform(grid, [gp.xmin, gp.xmax])
-            @test abs(boundary_vals[1, 1, 1]) < 1e-10  # u(xmin) = 0
-            @test abs(boundary_vals[2, 1, 1]) < 1e-10  # u(xmax) = 0
+            boundary_vals = regularGridTransform(grid, [gp.iMin, gp.iMax])
+            @test abs(boundary_vals[1, 1, 1]) < 1e-10  # u(iMin) = 0
+            @test abs(boundary_vals[2, 1, 1]) < 1e-10  # u(iMax) = 0
         end
         
         @testset "Different Filter Lengths" begin
             # Test variable-specific filter length
-            gp = GridParameters(
+            gp = SpringsteelGridParameters(
                 geometry = "R",
-                xmin = 0.0,
-                xmax = 10.0,
+                iMin = 0.0,
+                iMax = 10.0,
                 num_cells = 10,
                 l_q = Dict("u" => 1.5, "v" => 3.0),
                 BCL = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0),

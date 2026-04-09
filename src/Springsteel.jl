@@ -196,7 +196,7 @@ Ixxtransform(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Ixxtransform(obj)
 IInttransform(obj::CubicBSpline.Spline1D, u::Vector{Float64}, C0::Float64=0.0) = CubicBSpline.IInttransform(obj, u, C0)
 IInttransform(obj::Chebyshev.Chebyshev1D, C0::Float64=0.0) = Chebyshev.IInttransform(obj, C0)
 
-export AbstractGrid, GridParameters
+export AbstractGrid
 export SpringsteelGrid, SpringsteelGridParameters
 export CubicBSpline, SplineParameters, Spline1D
 export SBtransform, SBtransform!, SAtransform!, SItransform!
@@ -416,7 +416,7 @@ gp = SpringsteelGridParameters(
     vars = Dict("v" => 1))
 ```
 
-See also: [`createGrid`](@ref), [`GridParameters`](@ref), [`R_Grid`](@ref)
+See also: [`createGrid`](@ref), [`R_Grid`](@ref)
 """
 Base.@kwdef struct SpringsteelGridParameters
     geometry::String = "1D"
@@ -468,7 +468,6 @@ include("basis_interface.jl")
 # ── Grid factory ──────────────────────────────────────────────────────────────────
 # Must be included after types.jl (uses geometry/basis sentinel types)
 include("factory.jl")
-# deprecated.jl included below (after GridParameters is defined)
 
 # ── Per-wavenumber ahat registry (shared by transforms and multipatch) ───────
 # Must be included after types.jl (uses SpringsteelGrid), before transforms
@@ -505,70 +504,6 @@ include("filtering.jl")
 # Must be included after transforms_*.jl and types.jl (uses grid types and gridTransform!)
 include("multipatch.jl")
 
-
-"""
-    GridParameters
-
-Legacy parameter struct for backward compatibility. Uses physical dimension names
-(`xmin`/`xmax`/`rDim` for radial, `ymin`/`ymax`/`lDim` for azimuthal,
-`zmin`/`zmax`/`zDim` for vertical) rather than the dimension-agnostic `i`/`j`/`k`
-naming of [`SpringsteelGridParameters`](@ref).
-
-New code should use `SpringsteelGridParameters` instead. Both structs are accepted
-by `createGrid` via the backward-compatibility layer in `deprecated.jl`.
-
-# Field name mapping (GridParameters → SpringsteelGridParameters)
-- `xmin`/`xmax`/`rDim`/`b_rDim` → `iMin`/`iMax`/`iDim`/`b_iDim`
-- `ymin`/`ymax`/`lDim`/`b_lDim`/`kmax` → `jMin`/`jMax`/`jDim`/`b_jDim`/`max_wavenumber`
-- `zmin`/`zmax`/`zDim`/`b_zDim` → `kMin`/`kMax`/`kDim`/`b_kDim`
-- `r_regular_out`/`l_regular_out`/`z_regular_out` → `i_regular_out`/`j_regular_out`/`k_regular_out`
-
-See also: [`SpringsteelGridParameters`](@ref), [`createGrid`](@ref)
-"""
-Base.@kwdef struct GridParameters
-    geometry::String = "R"
-    xmin::real = 0.0
-    xmax::real = 0.0
-    num_cells::int = 0
-    mubar::int = 3
-    quadrature::Symbol = :gauss
-    rDim::int = num_cells * mubar
-    b_rDim::int = num_cells + 3
-    l_q::Dict = Dict("default" => 2.0)
-    BCL::Dict = Dict("default" => CubicBSpline.R0)
-    BCR::Dict = Dict("default" => CubicBSpline.R0)
-    ymin::real = 0.0
-    ymax::real = 2 * π
-    kmax::Dict = Dict("default" => -1) # Default is -1 to indicate ring specific
-    lDim::int = 0
-    b_lDim::int = 0
-    BCU::Dict = Dict("default" => Fourier.PERIODIC)
-    BCD::Dict = Dict("default" => Fourier.PERIODIC)
-    zmin::real = 0.0
-    zmax::real = 0.0
-    zDim::int = 0
-    b_zDim::int = min(zDim, floor(((2 * zDim) - 1) / 3) + 1)
-    BCB::Dict = Dict("default" => Chebyshev.R0)
-    BCT::Dict = Dict("default" => Chebyshev.R0)
-    vars::Dict = Dict("u" => 1)
-    # Spectral filters (per-variable, keyed by variable name or "default")
-    fourier_filter::Dict = Dict()
-    chebyshev_filter::Dict = Dict()
-    # Patch indices
-    spectralIndexL::int = 1
-    spectralIndexR::int = spectralIndexL + b_rDim - 1
-    patchOffsetL::int = (spectralIndexL - 1) * mubar
-    patchOffsetR::int = patchOffsetL + rDim
-    tile_num::int = 0
-    r_regular_out::int = num_cells + 1
-    # The default l_increment is the maximum number of wavenumbers on the outermost ring
-    # The code will probably break if you change this for RL or RLZ grids
-    l_regular_out::int = (rDim*2) + 1
-    z_regular_out::int = zDim + 1
-end
-
-# Backward-compatibility helpers (require GridParameters to be defined)
-include("deprecated.jl")
 
 # I/O routines
 include("io.jl")

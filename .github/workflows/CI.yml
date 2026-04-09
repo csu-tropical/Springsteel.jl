@@ -36,7 +36,6 @@ jobs:
           - transforms
           - tiling
           - io
-          - compat
           - solver
           - mubar
           - interpolation

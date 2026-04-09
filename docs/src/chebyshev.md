@@ -82,9 +82,3 @@ Chebyshev.bvp_modified_basis
 Chebyshev.bvp_basis
 ```
 
-## Arbitrary-Point Evaluation
-
-```@docs
-Chebyshev.evaluate_chebyshev
-Chebyshev.evaluate_chebyshev_1st_derivative
-```

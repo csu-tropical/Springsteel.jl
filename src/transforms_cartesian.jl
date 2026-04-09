@@ -619,11 +619,6 @@ Inverse transform (spectral → physical + derivatives) for a 2-D Cartesian Spli
 - `physical[:, v, 4]` — ∂f/∂k (first derivative, k-direction / Chebyshev)
 - `physical[:, v, 5]` — ∂²f/∂k² (second derivative, k-direction)
 
-**Bug fix**: The existing `rz_grid.jl` tiled `gridTransform!` (L232, L246) references
-an undefined `grid` variable inside `gridTransform!`; the correct source of parameters
-is the `pp::GridParameters` argument.  This refactored implementation always uses the
-grid's own `.params` field, avoiding that defect.
-
 See also: [`spectralTransform!`](@ref)
 """
 function gridTransform(
