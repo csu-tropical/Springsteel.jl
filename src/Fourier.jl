@@ -122,6 +122,9 @@ struct Fourier1D
     # Scratch buffer for in-place FBtransform!/FAtransform!. Length yDim,
     # holds the raw FFT output before applying the phase filter.
     _scratch_fft::Vector{real}
+    # Scratch derivative-coefficient buffer for FIxxtransform; holds the first
+    # derivative coefs while the second FIxcoefficients pass writes into `ax`.
+    _scratch_ax::Vector{real}
 end
 
 """
@@ -174,10 +177,11 @@ function Fourier1D(fp::FourierParameters)
 
     # Scratch buffer for in-place FBtransform!/FAtransform!
     scratch_fft = zeros(real, fp.yDim)
+    scratch_ax = zeros(real, fp.yDim)
 
     # Construct the Fourier1D ring object
     ring = Fourier1D(fp,mishPoints,fftPlan,ifftPlan,phasefilter,invphasefilter,
-                     uMish,b,a,ax,scratch_fft)
+                     uMish,b,a,ax,scratch_fft,scratch_ax)
     return ring
 end
 
@@ -406,7 +410,8 @@ end
 function FItransform!(ring::Fourier1D)
 
     # Do the inverse transform to get back physical values in place
-    ring.uMish .= ring.ifftPlan * ring.a
+    mul!(ring.uMish, ring.ifftPlan, ring.a)
+    return ring.uMish
 end
 
 """
@@ -474,14 +479,16 @@ end
 function FIxtransform(ring::Fourier1D)
 
     # Do the inverse transform with derivative coefficients in place
-    ux = ring.ifftPlan * FIxcoefficients(ring.params,ring.a,ring.ax)
+    FIxcoefficients(ring.params, ring.a, ring.ax)
+    ux = ring.ifftPlan * ring.ax
     return ux
 end
 
 function FIxtransform(ring::Fourier1D, ux::AbstractVector)
 
     # Do the inverse transform with derivative coefficients in place with a preallocated buffer
-    ux .= ring.ifftPlan * FIxcoefficients(ring.params,ring.a,ring.ax)
+    FIxcoefficients(ring.params, ring.a, ring.ax)
+    mul!(ux, ring.ifftPlan, ring.ax)
     return ux
 end
 
@@ -502,9 +509,13 @@ See also: [`FIxtransform`](@ref), [`FItransform`](@ref)
 """
 function FIxxtransform(ring::Fourier1D)
 
-    # Do the inverse transform with 2nd derivative coefficients
-    ax = copy(FIxcoefficients(ring.params,ring.a,ring.ax))
-    uxx = FIxtransform(ring.params, ring.ifftPlan, ax, ring.ax)
+    # Do the inverse transform with 2nd derivative coefficients. The first pass
+    # is stashed in _scratch_ax so the second FIxcoefficients call can write
+    # into ring.ax without clobbering its own input.
+    FIxcoefficients(ring.params, ring.a, ring.ax)
+    copyto!(ring._scratch_ax, ring.ax)
+    FIxcoefficients(ring.params, ring._scratch_ax, ring.ax)
+    uxx = ring.ifftPlan * ring.ax
     return uxx
 end
 

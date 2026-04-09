@@ -173,9 +173,12 @@ struct Chebyshev1D
     ax::Vector{real}
     # Scratch buffers for in-place CBtransform!/CAtransform!. _scratch_dct holds
     # the unfiltered DCT result of length zDim. _scratch_bfill holds the
-    # zero-padded b vector of length zDim used in the BC fold.
+    # zero-padded b vector of length zDim used in the BC fold. _scratch_ax holds
+    # an intermediate derivative-coefficient buffer used by CIxxtransform so the
+    # primary `ax` buffer is not clobbered between the two CIxcoefficients calls.
     _scratch_dct::Vector{real}
     _scratch_bfill::Vector{real}
+    _scratch_ax::Vector{real}
 end
 
 """
@@ -231,10 +234,11 @@ function Chebyshev1D(cp::ChebyshevParameters)
     # Scratch buffers for in-place transforms
     scratch_dct = zeros(real, cp.zDim)
     scratch_bfill = zeros(real, cp.zDim)
+    scratch_ax = zeros(real, cp.zDim)
 
     # Construct a 1D Chebyshev column
     column = Chebyshev1D(cp,mishPoints,gammaBC,fftPlan,filter,uMish,b,a,ax,
-                         scratch_dct,scratch_bfill)
+                         scratch_dct,scratch_bfill,scratch_ax)
     return column
 end
 
@@ -457,9 +461,10 @@ function CItransform(cp::ChebyshevParameters, fftPlan, a::Vector{real})
 end
 
 function CItransform!(column::Chebyshev1D)
-    
+
     # In-place inverse DCT transform to get back physical values
-    column.uMish .= column.fftPlan * column.a
+    mul!(column.uMish, column.fftPlan, column.a)
+    return column.uMish
 end
 
 
@@ -603,12 +608,14 @@ end
 function CIxtransform(column::Chebyshev1D)
 
     # Do the inverse transform to get back the first derivative in physical space
-    ux = CIxtransform(column.params, column.fftPlan, column.a, column.ax)
+    CIxcoefficients(column.params, column.a, column.ax)
+    ux = column.fftPlan * column.ax
     return ux
 end
 
 function CIxtransform(column::Chebyshev1D, ux::AbstractVector)
-    ux .= CIxtransform(column.params, column.fftPlan, column.a, column.ax)
+    CIxcoefficients(column.params, column.a, column.ax)
+    mul!(ux, column.fftPlan, column.ax)
     return ux
 end
 
@@ -629,9 +636,13 @@ See also: [`CIxtransform`](@ref), [`CItransform`](@ref)
 """
 function CIxxtransform(column::Chebyshev1D)
 
-    # Do the inverse transform to get back the second derivative in physical space
-    ax = copy(CIxcoefficients(column.params, column.a, column.ax))
-    uxx = CIxtransform(column.params, column.fftPlan, ax, column.ax)
+    # Do the inverse transform to get back the second derivative in physical space.
+    # First derivative coefs are stashed in _scratch_ax so the second pass through
+    # CIxcoefficients can write into column.ax without clobbering its own input.
+    CIxcoefficients(column.params, column.a, column.ax)
+    copyto!(column._scratch_ax, column.ax)
+    CIxcoefficients(column.params, column._scratch_ax, column.ax)
+    uxx = column.fftPlan * column.ax
     return uxx
 end
 
