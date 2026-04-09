@@ -553,6 +553,134 @@ using SparseArrays
         @test tiles2[end].params.iMax ≈ g2.params.iMax
     end
 
+    # ── RL tiled disc+annulus: axisymmetric ──────────────────────────────
+
+    @testset "RL tiled disc+annulus: axisymmetric" begin
+        # 1:1 ratio: DX_annulus = 48/12 = 4.0, DX_disc = 48/12 = 4.0
+        gp_annulus = SpringsteelGridParameters(
+            geometry="RL", iMin=48.0, iMax=96.0, num_cells=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp_disc = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=48.0, num_cells=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => FixedBC()),
+            vars=Dict("u" => 1))
+
+        g_annulus = createGrid(gp_annulus); g_disc = createGrid(gp_disc)
+
+        rMax = 96.0
+        pts_a = getGridpoints(g_annulus); pts_d = getGridpoints(g_disc)
+        for i in 1:size(pts_a, 1); g_annulus.physical[i, 1, 1] = sin(π * pts_a[i, 1] / rMax); end
+        for i in 1:size(pts_d, 1); g_disc.physical[i, 1, 1] = sin(π * pts_d[i, 1] / rMax); end
+        spectralTransform!(g_annulus); spectralTransform!(g_disc)
+
+        # Tile both
+        tiles_a = calcTileSizes(g_annulus, 4); @test length(tiles_a) == 4
+        tiles_d = calcTileSizes(g_disc, 4); @test length(tiles_d) == 4
+
+        # Coupling: annulus is primary (left), disc is secondary (right)
+        # Same DX → 1:1 ratio
+        iface = PatchInterface(g_annulus, g_disc, :left, :right, :i)
+        gridTransform!(g_annulus)
+        update_interface!(iface)
+        gridTransform!(g_disc)
+
+        # Axisymmetric accuracy
+        max_err = maximum(
+            abs(g_disc.physical[i, 1, 1] - sin(π * pts_d[i, 1] / rMax))
+            for i in 1:size(pts_d, 1))
+        @test max_err < 5e-3
+    end
+
+    # ── RL tiled chain: non-axisymmetric ──────────────────────────────────
+
+    @testset "RL tiled chain: non-axisymmetric r·cos(λ)" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=50.0, num_cells=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RL", iMin=50.0, iMax=75.0, num_cells=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        # Non-tiled reference
+        g1_ref = createGrid(gp1); g2_ref = createGrid(gp2)
+        pts1 = getGridpoints(g1_ref); pts2 = getGridpoints(g2_ref)
+        for i in 1:size(pts1, 1)
+            g1_ref.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2_ref.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2])
+        end
+        spectralTransform!(g1_ref); spectralTransform!(g2_ref)
+        mpg_ref = PatchChain([g1_ref, g2_ref])
+        multiGridTransform!(mpg_ref)
+
+        # Tiled version
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2]); end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2]); end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        tiles1 = calcTileSizes(g1, 4); @test length(tiles1) == 4
+        tiles2 = calcTileSizes(g2, 4); @test length(tiles2) == 4
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        # Tiled should match non-tiled exactly
+        @test g2.physical[:, 1, 1] ≈ g2_ref.physical[:, 1, 1] atol=1e-12
+    end
+
+    # ── RL tiled embedded: non-axisymmetric ───────────────────────────────
+
+    @testset "RL tiled coarse-fine-coarse chain: non-axisymmetric" begin
+        # DX: 4.0 → 2.0 → 4.0 (exact 2:1 ratios)
+        gp1 = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=48.0, num_cells=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RL", iMin=48.0, iMax=72.0, num_cells=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => FixedBC()),
+            vars=Dict("u" => 1))
+        gp3 = SpringsteelGridParameters(
+            geometry="RL", iMin=72.0, iMax=120.0, num_cells=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        # Non-tiled reference
+        g1_ref = createGrid(gp1); g2_ref = createGrid(gp2); g3_ref = createGrid(gp3)
+        for (g, pts) in [(g1_ref, getGridpoints(g1_ref)), (g2_ref, getGridpoints(g2_ref)), (g3_ref, getGridpoints(g3_ref))]
+            for i in 1:size(pts, 1)
+                g.physical[i, 1, 1] = pts[i, 1] * cos(pts[i, 2])
+            end
+            spectralTransform!(g)
+        end
+        mpg_ref = PatchChain([g1_ref, g2_ref, g3_ref])
+        multiGridTransform!(mpg_ref)
+
+        # Tiled version
+        g1 = createGrid(gp1); g2 = createGrid(gp2); g3 = createGrid(gp3)
+        for (g, pts) in [(g1, getGridpoints(g1)), (g2, getGridpoints(g2)), (g3, getGridpoints(g3))]
+            for i in 1:size(pts, 1)
+                g.physical[i, 1, 1] = pts[i, 1] * cos(pts[i, 2])
+            end
+            spectralTransform!(g)
+        end
+
+        tiles1 = calcTileSizes(g1, 4); @test length(tiles1) == 4
+        tiles2 = calcTileSizes(g2, 4); @test length(tiles2) == 4
+        tiles3 = calcTileSizes(g3, 4); @test length(tiles3) == 4
+
+        mpg = PatchChain([g1, g2, g3])
+        multiGridTransform!(mpg)
+
+        # Tiled should match non-tiled exactly
+        @test g2.physical[:, 1, 1] ≈ g2_ref.physical[:, 1, 1] atol=1e-12
+    end
+
     # ── sumSpectralTile! / setSpectralTile! on multipatch grids ──────────
 
     @testset "Spectral tile accumulation on secondary patch" begin

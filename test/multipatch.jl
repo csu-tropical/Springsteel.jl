@@ -1237,4 +1237,205 @@ using LinearAlgebra
         end
     end
 
+    # ── 2D RL (cylindrical) multipatch ────────────────────────────────────
+
+    @testset "RL chain construction" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=50.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RL", iMin=50.0, iMax=75.0, num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        mpg = PatchChain([g1, g2])
+        @test length(mpg.interfaces) == 1
+        @test length(mpg.patches) == 2
+        @test mpg.interfaces[1].primary === g1
+    end
+
+    @testset "RL chain axisymmetric linear exactness" begin
+        # f(r) = 3r + 7 — axisymmetric (k=0 only), linear
+        gp1 = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=50.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RL", iMin=50.0, iMax=75.0, num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = 3*pts1[i, 1] + 7; end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = 3*pts2[i, 1] + 7; end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        for i in 1:size(pts2, 1)
+            @test g2.physical[i, 1, 1] ≈ 3*pts2[i, 1] + 7 atol=1e-8
+        end
+    end
+
+    @testset "RL chain non-axisymmetric: r·cos(λ) per-wavenumber coupling" begin
+        # f(r,λ) = r·cos(λ) — excites k=1 mode.  Coupling must transfer
+        # per-wavenumber ahat correctly (not just k=0).
+        gp1 = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=50.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RL", iMin=50.0, iMax=75.0, num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2])
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        # Check reconstruction quality on secondary
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - pts2[i, 1] * cos(pts2[i, 2]))
+            for i in 1:size(pts2, 1))
+        # Coupled error should be bounded — cubic B-spline over 10 cells
+        @test max_err < 0.5
+    end
+
+    @testset "RL chain non-axisymmetric: r·sin(λ) k=1 imaginary" begin
+        # f(r,λ) = r·sin(λ) — excites k=1 imaginary mode
+        gp1 = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=50.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RL", iMin=50.0, iMax=75.0, num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = pts1[i, 1] * sin(pts1[i, 2])
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = pts2[i, 1] * sin(pts2[i, 2])
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - pts2[i, 1] * sin(pts2[i, 2]))
+            for i in 1:size(pts2, 1))
+        @test max_err < 0.5
+    end
+
+    @testset "RL embedded: disc inside annulus" begin
+        # Coarse annulus [20, 100], fine disc [0, 20]
+        # DX_annulus = 80/10 = 8.0, DX_disc = 20/5 = 4.0 → exact 2:1
+        gp_annulus = SpringsteelGridParameters(
+            geometry="RL", iMin=20.0, iMax=100.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp_disc = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=20.0, num_cells=5,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => FixedBC()),
+            vars=Dict("u" => 1))
+
+        g_annulus = createGrid(gp_annulus); g_disc = createGrid(gp_disc)
+
+        # Axisymmetric linear f(r) = 2r + 5
+        pts_a = getGridpoints(g_annulus); pts_d = getGridpoints(g_disc)
+        for i in 1:size(pts_a, 1); g_annulus.physical[i, 1, 1] = 2*pts_a[i, 1] + 5; end
+        for i in 1:size(pts_d, 1); g_disc.physical[i, 1, 1] = 2*pts_d[i, 1] + 5; end
+        spectralTransform!(g_annulus); spectralTransform!(g_disc)
+
+        # Annulus is coarser → primary, disc is finer → secondary
+        iface = PatchInterface(g_annulus, g_disc, :left, :right, :i)
+        gridTransform!(g_annulus)
+        update_interface!(iface)
+        gridTransform!(g_disc)
+
+        # Linear should be well-represented
+        max_err = maximum(
+            abs(g_disc.physical[i, 1, 1] - (2*pts_d[i, 1] + 5))
+            for i in 1:size(pts_d, 1))
+        @test max_err < 1e-6
+    end
+
+    @testset "RL coarse-fine-coarse annulus chain" begin
+        # [0, 40] coarse (DX=4) → [40, 60] fine (DX=2) → [60, 100] coarse (DX=4)
+        # Exact 2:1 ratio at each interface
+        gp1 = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=40.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RL", iMin=40.0, iMax=60.0, num_cells=10,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => FixedBC()),
+            vars=Dict("u" => 1))
+        gp3 = SpringsteelGridParameters(
+            geometry="RL", iMin=60.0, iMax=100.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2); g3 = createGrid(gp3)
+
+        # Axisymmetric linear f(r) = -r + 50
+        for (g, pts) in [(g1, getGridpoints(g1)), (g2, getGridpoints(g2)), (g3, getGridpoints(g3))]
+            for i in 1:size(pts, 1); g.physical[i, 1, 1] = -pts[i, 1] + 50; end
+            spectralTransform!(g)
+        end
+
+        mpg = PatchChain([g1, g2, g3])
+        multiGridTransform!(mpg)
+
+        pts2 = getGridpoints(g2)
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - (-pts2[i, 1] + 50))
+            for i in 1:size(pts2, 1))
+        @test max_err < 1e-6
+    end
+
+    @testset "RL chain with patchOffsetL" begin
+        # Test that setting patchOffsetL gives correct ring sizes
+        # Annulus at large radius should have larger rings
+        gp_annulus = SpringsteelGridParameters(
+            geometry="RL", iMin=50.0, iMax=100.0, num_cells=10,
+            patchOffsetL=30,  # As if inner 30 gridpoints exist
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        g = createGrid(gp_annulus)
+
+        # First ring should have ri = 1 + 30 = 31, lpoints = 4 + 4*31 = 128
+        ring1 = g.jbasis.data[1, 1]
+        @test ring1.params.yDim == 4 + 4 * 31
+
+        # Without patchOffsetL, first ring would be ri=1, lpoints=8
+        gp_no_offset = SpringsteelGridParameters(
+            geometry="RL", iMin=50.0, iMax=100.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        g_no = createGrid(gp_no_offset)
+        ring1_no = g_no.jbasis.data[1, 1]
+        @test ring1_no.params.yDim == 8  # ri=1, lpoints=8
+
+        # patchOffsetL grid has much larger rings (appropriate for its radius)
+        @test ring1.params.yDim > 10 * ring1_no.params.yDim
+    end
+
 end

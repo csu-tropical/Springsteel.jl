@@ -468,6 +468,10 @@ include("basis_interface.jl")
 include("factory.jl")
 # deprecated.jl included below (after GridParameters is defined)
 
+# ── Per-wavenumber ahat registry (shared by transforms and multipatch) ───────
+# Must be included after types.jl (uses SpringsteelGrid), before transforms
+include("multipatch_registry.jl")
+
 # ── Cartesian and Cylindrical/Spherical transforms ───────────────────────────
 # Must be included after factory.jl (uses _RLGrid and related aliases)
 include("transforms_cartesian.jl")

@@ -261,11 +261,16 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
     spline_r  = zeros(Float64, grid.params.iDim, kDim * 2 + 1)   # first radial derivative
     spline_rr = zeros(Float64, grid.params.iDim, kDim * 2 + 1)   # second radial derivative
 
+    has_wn_ahat = _has_wavenumber_ahat(grid)
+
     for v in values(grid.params.vars)
         # ── Wavenumber 0 ─────────────────────────────────────────────────────
         k1 = 1
         k2 = grid.params.b_iDim
         grid.ibasis.data[1, v].b .= spectral[k1:k2, v]
+        if has_wn_ahat
+            grid.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(grid, v, 0)
+        end
         SAtransform!(grid.ibasis.data[1, v])
         SItransform!(grid.ibasis.data[1, v])
         spline_r[:, 1]  = SIxtransform(grid.ibasis.data[1, v])
@@ -282,6 +287,9 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
             p1 = ((p - 1) * grid.params.b_iDim) + 1
             p2 = p * grid.params.b_iDim
             grid.ibasis.data[2, v].b .= spectral[p1:p2, v]
+            if has_wn_ahat
+                grid.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(grid, v, p)
+            end
             SAtransform!(grid.ibasis.data[2, v])
             SItransform!(grid.ibasis.data[2, v])
             spline_r[:, p]  = SIxtransform(grid.ibasis.data[2, v])
@@ -290,6 +298,9 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
             p1 = (p * grid.params.b_iDim) + 1
             p2 = (p + 1) * grid.params.b_iDim
             grid.ibasis.data[3, v].b .= spectral[p1:p2, v]
+            if has_wn_ahat
+                grid.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(grid, v, p + 1)
+            end
             SAtransform!(grid.ibasis.data[3, v])
             SItransform!(grid.ibasis.data[3, v])
             spline_r[:, p + 1]  = SIxtransform(grid.ibasis.data[3, v])

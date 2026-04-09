@@ -2,6 +2,7 @@
 # Multi-patch grid connections via R3X coupling
 # ────────────────────────────────────────────────────────────────────────────
 
+
 """
     COUPLING_MATRIX_2X
 
@@ -325,29 +326,40 @@ function _write_interface_ahat!(spline::CubicBSpline.Spline1D,
 end
 
 """
-    update_interface!(iface::PatchInterface)
+    _is_reused_spline_grid(grid) -> Bool
 
-Transfer spectral coefficients from the primary patch to the secondary patch
-at the interface.
-
-Must be called after `gridTransform!` (or `SAtransform!`) on the primary and
-before `gridTransform!` on the secondary.  The primary's `.a` coefficients
-are extracted at the interface, multiplied by the 3×3 coupling matrix, and
-written to the secondary's `.ahat` vector.
-
-For 2D grids (e.g., RR), the transfer is performed independently for each
-j-spectral mode.
-
-# Example
-```julia
-gridTransform!(primary)
-update_interface!(iface)
-gridTransform!(secondary)
-```
-
-See also: [`PatchInterface`](@ref), [`multiGridTransform!`](@ref)
+Return `true` if the grid reuses spline objects across wavenumbers.
+RL, RLZ, SL, SLZ grids have only 3 ibasis splines (k=0, k-real, k-imag)
+shared across all wavenumbers, unlike R/RR/RRR which have dedicated splines
+per spectral mode.
 """
-function update_interface!(iface::PatchInterface)
+function _is_reused_spline_grid(grid::SpringsteelGrid)
+    return (grid.jbasis isa FourierBasisArray) && (grid.ibasis isa SplineBasisArray)
+end
+
+"""
+    _wavenumber_offset_formula(grid) -> Symbol
+
+Return the wavenumber offset convention for the grid's spectral layout.
+- `:rl` for RL, SL grids: `p = k * 2`
+- `:rlz` for RLZ, SLZ grids: `p = (k - 1) * 2`  (offset by 1, see TRAP-1)
+"""
+function _wavenumber_offset_formula(grid::SpringsteelGrid)
+    if grid.kbasis isa NoBasisArray
+        return :rl   # RL or SL (2D)
+    else
+        return :rlz  # RLZ or SLZ (3D)
+    end
+end
+
+"""
+    _update_interface_per_mode!(iface)
+
+Transfer interface coefficients for grids with dedicated splines per mode
+(R, RR, RRR).  Each ibasis.data[l, v] holds a separate spline whose `.a`
+is valid after gridTransform!.
+"""
+function _update_interface_per_mode!(iface::PatchInterface)
     nvars = length(iface.secondary.params.vars)
     n_modes = size(iface.secondary.ibasis.data, 1)
 
@@ -360,6 +372,121 @@ function update_interface!(iface::PatchInterface)
             a_border = iface.coupling_matrix * A_coeffs
             _write_interface_ahat!(secondary_spline, a_border, iface.secondary_side)
         end
+    end
+end
+
+"""
+    _update_interface_per_wavenumber!(iface)
+
+Transfer interface coefficients for grids with reused splines (RL, RLZ, SL, SLZ).
+
+Since ibasis.data has only 3 spline slots reused for all wavenumbers, we must:
+1. Load B-coefficients from the primary's spectral array per wavenumber
+2. Run SAtransform! to recover A-coefficients for that wavenumber
+3. Extract interface coefficients and couple them
+4. Store per-wavenumber ahat in the registry (read by gridTransform later)
+
+Uses RL offset convention `p = k*2`.  RLZ (`p = (k-1)*2`) will use a separate path.
+"""
+function _update_interface_per_wavenumber!(iface::PatchInterface)
+    nvars = length(iface.secondary.params.vars)
+    b_iDim_p = iface.primary.params.b_iDim
+    kDim_p = iface.primary.params.iDim + iface.primary.params.patchOffsetL
+    kDim_s = iface.secondary.params.iDim + iface.secondary.params.patchOffsetL
+
+    # Use the secondary's kDim for the ahat buffer size (what gridTransform will iterate)
+    # But couple only up to min(kDim_p, kDim_s) wavenumbers
+    kDim_couple = min(kDim_p, kDim_s)
+
+    for v in 1:nvars
+        # ── k=0: spline slot 1 ───────────────────────────────────────────
+        spline_k0 = iface.primary.ibasis.data[1, v]
+        spline_k0.b .= view(iface.primary.spectral, 1:b_iDim_p, v)
+        CubicBSpline.SAtransform!(spline_k0)
+
+        A_coeffs = _extract_primary_coeffs(spline_k0, iface.primary_node_indices)
+        a_border = iface.coupling_matrix * A_coeffs
+
+        # Write to the secondary spline's ahat for k=0 (slot 1 is always unique)
+        sec_spline_k0 = iface.secondary.ibasis.data[1, v]
+        _write_interface_ahat!(sec_spline_k0, a_border, iface.secondary_side)
+
+        # Also store in per-wavenumber registry for k=0 (slot 0)
+        ahat_k0 = copy(sec_spline_k0.ahat)
+        _set_wavenumber_ahat!(iface.secondary, v, 0, ahat_k0, kDim_s)
+
+        # ── k=1..kDim: spline slots 2 (real) and 3 (imag) ────────────────
+        for k in 1:kDim_couple
+            # RL convention: p = k * 2
+            p = k * 2
+
+            # Real part
+            p1_r = (p - 1) * b_iDim_p + 1
+            p2_r = p * b_iDim_p
+            spline_real = iface.primary.ibasis.data[2, v]
+            spline_real.b .= view(iface.primary.spectral, p1_r:p2_r, v)
+            CubicBSpline.SAtransform!(spline_real)
+
+            A_real = _extract_primary_coeffs(spline_real, iface.primary_node_indices)
+            a_border_r = iface.coupling_matrix * A_real
+
+            # Build full ahat vector for this wavenumber's real part
+            sec_spline_real = iface.secondary.ibasis.data[2, v]
+            _write_interface_ahat!(sec_spline_real, a_border_r, iface.secondary_side)
+            ahat_real = copy(sec_spline_real.ahat)
+            _set_wavenumber_ahat!(iface.secondary, v, p, ahat_real, kDim_s)
+
+            # Imaginary part
+            p1_i = p * b_iDim_p + 1
+            p2_i = (p + 1) * b_iDim_p
+            spline_imag = iface.primary.ibasis.data[3, v]
+            spline_imag.b .= view(iface.primary.spectral, p1_i:p2_i, v)
+            CubicBSpline.SAtransform!(spline_imag)
+
+            A_imag = _extract_primary_coeffs(spline_imag, iface.primary_node_indices)
+            a_border_i = iface.coupling_matrix * A_imag
+
+            sec_spline_imag = iface.secondary.ibasis.data[3, v]
+            _write_interface_ahat!(sec_spline_imag, a_border_i, iface.secondary_side)
+            ahat_imag = copy(sec_spline_imag.ahat)
+            _set_wavenumber_ahat!(iface.secondary, v, p + 1, ahat_imag, kDim_s)
+        end
+    end
+end
+
+"""
+    update_interface!(iface::PatchInterface)
+
+Transfer spectral coefficients from the primary patch to the secondary patch
+at the interface.
+
+Must be called after `gridTransform!` (or `SAtransform!`) on the primary and
+before `gridTransform!` on the secondary.  The primary's `.a` coefficients
+are extracted at the interface, multiplied by the 3×3 coupling matrix, and
+written to the secondary's `.ahat` vector.
+
+For grids with dedicated splines per mode (R, RR, RRR), the transfer is
+performed independently for each j-spectral mode.
+
+For grids with reused splines (RL, SL), per-wavenumber coupling is performed:
+B-coefficients are loaded from the spectral array, SAtransform! recovers
+A-coefficients, and the coupled ahat is stored in a per-wavenumber registry
+for use by gridTransform.
+
+# Example
+```julia
+gridTransform!(primary)
+update_interface!(iface)
+gridTransform!(secondary)
+```
+
+See also: [`PatchInterface`](@ref), [`multiGridTransform!`](@ref)
+"""
+function update_interface!(iface::PatchInterface)
+    if _is_reused_spline_grid(iface.secondary)
+        _update_interface_per_wavenumber!(iface)
+    else
+        _update_interface_per_mode!(iface)
     end
     return nothing
 end
@@ -532,6 +659,12 @@ function multiGridTransform!(mpg::MultiPatchGrid)
             end
         end
     end
+
+    # Clean up per-wavenumber ahat registry
+    for p in mpg.patches
+        _clear_wavenumber_ahat!(p)
+    end
+
     return nothing
 end
 
