@@ -646,6 +646,14 @@ function CIxxtransform(column::Chebyshev1D)
     return uxx
 end
 
+function CIxxtransform(column::Chebyshev1D, uxx::AbstractVector)
+    CIxcoefficients(column.params, column.a, column.ax)
+    copyto!(column._scratch_ax, column.ax)
+    CIxcoefficients(column.params, column._scratch_ax, column.ax)
+    mul!(uxx, column.fftPlan, column.ax)
+    return uxx
+end
+
 
 """
     dct_matrix(Nbasis::Int64) -> Matrix{Float64}

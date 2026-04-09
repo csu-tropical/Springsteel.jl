@@ -255,63 +255,66 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
 
     # Need to include patchOffset to get all available wavenumbers
     kDim = grid.params.iDim + grid.params.patchOffsetL
+    iDim = grid.params.iDim
+    b_iDim = grid.params.b_iDim
 
     # Buffers: spline evaluations at each radial gridpoint, for each spectral slot
     # Indexed as [r, wavenumber_slot] where slot 1 = k0, slots 2/3 = k1 real/imag, ...
-    spline_r  = zeros(Float64, grid.params.iDim, kDim * 2 + 1)   # first radial derivative
-    spline_rr = zeros(Float64, grid.params.iDim, kDim * 2 + 1)   # second radial derivative
+    spline_r  = zeros(Float64, iDim, kDim * 2 + 1)   # first radial derivative
+    spline_rr = zeros(Float64, iDim, kDim * 2 + 1)   # second radial derivative
 
     has_wn_ahat = _has_wavenumber_ahat(grid)
 
     for v in values(grid.params.vars)
         # ── Wavenumber 0 ─────────────────────────────────────────────────────
-        k1 = 1
-        k2 = grid.params.b_iDim
-        grid.ibasis.data[1, v].b .= spectral[k1:k2, v]
+        isp0 = grid.ibasis.data[1, v]
+        copyto!(isp0.b, view(spectral, 1:b_iDim, v))
         if has_wn_ahat
-            grid.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(grid, v, 0)
+            isp0.ahat .= _get_wavenumber_ahat(grid, v, 0)
         end
-        SAtransform!(grid.ibasis.data[1, v])
-        SItransform!(grid.ibasis.data[1, v])
-        spline_r[:, 1]  = SIxtransform(grid.ibasis.data[1, v])
-        spline_rr[:, 1] = SIxxtransform(grid.ibasis.data[1, v])
+        SAtransform!(isp0)
+        SItransform!(isp0)
+        SIxtransform(isp0,  view(spline_r,  :, 1))
+        SIxxtransform(isp0, view(spline_rr, :, 1))
 
-        for r in 1:grid.params.iDim
-            grid.jbasis.data[r, v].b[1] = grid.ibasis.data[1, v].uMish[r]
+        @inbounds for r in 1:iDim
+            grid.jbasis.data[r, v].b[1] = isp0.uMish[r]
         end
 
         # ── Higher wavenumbers ────────────────────────────────────────────────
         for k in 1:kDim
             p  = k * 2   # RL convention: p = k*2 (not (k-1)*2 — see TRAP-1)
 
-            p1 = ((p - 1) * grid.params.b_iDim) + 1
-            p2 = p * grid.params.b_iDim
-            grid.ibasis.data[2, v].b .= spectral[p1:p2, v]
+            p1 = ((p - 1) * b_iDim) + 1
+            p2 = p * b_iDim
+            ispR = grid.ibasis.data[2, v]
+            copyto!(ispR.b, view(spectral, p1:p2, v))
             if has_wn_ahat
-                grid.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(grid, v, p)
+                ispR.ahat .= _get_wavenumber_ahat(grid, v, p)
             end
-            SAtransform!(grid.ibasis.data[2, v])
-            SItransform!(grid.ibasis.data[2, v])
-            spline_r[:, p]  = SIxtransform(grid.ibasis.data[2, v])
-            spline_rr[:, p] = SIxxtransform(grid.ibasis.data[2, v])
+            SAtransform!(ispR)
+            SItransform!(ispR)
+            SIxtransform(ispR,  view(spline_r,  :, p))
+            SIxxtransform(ispR, view(spline_rr, :, p))
 
-            p1 = (p * grid.params.b_iDim) + 1
-            p2 = (p + 1) * grid.params.b_iDim
-            grid.ibasis.data[3, v].b .= spectral[p1:p2, v]
+            p1 = (p * b_iDim) + 1
+            p2 = (p + 1) * b_iDim
+            ispI = grid.ibasis.data[3, v]
+            copyto!(ispI.b, view(spectral, p1:p2, v))
             if has_wn_ahat
-                grid.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(grid, v, p + 1)
+                ispI.ahat .= _get_wavenumber_ahat(grid, v, p + 1)
             end
-            SAtransform!(grid.ibasis.data[3, v])
-            SItransform!(grid.ibasis.data[3, v])
-            spline_r[:, p + 1]  = SIxtransform(grid.ibasis.data[3, v])
-            spline_rr[:, p + 1] = SIxxtransform(grid.ibasis.data[3, v])
+            SAtransform!(ispI)
+            SItransform!(ispI)
+            SIxtransform(ispI,  view(spline_r,  :, p + 1))
+            SIxxtransform(ispI, view(spline_rr, :, p + 1))
 
-            for r in 1:grid.params.iDim
+            @inbounds for r in 1:iDim
                 if k <= r + grid.params.patchOffsetL
                     rk = k + 1
                     ik = grid.jbasis.data[r, v].params.bDim - k + 1
-                    grid.jbasis.data[r, v].b[rk] = grid.ibasis.data[2, v].uMish[r]
-                    grid.jbasis.data[r, v].b[ik] = grid.ibasis.data[3, v].uMish[r]
+                    grid.jbasis.data[r, v].b[rk] = ispR.uMish[r]
+                    grid.jbasis.data[r, v].b[ik] = ispI.uMish[r]
                 end
             end
         end
@@ -319,26 +322,27 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
         # ── Field values and azimuthal derivatives ────────────────────────────
         l1 = 0
         l2 = 0
-        for r in 1:grid.params.iDim
-            FAtransform!(grid.jbasis.data[r, v])
-            FItransform!(grid.jbasis.data[r, v])
+        for r in 1:iDim
+            jring = grid.jbasis.data[r, v]
+            FAtransform!(jring)
+            FItransform!(jring)
 
             ri      = r + grid.params.patchOffsetL
             l1 = l2 + 1
             l2 = l1 + 3 + (4 * ri)   # l2 - l1 + 1 = lpoints = 4 + 4*ri
-            physical[l1:l2, v, 1] .= grid.jbasis.data[r, v].uMish
-            physical[l1:l2, v, 4] .= FIxtransform(grid.jbasis.data[r, v])
-            physical[l1:l2, v, 5] .= FIxxtransform(grid.jbasis.data[r, v])
+            copyto!(view(physical, l1:l2, v, 1), jring.uMish)
+            FIxtransform(jring,  view(physical, l1:l2, v, 4))
+            FIxxtransform(jring, view(physical, l1:l2, v, 5))
         end
 
         # ── First radial derivative ∂f/∂r ─────────────────────────────────────
         # Reconstruct ring b-coefficients using the spline-derivative values
-        for r in 1:grid.params.iDim
+        @inbounds for r in 1:iDim
             grid.jbasis.data[r, v].b[1] = spline_r[r, 1]
         end
         for k in 1:kDim
             p = k * 2
-            for r in 1:grid.params.iDim
+            @inbounds for r in 1:iDim
                 if k <= r + grid.params.patchOffsetL
                     rk = k + 1
                     ik = grid.jbasis.data[r, v].params.bDim - k + 1
@@ -349,23 +353,24 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
         end
         l1 = 0
         l2 = 0
-        for r in 1:grid.params.iDim
-            FAtransform!(grid.jbasis.data[r, v])
-            FItransform!(grid.jbasis.data[r, v])
+        for r in 1:iDim
+            jring = grid.jbasis.data[r, v]
+            FAtransform!(jring)
+            FItransform!(jring)
 
             ri = r + grid.params.patchOffsetL
             l1 = l2 + 1
             l2 = l1 + 3 + (4 * ri)
-            physical[l1:l2, v, 2] .= grid.jbasis.data[r, v].uMish
+            copyto!(view(physical, l1:l2, v, 2), jring.uMish)
         end
 
         # ── Second radial derivative ∂²f/∂r² ──────────────────────────────────
-        for r in 1:grid.params.iDim
+        @inbounds for r in 1:iDim
             grid.jbasis.data[r, v].b[1] = spline_rr[r, 1]
         end
         for k in 1:kDim
             p = k * 2
-            for r in 1:grid.params.iDim
+            @inbounds for r in 1:iDim
                 if k <= r + grid.params.patchOffsetL
                     rk = k + 1
                     ik = grid.jbasis.data[r, v].params.bDim - k + 1
@@ -376,14 +381,15 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
         end
         l1 = 0
         l2 = 0
-        for r in 1:grid.params.iDim
-            FAtransform!(grid.jbasis.data[r, v])
-            FItransform!(grid.jbasis.data[r, v])
+        for r in 1:iDim
+            jring = grid.jbasis.data[r, v]
+            FAtransform!(jring)
+            FItransform!(jring)
 
             ri = r + grid.params.patchOffsetL
             l1 = l2 + 1
             l2 = l1 + 3 + (4 * ri)
-            physical[l1:l2, v, 3] .= grid.jbasis.data[r, v].uMish
+            copyto!(view(physical, l1:l2, v, 3), jring.uMish)
         end
 
     end  # for v
@@ -619,11 +625,16 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
 
     # Spline evaluation buffer: [iDim, 3] for (k=0, k_real, k_imag) working columns
     splineBuffer = zeros(Float64, iDim, 3)
+    # Per-r ringBuffer reused across (dr,dl) iterations. Sized to the largest ring;
+    # only the first `lpoints` rows of each column are touched at each radius.
+    max_lpoints = 4 + 4 * (iDim + grid.params.patchOffsetL)
+    ringBuffer  = zeros(Float64, max_lpoints, b_kDim)
 
     has_wn_ahat = _has_wavenumber_ahat(grid)
     slots_per_z = 1 + 2 * kDim_wn
 
     for v in values(grid.params.vars)
+        kcol = grid.kbasis.data[v]
         for dr in 0:2
             # ── Spline + FAtransform stage ────────────────────────────────────
             for z_b in 1:b_kDim
@@ -633,19 +644,22 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
                 z_slot_base = (z_b - 1) * slots_per_z
 
                 # Wavenumber 0
-                grid.ibasis.data[1, v].b .= spectral[r1:r2, v]
+                isp0 = grid.ibasis.data[1, v]
+                copyto!(isp0.b, view(spectral, r1:r2, v))
                 if has_wn_ahat
-                    grid.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 0)
+                    isp0.ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 0)
                 end
-                SAtransform!(grid.ibasis.data[1, v])
+                SAtransform!(isp0)
+                buf0 = view(splineBuffer, :, 1)
                 if dr == 0
-                    splineBuffer[:, 1] .= SItransform!(grid.ibasis.data[1, v])
+                    SItransform!(isp0)
+                    copyto!(buf0, isp0.uMish)
                 elseif dr == 1
-                    splineBuffer[:, 1] .= SIxtransform(grid.ibasis.data[1, v])
+                    SIxtransform(isp0, buf0)
                 else
-                    splineBuffer[:, 1] .= SIxxtransform(grid.ibasis.data[1, v])
+                    SIxxtransform(isp0, buf0)
                 end
-                for r in 1:iDim
+                @inbounds for r in 1:iDim
                     grid.jbasis.data[r, z_b].b[1] = splineBuffer[r, 1]
                 end
 
@@ -656,35 +670,41 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
                     p1 = r2 + 1 + (p * b_iDim)
                     p2 = p1 + b_iDim - 1
 
-                    grid.ibasis.data[2, v].b .= spectral[p1:p2, v]
+                    ispR = grid.ibasis.data[2, v]
+                    copyto!(ispR.b, view(spectral, p1:p2, v))
                     if has_wn_ahat
-                        grid.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p)
+                        ispR.ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p)
                     end
-                    SAtransform!(grid.ibasis.data[2, v])
+                    SAtransform!(ispR)
+                    bufR = view(splineBuffer, :, 2)
                     if dr == 0
-                        splineBuffer[:, 2] .= SItransform!(grid.ibasis.data[2, v])
+                        SItransform!(ispR)
+                        copyto!(bufR, ispR.uMish)
                     elseif dr == 1
-                        splineBuffer[:, 2] .= SIxtransform(grid.ibasis.data[2, v])
+                        SIxtransform(ispR, bufR)
                     else
-                        splineBuffer[:, 2] .= SIxxtransform(grid.ibasis.data[2, v])
+                        SIxxtransform(ispR, bufR)
                     end
 
                     p1 = p2 + 1
                     p2 = p1 + b_iDim - 1
-                    grid.ibasis.data[3, v].b .= spectral[p1:p2, v]
+                    ispI = grid.ibasis.data[3, v]
+                    copyto!(ispI.b, view(spectral, p1:p2, v))
                     if has_wn_ahat
-                        grid.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p + 1)
+                        ispI.ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p + 1)
                     end
-                    SAtransform!(grid.ibasis.data[3, v])
+                    SAtransform!(ispI)
+                    bufI = view(splineBuffer, :, 3)
                     if dr == 0
-                        splineBuffer[:, 3] .= SItransform!(grid.ibasis.data[3, v])
+                        SItransform!(ispI)
+                        copyto!(bufI, ispI.uMish)
                     elseif dr == 1
-                        splineBuffer[:, 3] .= SIxtransform(grid.ibasis.data[3, v])
+                        SIxtransform(ispI, bufI)
                     else
-                        splineBuffer[:, 3] .= SIxxtransform(grid.ibasis.data[3, v])
+                        SIxxtransform(ispI, bufI)
                     end
 
-                    for r in 1:iDim
+                    @inbounds for r in 1:iDim
                         if k <= r + grid.params.patchOffsetL
                             rk = k + 1
                             ik = grid.jbasis.data[r, z_b].params.bDim - k + 1
@@ -705,7 +725,6 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
             for r in 1:iDim
                 ri      = r + grid.params.patchOffsetL
                 lpoints = 4 + 4*ri
-                ringBuffer = zeros(Float64, lpoints, b_kDim)
 
                 for dl in 0:2
                     # No mixed r/λ derivatives
@@ -715,41 +734,45 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
 
                     # Fill ringBuffer from Fourier rings at each z-level
                     for z_b in 1:b_kDim
+                        jring  = grid.jbasis.data[r, z_b]
+                        rb_col = view(ringBuffer, 1:lpoints, z_b)
                         if dr == 0
                             if dl == 0
-                                ringBuffer[:, z_b] .= FItransform!(grid.jbasis.data[r, z_b])
+                                FItransform!(jring)
+                                copyto!(rb_col, jring.uMish)
                             elseif dl == 1
-                                ringBuffer[:, z_b] .= FIxtransform(grid.jbasis.data[r, z_b])
+                                FIxtransform(jring, rb_col)
                             else
-                                ringBuffer[:, z_b] .= FIxxtransform(grid.jbasis.data[r, z_b])
+                                FIxxtransform(jring, rb_col)
                             end
                         else
-                            ringBuffer[:, z_b] .= FItransform!(grid.jbasis.data[r, z_b])
+                            FItransform!(jring)
+                            copyto!(rb_col, jring.uMish)
                         end
                     end
 
                     # Chebyshev inverse transform per (r, l) column
                     for l in 1:lpoints
-                        for z_b in 1:b_kDim
-                            grid.kbasis.data[v].b[z_b] = ringBuffer[l, z_b]
+                        @inbounds for z_b in 1:b_kDim
+                            kcol.b[z_b] = ringBuffer[l, z_b]
                         end
-                        CAtransform!(grid.kbasis.data[v])
-                        CItransform!(grid.kbasis.data[v])
+                        CAtransform!(kcol)
+                        CItransform!(kcol)
 
                         z1 = zi + (l-1)*kDim
                         z2 = z1 + kDim - 1
                         if dr == 0 && dl == 0
-                            physical[z1:z2, v, 1] .= grid.kbasis.data[v].uMish
-                            physical[z1:z2, v, 6] .= CIxtransform(grid.kbasis.data[v])
-                            physical[z1:z2, v, 7] .= CIxxtransform(grid.kbasis.data[v])
+                            copyto!(view(physical, z1:z2, v, 1), kcol.uMish)
+                            CIxtransform(kcol,  view(physical, z1:z2, v, 6))
+                            CIxxtransform(kcol, view(physical, z1:z2, v, 7))
                         elseif dr == 0 && dl == 1
-                            physical[z1:z2, v, 4] .= grid.kbasis.data[v].uMish
+                            copyto!(view(physical, z1:z2, v, 4), kcol.uMish)
                         elseif dr == 0 && dl == 2
-                            physical[z1:z2, v, 5] .= grid.kbasis.data[v].uMish
+                            copyto!(view(physical, z1:z2, v, 5), kcol.uMish)
                         elseif dr == 1
-                            physical[z1:z2, v, 2] .= grid.kbasis.data[v].uMish
+                            copyto!(view(physical, z1:z2, v, 2), kcol.uMish)
                         elseif dr == 2
-                            physical[z1:z2, v, 3] .= grid.kbasis.data[v].uMish
+                            copyto!(view(physical, z1:z2, v, 3), kcol.uMish)
                         end
                     end
                 end  # for dl

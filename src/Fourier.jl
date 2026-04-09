@@ -519,6 +519,14 @@ function FIxxtransform(ring::Fourier1D)
     return uxx
 end
 
+function FIxxtransform(ring::Fourier1D, uxx::AbstractVector)
+    FIxcoefficients(ring.params, ring.a, ring.ax)
+    copyto!(ring._scratch_ax, ring.ax)
+    FIxcoefficients(ring.params, ring._scratch_ax, ring.ax)
+    mul!(uxx, ring.ifftPlan, ring.ax)
+    return uxx
+end
+
 """
     FIIntcoefficients(fp::FourierParameters, a::Vector{Float64}, aInt::Vector{Float64}, C0::Float64 = 0.0) -> Vector{Float64}
 
