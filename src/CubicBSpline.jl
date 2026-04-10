@@ -273,6 +273,218 @@ function _validate_spline_params(sp::SplineParameters)
     end
 end
 
+# BC kind codes for GammaBC fast-path dispatch (Int8 to keep struct compact).
+const _GBC_R0  = Int8(0)   # No constraints; identity block over the relevant range
+const _GBC_α1  = Int8(1)   # Rank-1 (Dirichlet-like): two stacked entries on the boundary column
+const _GBC_α2  = Int8(2)   # Rank-2: two stacked entries on a single boundary row
+const _GBC_PER = Int8(3)   # Periodic wraparound (corner couplings)
+const _GBC_R3  = Int8(4)   # Rank-3 (R3 / R3X): pure interior selector, no boundary contribution
+
+"""
+    GammaBC <: AbstractMatrix{Float64}
+
+Structured representation of the boundary-condition projection matrix Γ.
+
+Γ has size `(Minterior, Mdim)` and a very specific shape: an identity block over
+the interior columns plus at most two non-zero entries per boundary column. Storing
+the full dense matrix wastes both memory and time — every `mul!(out, Γ, b)` in
+`SAtransform!` was an O(Mdim²) matrix-vector product against an essentially
+identity matrix. This type exposes the structure to enable O(Mdim) apply operations
+while still subtyping `AbstractMatrix{Float64}` for any code path that wants the
+dense view (`Matrix(γ)`, `getindex`, `≈`, etc.).
+
+# Apply rules
+
+Let `i ∈ 1:Minterior` and `j ∈ 1:Mdim`. The interior identity block satisfies
+`Γ[i, i + rankL] = 1`, so
+
+    (Γ b)[i] = b[i + rankL]                       for i ∈ 1:Minterior
+    (Γᵀ x)[j] = x[j - rankL]                      for j ∈ rankL+1 : Mdim - rankR
+
+Plus boundary corrections (added on top of the base shift); see the source for the
+full BCL/BCR table.
+"""
+struct GammaBC <: AbstractMatrix{Float64}
+    Mdim::Int
+    Minterior::Int
+    rankL::Int
+    rankR::Int
+    leftKind::Int8
+    rightKind::Int8
+    αL::Float64
+    βL::Float64
+    αR::Float64
+    βR::Float64
+end
+
+Base.size(γ::GammaBC) = (γ.Minterior, γ.Mdim)
+
+@inline function Base.getindex(γ::GammaBC, i::Int, j::Int)
+    @boundscheck checkbounds(γ, i, j)
+    val = (j == i + γ.rankL) ? 1.0 : 0.0
+    if γ.leftKind == _GBC_α1
+        if j == 1
+            i == 1 && (val += γ.αL)
+            i == 2 && (val += γ.βL)
+        end
+    elseif γ.leftKind == _GBC_α2
+        if j == 1 && i == 1
+            val += γ.αL
+        elseif j == 2 && i == 1
+            val += γ.βL
+        end
+    elseif γ.leftKind == _GBC_PER
+        if j == 1 && i == γ.Minterior
+            val += 1.0
+        end
+    end
+    if γ.rightKind == _GBC_α1
+        if j == γ.Mdim
+            i == γ.Minterior     && (val += γ.αR)
+            i == γ.Minterior - 1 && (val += γ.βR)
+        end
+    elseif γ.rightKind == _GBC_α2
+        if j == γ.Mdim && i == γ.Minterior
+            val += γ.αR
+        elseif j == γ.Mdim - 1 && i == γ.Minterior
+            val += γ.βR
+        end
+    elseif γ.rightKind == _GBC_PER
+        if j == γ.Mdim - 1 && i == 1
+            val += 1.0
+        elseif j == γ.Mdim && i == 2
+            val += 1.0
+        end
+    end
+    return val
+end
+
+"""
+    GammaBC(sp::SplineParameters) -> GammaBC
+
+Build the structured Γ operator from a `SplineParameters`. Mirrors the BC ladder
+in [`calcGammaBC`](@ref) — both must agree element-wise (verified in tests).
+"""
+function GammaBC(sp::SplineParameters)
+    if haskey(sp.BCL, "α1")
+        rankL = 1; leftKind = _GBC_α1
+        αL = sp.BCL["α1"]; βL = sp.BCL["β1"]
+    elseif haskey(sp.BCL, "α2")
+        rankL = 2; leftKind = _GBC_α2
+        αL = sp.BCL["α2"]; βL = sp.BCL["β2"]
+    elseif sp.BCL == R0
+        rankL = 0; leftKind = _GBC_R0
+        αL = 0.0; βL = 0.0
+    elseif sp.BCL == R3 || haskey(sp.BCL, "R3X")
+        rankL = 3; leftKind = _GBC_R3
+        αL = 0.0; βL = 0.0
+    elseif sp.BCL == PERIODIC
+        rankL = 1; leftKind = _GBC_PER
+        αL = 0.0; βL = 0.0
+    else
+        error("GammaBC: unrecognised BCL: $(sp.BCL)")
+    end
+
+    if haskey(sp.BCR, "α1")
+        rankR = 1; rightKind = _GBC_α1
+        αR = sp.BCR["α1"]; βR = sp.BCR["β1"]
+    elseif haskey(sp.BCR, "α2")
+        rankR = 2; rightKind = _GBC_α2
+        αR = sp.BCR["α2"]; βR = sp.BCR["β2"]
+    elseif sp.BCR == R0
+        rankR = 0; rightKind = _GBC_R0
+        αR = 0.0; βR = 0.0
+    elseif sp.BCR == R3 || haskey(sp.BCR, "R3X")
+        rankR = 3; rightKind = _GBC_R3
+        αR = 0.0; βR = 0.0
+    elseif sp.BCR == PERIODIC
+        rankR = 2; rightKind = _GBC_PER
+        αR = 0.0; βR = 0.0
+    else
+        error("GammaBC: unrecognised BCR: $(sp.BCR)")
+    end
+
+    Mdim = sp.num_cells + 3
+    Minterior = Mdim - rankL - rankR
+    return GammaBC(Mdim, Minterior, rankL, rankR, leftKind, rightKind, αL, βL, αR, βR)
+end
+
+# ── Fast in-place apply: out (Minterior) ← Γ * b (Mdim) ────────────────────────
+function LinearAlgebra.mul!(out::AbstractVector{Float64},
+                            γ::GammaBC,
+                            b::AbstractVector{Float64})
+    Min = γ.Minterior
+    rL  = γ.rankL
+    @boundscheck (length(out) == Min && length(b) == γ.Mdim) ||
+        throw(DimensionMismatch("GammaBC mul!: size(γ)=$((Min,γ.Mdim)), out=$(length(out)), b=$(length(b))"))
+    @inbounds for i in 1:Min
+        out[i] = b[i + rL]
+    end
+    lk = γ.leftKind
+    @inbounds if lk == _GBC_α1
+        out[1] += γ.αL * b[1]
+        out[2] += γ.βL * b[1]
+    elseif lk == _GBC_α2
+        out[1] += γ.αL * b[1] + γ.βL * b[2]
+    elseif lk == _GBC_PER
+        out[Min] += b[1]
+    end
+    rk = γ.rightKind
+    Mdim = γ.Mdim
+    @inbounds if rk == _GBC_α1
+        out[Min]     += γ.αR * b[Mdim]
+        out[Min - 1] += γ.βR * b[Mdim]
+    elseif rk == _GBC_α2
+        out[Min]     += γ.αR * b[Mdim] + γ.βR * b[Mdim - 1]
+    elseif rk == _GBC_PER
+        out[1] += b[Mdim - 1]
+        out[2] += b[Mdim]
+    end
+    return out
+end
+
+# ── Fast in-place apply: out (Mdim) ← Γᵀ * x (Minterior) ───────────────────────
+function LinearAlgebra.mul!(out::AbstractVector{Float64},
+                            γt::LinearAlgebra.Adjoint{Float64,GammaBC},
+                            x::AbstractVector{Float64})
+    γ = parent(γt)
+    Min = γ.Minterior
+    rL  = γ.rankL
+    rR  = γ.rankR
+    Mdim = γ.Mdim
+    @boundscheck (length(out) == Mdim && length(x) == Min) ||
+        throw(DimensionMismatch("GammaBC adjoint mul!: size(γᵀ)=$((Mdim,Min)), out=$(length(out)), x=$(length(x))"))
+    @inbounds for j in 1:rL
+        out[j] = 0.0
+    end
+    @inbounds for j in (Mdim - rR + 1):Mdim
+        out[j] = 0.0
+    end
+    @inbounds for i in 1:Min
+        out[i + rL] = x[i]
+    end
+    lk = γ.leftKind
+    @inbounds if lk == _GBC_α1
+        out[1] = γ.αL * x[1] + γ.βL * x[2]
+    elseif lk == _GBC_α2
+        out[1] = γ.αL * x[1]
+        out[2] = γ.βL * x[1]
+    elseif lk == _GBC_PER
+        out[1] = x[Min]
+    end
+    rk = γ.rightKind
+    @inbounds if rk == _GBC_α1
+        out[Mdim] = γ.αR * x[Min] + γ.βR * x[Min - 1]
+    elseif rk == _GBC_α2
+        out[Mdim - 1] = γ.βR * x[Min]
+        out[Mdim]     = γ.αR * x[Min]
+    elseif rk == _GBC_PER
+        out[Mdim - 1] = x[1]
+        out[Mdim]     = x[2]
+    end
+    return out
+end
+
 """
     Spline1D
 
@@ -305,7 +517,7 @@ struct Spline1D
     params::SplineParameters
     quadpoints::Vector{real}
     quadweights::Vector{real}
-    gammaBC::Matrix{real}
+    gammaBC::GammaBC
     pq::Symmetric{Float64, Matrix{Float64}}
     pqFactor::Union{BandedCholesky3, DenseSplineFactor}
     p1::Symmetric{Float64, Matrix{Float64}}
@@ -500,7 +712,10 @@ Cholesky decomposition for repeated fast linear solves during [`SAtransform`](@r
 # Returns
 - `(pq::Matrix{Float64}, pqFactor::AbstractSplineFactor)`: Full `(P + Q)` matrix and its Cholesky factor
 """
-function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
+function calcPQfactor(sp::SplineParameters, gammaBC::AbstractMatrix{real})
+    # One-time construction: materialise a dense view of Γ for the BC fold below.
+    # Apply hot path uses the structured GammaBC and never goes through this path.
+    gammaBC_dense = gammaBC isa Matrix{real} ? gammaBC : Matrix{real}(gammaBC)
     qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
     eps_q = ((sp.l_q*sp.DX)/(2*π))^6
     Mdim = sp.num_cells + 3
@@ -539,7 +754,7 @@ function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
 
     # Fold in the BCs to get open form
     PQ = Symmetric(P + Q)
-    PQopen = Symmetric((gammaBC * P * gammaBC') + (gammaBC * Q * gammaBC'))
+    PQopen = Symmetric((gammaBC_dense * P * gammaBC_dense') + (gammaBC_dense * Q * gammaBC_dense'))
     # Cubic B-splines have fixed half-bandwidth 3 in (P+Q), preserved by all
     # non-periodic BC reductions in calcGammaBC. The PERIODIC case introduces
     # corner wraparound (γ row 1 → col Mdim-1, etc.) that breaks the band
@@ -573,7 +788,8 @@ indefinite integral.
 
 See also: [`calcPQfactor`](@ref), [`SIIntcoefficients`](@ref)
 """
-function calcP1factor(sp::SplineParameters, gammaBC::Matrix{real})
+function calcP1factor(sp::SplineParameters, gammaBC::AbstractMatrix{real})
+    gammaBC_dense = gammaBC isa Matrix{real} ? gammaBC : Matrix{real}(gammaBC)
     qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
     eps_q = ((sp.l_q*sp.DX)/(2*π))^6
     Mdim = sp.num_cells + 3
@@ -617,7 +833,7 @@ function calcP1factor(sp::SplineParameters, gammaBC::Matrix{real})
     # is set by the caller. The regularization does not affect the non-constant modes.
     eps_lambda = 1e-10
     P1Q = Symmetric(P1 + Q)
-    P1Qopen_raw = (gammaBC * P1 * gammaBC') + (gammaBC * Q * gammaBC')
+    P1Qopen_raw = (gammaBC_dense * P1 * gammaBC_dense') + (gammaBC_dense * Q * gammaBC_dense')
     n = size(P1Qopen_raw, 1)
     # Add the Tikhonov regularizer directly into the dense matrix before
     # wrapping as Symmetric — keeps the operation purely dense and preserves
@@ -698,7 +914,7 @@ function Spline1D(sp::SplineParameters)
     _validate_spline_params(sp)
     qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
 
-    gammaBC = calcGammaBC(sp)
+    gammaBC = GammaBC(sp)
     pq, pqFactor = calcPQfactor(sp, gammaBC)
     p1, p1Factor = calcP1factor(sp, gammaBC)
 
@@ -946,7 +1162,7 @@ is applied separately via `C0` in [`SIInttransform`](@ref).
 
 See also: [`SIInttransform`](@ref), [`SBxtransform`](@ref), [`calcP1factor`](@ref)
 """
-function SIIntcoefficients(sp::SplineParameters, gammaBC::Matrix{real}, p1Factor, uMish::Vector{real})
+function SIIntcoefficients(sp::SplineParameters, gammaBC::AbstractMatrix{real}, p1Factor, uMish::Vector{real})
     # RHS = ∫ φ'_m f dx = -SBxtransform(f, 0, 0)
     bx = SBxtransform(sp, uMish, 0.0, 0.0)
     aInt = gammaBC' * (p1Factor \ (gammaBC * (-bx)))
@@ -1004,7 +1220,7 @@ every physical output value.
 
 See also: [`SIIntcoefficients`](@ref), [`SItransform`](@ref), [`SIxtransform`](@ref)
 """
-function SIInttransform(sp::SplineParameters, gammaBC::Matrix{real}, p1Factor, uMish::Vector{real}, C0::real = 0.0)
+function SIInttransform(sp::SplineParameters, gammaBC::AbstractMatrix{real}, p1Factor, uMish::Vector{real}, C0::real = 0.0)
     aInt = SIIntcoefficients(sp, gammaBC, p1Factor, uMish)
     uInt = SItransform(sp, aInt)
     return uInt .+ C0
@@ -1059,7 +1275,7 @@ pre-computed (and pre-factored) variational matrix.
 
 See also: [`SBtransform`](@ref), [`SItransform`](@ref)
 """
-function SAtransform(sp::SplineParameters, gammaBC::Matrix{Float64}, pqFactor, b::Vector{real})
+function SAtransform(sp::SplineParameters, gammaBC::AbstractMatrix{Float64}, pqFactor, b::Vector{real})
     a = gammaBC' * (pqFactor \ (gammaBC * b))
     return a
 end
@@ -1438,7 +1654,7 @@ with reduced column count.
 
 See also: [`spline_1st_derivative_matrix`](@ref), [`spline_2nd_derivative_matrix`](@ref)
 """
-function spline_basis_matrix(spline::Spline1D; gammaBC::Union{Matrix{Float64}, Nothing}=nothing)
+function spline_basis_matrix(spline::Spline1D; gammaBC::Union{AbstractMatrix{Float64}, Nothing}=nothing)
     sp = spline.params
     M = zeros(Float64, sp.mishDim, sp.bDim)
     for i in 1:sp.mishDim
@@ -1473,7 +1689,7 @@ with reduced column count.
 
 See also: [`spline_basis_matrix`](@ref), [`spline_2nd_derivative_matrix`](@ref)
 """
-function spline_1st_derivative_matrix(spline::Spline1D; gammaBC::Union{Matrix{Float64}, Nothing}=nothing)
+function spline_1st_derivative_matrix(spline::Spline1D; gammaBC::Union{AbstractMatrix{Float64}, Nothing}=nothing)
     sp = spline.params
     M = zeros(Float64, sp.mishDim, sp.bDim)
     for i in 1:sp.mishDim
@@ -1508,7 +1724,7 @@ with reduced column count.
 
 See also: [`spline_basis_matrix`](@ref), [`spline_1st_derivative_matrix`](@ref)
 """
-function spline_2nd_derivative_matrix(spline::Spline1D; gammaBC::Union{Matrix{Float64}, Nothing}=nothing)
+function spline_2nd_derivative_matrix(spline::Spline1D; gammaBC::Union{AbstractMatrix{Float64}, Nothing}=nothing)
     sp = spline.params
     M = zeros(Float64, sp.mishDim, sp.bDim)
     for i in 1:sp.mishDim

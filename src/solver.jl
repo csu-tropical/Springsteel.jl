@@ -581,7 +581,7 @@ function _build_gammaBC_total(grid::AbstractGrid, var_idx::Int)
         end
         obj = _get_basis_object(grid, dim, var_idx)
         if obj isa CubicBSpline.Spline1D
-            push!(matrices, obj.gammaBC')  # bDim × Minterior
+            push!(matrices, Matrix(obj.gammaBC'))  # bDim × Minterior
             has_spline = true
         else
             # Use the actual column count of the basis matrix, not spectral_dim,
