@@ -154,8 +154,10 @@ struct Chebyshev1D
     # Pre-calculated Chebyshev–Gauss–Lobatto points (extrema of Chebyshev polynomials)
     mishPoints::Vector{real}
 
-    # Scalar, vector, or matrix that enforces boundary conditions
-    gammaBC::Array{real}
+    # Vector or matrix that enforces boundary conditions. Concrete union enables
+    # union splitting for the dispatch in CAtransform!; abstract `Array{real}`
+    # would box every field access (~16 B per CAtransform! call).
+    gammaBC::Union{Vector{Float64}, Matrix{Float64}}
 
     # Measured FFTW Plan
     fftPlan::FFTW.r2rFFTWPlan
