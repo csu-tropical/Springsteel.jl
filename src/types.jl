@@ -237,8 +237,8 @@ struct SpringsteelGrid{G <: AbstractGeometry, I, J, K} <: AbstractGrid
     ibasis   :: I    # SplineBasisArray | FourierBasisArray | ChebyshevBasisArray | NoBasisArray
     jbasis   :: J
     kbasis   :: K
-    spectral :: Array{Float64}
-    physical :: Array{Float64}
+    spectral :: Matrix{Float64}      # always 2D: (spectral_total, nvars)
+    physical :: Array{Float64, 3}    # always 3D: (physical_total, nvars, nderiv)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
