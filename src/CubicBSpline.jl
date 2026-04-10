@@ -7,11 +7,16 @@ using LinearAlgebra
 using SparseArrays
 using SuiteSparse
 
+# Banded LLᵀ Cholesky factor for the (P+Q) variational system.
+# Provides AbstractSplineFactor, BandedCholesky3, DenseSplineFactor and
+# allocation-free ldiv! used by SAtransform!.
+include("banded_cholesky.jl")
+
 export SplineParameters, Spline1D
 #export R0, R1T0, R1T1, R1T2, R2T10, R2T20, R3, PERIODIC
 export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
-export SIIntcoefficients, SIInttransform
+export SIIntcoefficients, SIInttransform, SIIntcoefficients!, SIInttransform!, SBxtransform!
 export setMishValues
 export set_ahat_r3x!
 # Generic (no-prefix) wrappers for abstract 1D basis dispatch
@@ -279,9 +284,9 @@ One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParame
 - `quadweights::Vector{Float64}`: Quadrature weights normalised to sum to 1 (length `mubar`)
 - `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix (maps interior to full coefficient space)
 - `pq`: Full `(P + Q)` matrix used in the least-squares / variational solve
-- `pqFactor::SuiteSparse.CHOLMOD.Factor{Float64}`: Sparse Cholesky factorisation of the open-form `(P + Q)` matrix for fast solves
+- `pqFactor::AbstractSplineFactor`: Banded LLᵀ Cholesky factorisation of the open-form `(P + Q)` matrix for fast solves. A [`BandedCholesky3`](@ref) for non-periodic BCs (cubic B-splines have fixed half-bandwidth 3); a [`DenseSplineFactor`](@ref) for the periodic-BC fallback where Γ wraparound breaks the band structure.
 - `p1`: Full `(P⁽¹⁾ + Q)` matrix for the integral variational solve (same Q as `pq`, but P uses first-derivative basis ``\\varphi'_m``; see [`calcP1factor`](@ref))
-- `p1Factor::SuiteSparse.CHOLMOD.Factor{Float64}`: Sparse Cholesky factorisation of the open-form `(P⁽¹⁾ + Q)` matrix, used by [`SIIntcoefficients`](@ref) for fast integration solves
+- `p1Factor::AbstractSplineFactor`: Banded (or dense, for periodic BCs) LLᵀ Cholesky factorisation of the open-form `(P⁽¹⁾ + Q)` matrix, used by [`SIIntcoefficients`](@ref) for fast integration solves
 - `mishPoints::Vector{Float64}`: Physical locations of the mish points (length `num_cells * mubar`)
 - `uMish::Vector{Float64}`: Physical field values at mish points (mutable working buffer)
 - `b::Vector{Float64}`: B-vector (result of SB transform, inner products ⟨φₘ, u⟩)
@@ -302,21 +307,25 @@ struct Spline1D
     quadweights::Vector{real}
     gammaBC::Matrix{real}
     pq
-    pqFactor::SuiteSparse.CHOLMOD.Factor{Float64}
+    pqFactor::AbstractSplineFactor
     p1
-    p1Factor::SuiteSparse.CHOLMOD.Factor{Float64}
+    p1Factor::AbstractSplineFactor
     mishPoints::Vector{real}
     uMish::Vector{real}
     b::Vector{real}
     a::Vector{real}
     ahat::Vector{real}
-    # Scratch buffers for in-place SAtransform!. Allocated once at construction.
-    # `_scratch_btilde` (length bDim) holds (b - pq·ahat) for the R3X path.
+    # Scratch buffers for in-place transforms. Allocated once at construction.
+    # `_scratch_btilde` (length bDim) holds (b - pq·ahat) for the R3X SA path
+    #   and the negated SBxtransform output for the integration (SIInt) path.
     # `_scratch_Min`/`_scratch_Mout` (length Minterior) hold the input/output
-    # of the CHOLMOD pqFactor solve in interior space.
+    #   of the pqFactor / p1Factor solve in interior space.
+    # `_scratch_bx` (length bDim) holds the SBxtransform forward result for
+    #   the SIIntcoefficients path.
     _scratch_btilde::Vector{real}
     _scratch_Min::Vector{real}
     _scratch_Mout::Vector{real}
+    _scratch_bx::Vector{real}
 end
 
 """
@@ -467,9 +476,10 @@ function calcGammaBC(sp::SplineParameters)
 end
 
 """
-    calcPQfactor(sp::SplineParameters, gammaBC::Matrix{Float64}) -> (Matrix{Float64}, SuiteSparse.CHOLMOD.Factor)
+    calcPQfactor(sp::SplineParameters, gammaBC::Matrix{Float64}) -> (Matrix{Float64}, AbstractSplineFactor)
 
-Build the variational `(P + Q)` matrix and return its sparse Cholesky factorisation.
+Build the variational `(P + Q)` matrix and return its banded LLᵀ Cholesky factorisation
+(or a dense Cholesky fallback for the periodic-BC edge case).
 
 Following Ooyama (2002), the spectral fit minimises a penalised least-squares functional:
 
@@ -488,7 +498,7 @@ Cholesky decomposition for repeated fast linear solves during [`SAtransform`](@r
 - `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix from [`calcGammaBC`](@ref)
 
 # Returns
-- `(pq::Matrix{Float64}, pqFactor)`: Full `(P + Q)` matrix and its Cholesky factor
+- `(pq::Matrix{Float64}, pqFactor::AbstractSplineFactor)`: Full `(P + Q)` matrix and its Cholesky factor
 """
 function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
     qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
@@ -530,15 +540,20 @@ function calcPQfactor(sp::SplineParameters, gammaBC::Matrix{real})
     # Fold in the BCs to get open form
     PQ = Symmetric(P + Q)
     PQopen = Symmetric((gammaBC * P * gammaBC') + (gammaBC * Q * gammaBC'))
-    PQsparse = sparse(PQopen)
-    PQfactor = (cholesky(PQsparse))
+    # Cubic B-splines have fixed half-bandwidth 3 in (P+Q), preserved by all
+    # non-periodic BC reductions in calcGammaBC. The PERIODIC case introduces
+    # corner wraparound (γ row 1 → col Mdim-1, etc.) that breaks the band
+    # structure, so we fall back to a dense Cholesky for that edge case only.
+    is_periodic = (sp.BCL == PERIODIC) || (sp.BCR == PERIODIC)
+    PQfactor = is_periodic ? cholesky_dense_factor(PQopen) : cholesky_banded3(PQopen)
     return PQ, PQfactor
 end
 
 """
-    calcP1factor(sp::SplineParameters, gammaBC::Matrix{Float64}) -> (Matrix{Float64}, SuiteSparse.CHOLMOD.Factor)
+    calcP1factor(sp::SplineParameters, gammaBC::Matrix{Float64}) -> (Matrix{Float64}, AbstractSplineFactor)
 
-Build the integral variational `(P⁽¹⁾ + Q)` matrix and return its sparse Cholesky factorisation.
+Build the integral variational `(P⁽¹⁾ + Q)` matrix and return its banded LLᵀ Cholesky
+factorisation (or a dense Cholesky fallback for the periodic-BC edge case).
 
 Follows Ooyama (2002) Eq. 4.24. Like [`calcPQfactor`](@ref), but the P matrix inner products
 use the **first derivative** of the basis function rather than the function itself:
@@ -554,7 +569,7 @@ indefinite integral.
 - `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix from [`calcGammaBC`](@ref)
 
 # Returns
-- `(p1q::Matrix{Float64}, p1qFactor)`: Full `(P⁽¹⁾ + Q)` matrix and its Cholesky factor
+- `(p1q::Matrix{Float64}, p1qFactor::AbstractSplineFactor)`: Full `(P⁽¹⁾ + Q)` matrix and its Cholesky factor
 
 See also: [`calcPQfactor`](@ref), [`SIIntcoefficients`](@ref)
 """
@@ -602,10 +617,17 @@ function calcP1factor(sp::SplineParameters, gammaBC::Matrix{real})
     # is set by the caller. The regularization does not affect the non-constant modes.
     eps_lambda = 1e-10
     P1Q = Symmetric(P1 + Q)
-    P1Qopen = Symmetric((gammaBC * P1 * gammaBC') + (gammaBC * Q * gammaBC'))
-    n = size(P1Qopen, 1)
-    P1Qsparse = sparse(P1Qopen) + eps_lambda * sparse(I, n, n)
-    P1Qfactor = cholesky(Symmetric(P1Qsparse))
+    P1Qopen_raw = (gammaBC * P1 * gammaBC') + (gammaBC * Q * gammaBC')
+    n = size(P1Qopen_raw, 1)
+    # Add the Tikhonov regularizer directly into the dense matrix before
+    # wrapping as Symmetric — keeps the operation purely dense and preserves
+    # the bandwidth-3 structure (the eps_lambda·I sits on the diagonal).
+    @inbounds for i in 1:n
+        P1Qopen_raw[i, i] += eps_lambda
+    end
+    P1Qopen = Symmetric(P1Qopen_raw)
+    is_periodic = (sp.BCL == PERIODIC) || (sp.BCR == PERIODIC)
+    P1Qfactor = is_periodic ? cholesky_dense_factor(P1Qopen) : cholesky_banded3(P1Qopen)
     return P1Q, P1Qfactor
 end
 
@@ -687,14 +709,15 @@ function Spline1D(sp::SplineParameters)
     a = zeros(real,sp.bDim)
     ahat = zeros(real,sp.bDim)
 
-    # Scratch buffers for in-place SAtransform!.
+    # Scratch buffers for in-place transforms.
     Minterior = size(gammaBC, 1)
     scratch_btilde = zeros(real, sp.bDim)       # bDim-length: holds b - pq·ahat
     scratch_Min    = zeros(real, Minterior)     # γ * (b or btilde)
     scratch_Mout   = zeros(real, Minterior)     # pqFactor \ scratch_Min
+    scratch_bx     = zeros(real, sp.bDim)       # bDim-length: SBxtransform output for SIInt
 
     spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,
-                      uMish,b,a,ahat,scratch_btilde,scratch_Min,scratch_Mout)
+                      uMish,b,a,ahat,scratch_btilde,scratch_Min,scratch_Mout,scratch_bx)
     return spline
 end
 
@@ -851,6 +874,48 @@ function SBxtransform(spline::Spline1D, uMish::Vector{real}, BCL::real, BCR::rea
 end
 
 """
+    SBxtransform!(spline::Spline1D, uMish_input::AbstractVector, BCL::Real, BCR::Real)
+        -> Vector{Float64}
+
+In-place forward Bx transform. Writes the B¹ vector (length `bDim`) into the
+spline's `_scratch_bx` buffer using the cached `quadpoints`/`quadweights` and
+returns it. Allocation-free; intended for the [`SIIntcoefficients`](@ref) hot path.
+
+The boundary terms `BCL`, `BCR` are typically zero for the indefinite-integral
+solve; non-zero values implement inhomogeneous integration boundary data.
+
+See also: [`SBxtransform`](@ref), [`SIIntcoefficients`](@ref)
+"""
+function SBxtransform!(spline::Spline1D, uMish_input::AbstractVector,
+                       BCL::Real, BCR::Real)
+    sp   = spline.params
+    qpts = spline.quadpoints
+    qwts = spline.quadweights
+    Mdim = sp.num_cells + 3
+    bx   = spline._scratch_bx
+    fill!(bx, 0.0)
+
+    @inbounds for mi = 1:Mdim
+        m = mi - 2
+        for mc = 0:(sp.num_cells - 1)
+            if (mc < (m - 2)) || (mc > (m + 1))
+                continue
+            end
+            for mu = 1:sp.mubar
+                i  = mu + (sp.mubar * mc)
+                x  = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
+                bm = basis(sp, m, x, 1)
+                bx[mi] += sp.DX * qwts[mu] * bm * uMish_input[i]
+            end
+        end
+        bl = basis(sp, m, sp.xmin, 0) * BCL
+        br = basis(sp, m, sp.xmax, 0) * BCR
+        bx[mi] = br - bl - bx[mi]
+    end
+    return bx
+end
+
+"""
     SIIntcoefficients(sp::SplineParameters, gammaBC::Matrix{Float64}, p1Factor, uMish::Vector{Float64}) -> Vector{Float64}
     SIIntcoefficients(spline::Spline1D, uMish::Vector{Float64}) -> Vector{Float64}
 
@@ -888,11 +953,30 @@ function SIIntcoefficients(sp::SplineParameters, gammaBC::Matrix{real}, p1Factor
     return aInt
 end
 
+"""
+    SIIntcoefficients!(spline::Spline1D, uMish_input::AbstractVector) -> spline.a
+
+In-place form of [`SIIntcoefficients`](@ref). Writes the integral A-coefficients
+into `spline.a` (clobbering any prior contents) using `_scratch_bx`,
+`_scratch_Min`, and `_scratch_Mout`. Allocation-free.
+
+Like [`SAtransform!`](@ref), this overwrites `spline.a`.
+"""
+function SIIntcoefficients!(spline::Spline1D, uMish_input::AbstractVector)
+    # RHS = ∫ φ'_m f dx = -SBxtransform(f, 0, 0); negate in place.
+    SBxtransform!(spline, uMish_input, 0.0, 0.0)
+    bx = spline._scratch_bx
+    @. bx = -bx
+    γ = spline.gammaBC
+    mul!(spline._scratch_Min, γ, bx)
+    ldiv!(spline._scratch_Mout, spline.p1Factor, spline._scratch_Min)
+    mul!(spline.a, γ', spline._scratch_Mout)
+    return spline.a
+end
+
 function SIIntcoefficients(spline::Spline1D, uMish::Vector{real})
-    # RHS = ∫ φ'_m f dx = -SBxtransform(f, 0, 0)
-    bx = SBxtransform(spline.params, uMish, 0.0, 0.0)
-    aInt = spline.gammaBC' * (spline.p1Factor \ (spline.gammaBC * (-bx)))
-    return aInt
+    SIIntcoefficients!(spline, uMish)
+    return copy(spline.a)
 end
 
 """
@@ -926,10 +1010,26 @@ function SIInttransform(sp::SplineParameters, gammaBC::Matrix{real}, p1Factor, u
     return uInt .+ C0
 end
 
+"""
+    SIInttransform!(spline::Spline1D, uMish_input::AbstractVector,
+                    uInt::AbstractVector, C0::Real = 0.0) -> uInt
+
+In-place form of [`SIInttransform`](@ref). Computes the indefinite integral
+of `uMish_input` and writes the physical-space result into the user-provided
+`uInt` buffer (length `mishDim`). Allocation-free; clobbers `spline.a`.
+"""
+function SIInttransform!(spline::Spline1D, uMish_input::AbstractVector,
+                         uInt::AbstractVector, C0::Real = 0.0)
+    SIIntcoefficients!(spline, uMish_input)
+    SItransform(spline.params, spline.a, spline.mishPoints, uInt, 0)
+    @. uInt += C0
+    return uInt
+end
+
 function SIInttransform(spline::Spline1D, uMish::Vector{real}, C0::real = 0.0)
-    aInt = SIIntcoefficients(spline, uMish)
-    uInt = SItransform(spline.params, aInt)
-    return uInt .+ C0
+    uInt = zeros(real, spline.params.mishDim)
+    SIInttransform!(spline, uMish, uInt, C0)
+    return uInt
 end
 
 """
