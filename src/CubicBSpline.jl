@@ -306,10 +306,10 @@ struct Spline1D
     quadpoints::Vector{real}
     quadweights::Vector{real}
     gammaBC::Matrix{real}
-    pq
-    pqFactor::AbstractSplineFactor
-    p1
-    p1Factor::AbstractSplineFactor
+    pq::Symmetric{Float64, Matrix{Float64}}
+    pqFactor::Union{BandedCholesky3, DenseSplineFactor}
+    p1::Symmetric{Float64, Matrix{Float64}}
+    p1Factor::Union{BandedCholesky3, DenseSplineFactor}
     mishPoints::Vector{real}
     uMish::Vector{real}
     b::Vector{real}
