@@ -38,7 +38,7 @@
 # Must be included AFTER types.jl, basis_interface.jl, and factory.jl.
 
 # ── Type alias for brevity ────────────────────────────────────────────────────
-const _RLGrid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+const _RLGrid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, NoBasisArray}
 
 # ────────────────────────────────────────────────────────────────────────────
 # getGridpoints
@@ -161,7 +161,7 @@ function spectralTransform(grid::_RLGrid, physical::Array{real}, spectral::Array
     # Need to include patchOffset to get all available wavenumbers
     kDim = grid.params.iDim + grid.params.patchOffsetL
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
         # ── Fourier stage: transform each ring ──────────────────────────────
         i = 1
         for r in 1:grid.params.iDim
@@ -265,7 +265,7 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
 
     has_wn_ahat = _has_wavenumber_ahat(grid)
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
         # ── Wavenumber 0 ─────────────────────────────────────────────────────
         isp0 = grid.ibasis.data[1, v]
         copyto!(isp0.b, view(spectral, 1:b_iDim, v))
@@ -402,7 +402,7 @@ end
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Type alias for brevity ────────────────────────────────────────────────────
-const _RLZGrid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+const _RLZGrid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, ChebyshevBasisArray{1}}
 
 # ────────────────────────────────────────────────────────────────────────────
 # getGridpoints
@@ -508,7 +508,7 @@ function spectralTransform(grid::_RLZGrid, physical::Array{real}, spectral::Arra
 
     tempcb  = zeros(Float64, b_kDim, 4 + 4*kDim_wn)   # Chebyshev coeffs per ring
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
         # ── Chebyshev + Fourier stage ────────────────────────────────────────
         i = 1
         for r in 1:iDim
@@ -633,7 +633,7 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
     has_wn_ahat = _has_wavenumber_ahat(grid)
     slots_per_z = 1 + 2 * kDim_wn
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
         kcol = grid.kbasis.data[v]
         for dr in 0:2
             # ── Spline + FAtransform stage ────────────────────────────────────
@@ -871,7 +871,7 @@ function regularGridTransform(grid::_RLGrid, r_pts::AbstractVector{Float64}, λ_
 
     physical = zeros(Float64, n_r * n_λ, nvars, 5)
 
-    for v in values(gp.vars)
+    for v in 1:length(gp.vars)
         # Per-wavenumber radial spline evaluation at r_pts.
         # Layout: ak[r_out, k_slot] where k_slot=1 → k=0,
         #   k_slot=2k → cos wavenumber k,  k_slot=2k+1 → sin wavenumber k.
@@ -1115,7 +1115,7 @@ function regularGridTransform(grid::_RLZGrid, r_pts::AbstractVector{Float64},
 
     physical = zeros(Float64, n_r * n_λ * n_z, nvars, 7)
 
-    for v in values(gp.vars)
+    for v in 1:length(gp.vars)
         for dr in 0:2
             # ── Step 1: radial spline evaluation at r_pts ────────────────────
             # spline_vals[r_out, z_b, k_slot]: k_slot=1→k=0, 2k→cos k, 2k+1→sin k

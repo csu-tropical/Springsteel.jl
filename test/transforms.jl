@@ -191,8 +191,8 @@
 
     # ─────────────────────────────────────────────────────────────────────────
     # 2D Cartesian Transforms
-    # SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}  (RR)
-    # SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray} (RZ)
+    # RR_Grid  (RR)
+    # RZ_Grid (RZ)
     # ─────────────────────────────────────────────────────────────────────────
     @testset "2D Cartesian Transforms" begin
 
@@ -670,7 +670,7 @@
                 BCB  = Dict("u" => CubicBSpline.R0),
                 BCT  = Dict("u" => CubicBSpline.R0))
             grid = createGrid(gp)
-            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+            @test typeof(grid) == RRR_Grid
 
             iDim = grid.params.iDim
             jDim = grid.params.jDim
@@ -795,7 +795,7 @@
                 BCB  = Dict("u" => Chebyshev.R0),
                 BCT  = Dict("u" => Chebyshev.R0))
             grid = createGrid(gp)
-            @test typeof(grid) == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+            @test typeof(grid) == RLZ_Grid
 
             iDim = grid.params.iDim
             kDim = grid.params.kDim

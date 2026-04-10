@@ -277,8 +277,7 @@ end
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── No-op for pure spline grids (R, RR, RRR) ──────────────────────────────
-function _applyFilter_impl!(grid::SpringsteelGrid{CartesianGeometry,
-                            SplineBasisArray, T, U},
+function _applyFilter_impl!(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, T, U},
                             fourier_dict::Dict, chebyshev_dict::Dict) where
                             {T <: Union{NoBasisArray, SplineBasisArray},
                              U <: Union{NoBasisArray, SplineBasisArray}}
@@ -288,8 +287,7 @@ end
 
 # ── RZ (Spline × Chebyshev) — Chebyshev filtering only ────────────────────
 # Spectral layout: spectral[(z-1)*b_iDim + j, v] for Chebyshev mode z, spline coeff j
-function _applyFilter_impl!(grid::SpringsteelGrid{CartesianGeometry,
-                            SplineBasisArray, NoBasisArray, ChebyshevBasisArray},
+function _applyFilter_impl!(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:ChebyshevBasisArray},
                             fourier_dict::Dict, chebyshev_dict::Dict)
     isempty(chebyshev_dict) && return nothing
 
@@ -319,8 +317,7 @@ end
 # RL spectral layout: k=0 at [1:b_iDim], k≥1 real at [(2k-1)*b_iDim+1:2k*b_iDim],
 #                     k≥1 imag at [2k*b_iDim+1:(2k+1)*b_iDim]
 # kDim = iDim + patchOffsetL
-function _applyFilter_impl!(grid::SpringsteelGrid{G,
-                            SplineBasisArray, FourierBasisArray, NoBasisArray},
+function _applyFilter_impl!(grid::SpringsteelGrid{G, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
                             fourier_dict::Dict, chebyshev_dict::Dict) where
                             {G <: Union{CylindricalGeometry, SphericalGeometry}}
     isempty(fourier_dict) && return nothing
@@ -372,8 +369,7 @@ end
 #   k=0:      [block_start + 1 : block_start + b_iDim]
 #   k≥1 real: [block_start + b_iDim + (k-1)*2*b_iDim + 1 : +b_iDim]
 #   k≥1 imag: [block_start + b_iDim + (k-1)*2*b_iDim + b_iDim + 1 : +b_iDim]
-function _applyFilter_impl!(grid::SpringsteelGrid{G,
-                            SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
+function _applyFilter_impl!(grid::SpringsteelGrid{G, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
                             fourier_dict::Dict, chebyshev_dict::Dict) where
                             {G <: Union{CylindricalGeometry, SphericalGeometry}}
     gp = grid.params

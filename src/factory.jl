@@ -439,7 +439,7 @@ function _create_cartesian_1d(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, gp.b_iDim, nvars)
     physical = zeros(Float64, gp.iDim, nvars, 3)
 
-    grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -472,7 +472,7 @@ function _create_cartesian_2d_rz(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, phys_dim, nvars, 5)
 
-    grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -516,7 +516,7 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, phys_dim, nvars, 5)
 
-    grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     nc_j = Int64(gp.jDim / gp.mubar)
@@ -565,7 +565,7 @@ function _create_cartesian_3d_rrr(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, phys_dim, nvars, 7)
 
-    grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     nc_j = Int64(gp.jDim / gp.mubar)
@@ -652,7 +652,7 @@ function _create_cylindrical_2d_rl(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, gp.jDim, nvars, 5)
 
-    grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{CylindricalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -693,7 +693,7 @@ function _create_cylindrical_3d_rlz(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, phys_dim, nvars, 7)
 
-    grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}(
+    grid = SpringsteelGrid{CylindricalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -748,7 +748,7 @@ function _create_spherical_2d_sl(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, gp.jDim, nvars, 5)
 
-    grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{SphericalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -789,7 +789,7 @@ function _create_spherical_3d_slz(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, spec_dim, nvars)
     physical = zeros(Float64, phys_dim, nvars, 7)
 
-    grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}(
+    grid = SpringsteelGrid{SphericalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -852,7 +852,7 @@ function _create_cartesian_1d_fourier(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, gp.b_iDim, nvars)
     physical = zeros(Float64, gp.iDim, nvars, 3)
 
-    grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, NoBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -878,7 +878,7 @@ function _create_cartesian_2d_fourier2d(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, gp.b_iDim * gp.b_jDim, nvars)
     physical = zeros(Float64, gp.iDim * gp.jDim, nvars, 5)
 
-    grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -911,7 +911,7 @@ function _create_cartesian_3d_doublyperiodic(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, gp.b_iDim * gp.b_jDim * gp.b_kDim, nvars)
     physical = zeros(Float64, gp.iDim * gp.jDim * gp.kDim, nvars, 7)
 
-    grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, ChebyshevBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -950,7 +950,7 @@ function _create_cartesian_1d_chebyshev(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, gp.b_iDim, nvars)
     physical = zeros(Float64, gp.iDim, nvars, 3)
 
-    grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, NoBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -979,7 +979,7 @@ function _create_cartesian_2d_chebyshev2d(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, gp.b_iDim * gp.b_jDim, nvars)
     physical = zeros(Float64, gp.iDim * gp.jDim, nvars, 5)
 
-    grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, NoBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)
@@ -1017,7 +1017,7 @@ function _create_cartesian_3d_chebyshev3d(gp::SpringsteelGridParameters)
     spectral = zeros(Float64, gp.b_iDim * gp.b_jDim * gp.b_kDim, nvars)
     physical = zeros(Float64, gp.iDim * gp.jDim * gp.kDim, nvars, 7)
 
-    grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, ChebyshevBasisArray}(
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
     for key in keys(gp.vars)

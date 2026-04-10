@@ -24,8 +24,8 @@
 # Must be included AFTER types.jl, basis_interface.jl, and factory.jl.
 
 # ── Type aliases for brevity ─────────────────────────────────────────────────
-const _SLGrid  = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
-const _SLZGrid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+const _SLGrid  = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, NoBasisArray}
+const _SLZGrid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, ChebyshevBasisArray{1}}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 2D Spherical  (SL_Grid = Spline×Fourier, sin(θ) ring sizes)
@@ -124,7 +124,7 @@ function spectralTransform(grid::_SLGrid, physical::Array{real}, spectral::Array
     b_iDim = grid.params.b_iDim
     kDim   = iDim + grid.params.patchOffsetL   # global max wavenumber
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
 
         # ── Fourier stage: transform each colatitudinal ring ─────────────────
         i = 1
@@ -220,7 +220,7 @@ function gridTransform(grid::_SLGrid, physical::Array{real}, spectral::Array{rea
 
     has_wn_ahat = _has_wavenumber_ahat(grid)
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
 
         # ── Wavenumber 0 ─────────────────────────────────────────────────────
         isp0 = grid.ibasis.data[1, v]
@@ -446,7 +446,7 @@ function spectralTransform(grid::_SLZGrid, physical::Array{real}, spectral::Arra
     end
     tempcb = zeros(Float64, b_kDim, max_lpoints)
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
 
         # ── Chebyshev + Fourier stage ────────────────────────────────────────
         i = 1
@@ -572,7 +572,7 @@ function gridTransform(grid::_SLZGrid, physical::Array{real}, spectral::Array{re
     has_wn_ahat = _has_wavenumber_ahat(grid)
     slots_per_z = 1 + 2 * kDim_wn
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
         kcol = grid.kbasis.data[v]
         for dr in 0:2
 
@@ -802,7 +802,7 @@ function regularGridTransform(grid::_SLGrid, θ_pts::AbstractVector{Float64}, λ
 
     physical = zeros(Float64, n_θ * n_λ, nvars, 5)
 
-    for v in values(gp.vars)
+    for v in 1:length(gp.vars)
         # Per-wavenumber colatitudinal spline evaluation at θ_pts.
         # Layout: ak[θ_out, k_slot] where k_slot=1 → k=0,
         #   k_slot=2k → cos wavenumber k,  k_slot=2k+1 → sin wavenumber k.
@@ -968,7 +968,7 @@ function regularGridTransform(grid::_SLZGrid, θ_pts::AbstractVector{Float64},
 
     physical = zeros(Float64, n_θ * n_λ * n_z, nvars, 7)
 
-    for v in values(gp.vars)
+    for v in 1:length(gp.vars)
         for dr in 0:2
             # ── Step 1: radial spline evaluation at θ_pts ────────────────────
             # spline_vals[θ_out, z_b, k_slot]: k_slot=1→k=0, 2k→cos k, 2k+1→sin k

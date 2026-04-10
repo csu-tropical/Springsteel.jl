@@ -84,9 +84,9 @@ end
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, J, K}, num_tiles) -> Vector{SpringsteelGrid}
-    calcTileSizes(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, J, K}, num_tiles) -> Vector{SpringsteelGrid}
-    calcTileSizes(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, J, K}, num_tiles) -> Vector{SpringsteelGrid}
+    calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, J, K}, num_tiles) -> Vector{SpringsteelGrid}
+    calcTileSizes(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, J, K}, num_tiles) -> Vector{SpringsteelGrid}
+    calcTileSizes(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, J, K}, num_tiles) -> Vector{SpringsteelGrid}
     calcTileSizes(patch::SpringsteelGrid, num_tiles) -> Vector{SpringsteelGrid}
 
 Split a patch grid into `num_tiles` sub-domain tile grids and return them as a vector.
@@ -136,7 +136,7 @@ all(t.params.num_cells >= 3 for t in tiles)  # true
 
 See also: [`calcPatchMap`](@ref), [`calcHaloMap`](@ref), [`allocateSplineBuffer`](@ref)
 """
-function calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, J, K},
+function calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, J, K},
                         num_tiles::int) where {J, K}
     num_gridpoints = patch.params.iDim
     q, r_rem = divrem(num_gridpoints, num_tiles)
@@ -182,7 +182,7 @@ end
 # calcTileSizes — Cylindrical
 # ────────────────────────────────────────────────────────────────────────────
 
-function calcTileSizes(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, J, K},
+function calcTileSizes(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, J, K},
                         num_tiles::int) where {J, K}
     if patch.params.num_cells / num_tiles < 3.0
         throw(DomainError(num_tiles,
@@ -262,7 +262,7 @@ end
 # calcTileSizes — Spherical (same workload-balancing logic as Cylindrical)
 # ────────────────────────────────────────────────────────────────────────────
 
-function calcTileSizes(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, J, K},
+function calcTileSizes(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, J, K},
                         num_tiles::int) where {J, K}
     if patch.params.num_cells / num_tiles < 3.0
         throw(DomainError(num_tiles,
@@ -358,43 +358,43 @@ end
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}) -> Int
+    num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray}) -> Int
 
 Return `1` for 1-D Cartesian grids.  The single radial spline corresponds to one
 spectral "column" per variable.
 
 See also: [`allocateSplineBuffer`](@ref)
 """
-function num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     return 1
 end
 
 """
-    num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}) -> Int
+    num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, NoBasisArray}) -> Int
 
 Return `b_jDim` for 2-D Cartesian Spline×Spline (RR) grids: one radial spline
 column per j-spectral mode.
 """
-function num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray})
+function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, NoBasisArray})
     return grid.params.b_jDim
 end
 
 """
-    num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray}) -> Int
+    num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:ChebyshevBasisArray}) -> Int
 
 Return `b_kDim` for 2-D Cartesian Spline×Chebyshev (RZ) grids: one radial spline
 column per Chebyshev vertical mode.
 """
-function num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray})
+function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:ChebyshevBasisArray})
     return grid.params.b_kDim
 end
 
 """
-    num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}) -> Int
+    num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, <:SplineBasisArray}) -> Int
 
 Return `b_jDim * b_kDim` for 3-D Cartesian Spline×Spline×Spline (RRR) grids.
 """
-function num_columns(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray})
+function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, <:SplineBasisArray})
     return grid.params.b_jDim * grid.params.b_kDim
 end
 
@@ -427,40 +427,40 @@ Allocate the spline derivative buffer needed by [`tileTransform!`](@ref) for thi
 
 See also: [`tileTransform!`](@ref), [`calcTileSizes`](@ref)
 """
-function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     return zeros(Float64, 1)
 end
 
-function allocateSplineBuffer(tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     return zeros(Float64, tile.params.iDim, 2, length(tile.params.vars))
 end
 
-function allocateSplineBuffer(tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     return zeros(Float64, tile.params.iDim, 2, length(tile.params.vars))
 end
 
-function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, NoBasisArray})
     return zeros(Float64, tile.params.iDim, tile.params.b_jDim, length(tile.params.vars))
 end
 
-function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:ChebyshevBasisArray})
     return zeros(Float64, tile.params.iDim, tile.params.b_kDim, length(tile.params.vars))
 end
 
 # 3D Cartesian Spline×Spline×Spline (RRR)
 # Buffer shape matches splineBuffer_r used in gridTransform!: (iDim, b_jDim, b_kDim) per variable.
-function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, <:SplineBasisArray})
     return zeros(Float64, tile.params.iDim, tile.params.b_jDim, tile.params.b_kDim, length(tile.params.vars))
 end
 
 # 3D Cylindrical Spline×Fourier×Chebyshev (RLZ)
 # Buffer shape: (iDim, 3, b_kDim, nvars) — 3 columns per Chebyshev level for k=0, k≥1 real, k≥1 imag.
-function allocateSplineBuffer(tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     return zeros(Float64, tile.params.iDim, 3, tile.params.b_kDim, length(tile.params.vars))
 end
 
 # 3D Spherical Spline×Fourier×Chebyshev (SLZ) — identical layout to RLZ.
-function allocateSplineBuffer(tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function allocateSplineBuffer(tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     return zeros(Float64, tile.params.iDim, 3, tile.params.b_kDim, length(tile.params.vars))
 end
 
@@ -496,7 +496,7 @@ but only the wavenumber-0 block is implemented here (sufficient for 1-D halo tra
 
 See also: [`sumSharedSpectral`](@ref), [`calcHaloMap`](@ref)
 """
-function getBorderSpectral(grid::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+function getBorderSpectral(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     n     = size(grid.spectral, 1)
     nvars = size(grid.spectral, 2)
     border_arr = zeros(Float64, n, nvars)
@@ -517,7 +517,7 @@ end
 #   k imag (p=k*2): tile rows   p*b_iDim+1   : (p+1)*b_iDim
 # Halo = last 3 rows of each block, stored in tile-internal coordinates.
 # Returns SparseMatrixCSC of size (n, nvars) with nnz = 3*(1+2*kDim)*nvars.
-function getBorderSpectral(grid::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function getBorderSpectral(grid::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     n      = size(grid.spectral, 1)
     nvars  = size(grid.spectral, 2)
     b_iDim = grid.params.b_iDim
@@ -548,7 +548,7 @@ function getBorderSpectral(grid::SpringsteelGrid{CylindricalGeometry, SplineBasi
 end
 
 # SphericalGeometry 2-D (SL) — identical wavenumber layout to CylindricalGeometry 2-D (RL).
-function getBorderSpectral(grid::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function getBorderSpectral(grid::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     n      = size(grid.spectral, 1)
     nvars  = size(grid.spectral, 2)
     b_iDim = grid.params.b_iDim
@@ -612,8 +612,8 @@ the Cylindrical method returns `nnz == (b_iDim-4) * nvars * (2*kDim+1)`.
 
 See also: [`calcHaloMap`](@ref), [`sumSharedSpectral`](@ref)
 """
-function calcPatchMap(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray},
-                       tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+function calcPatchMap(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray},
+                       tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     n     = size(patch.spectral, 1)
     nvars = size(patch.spectral, 2)
     siL   = tile.params.spectralIndexL
@@ -625,8 +625,8 @@ function calcPatchMap(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray
     return map_arr
 end
 
-function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                       tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                       tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     # Max Fourier wavenumber representable by this tile
@@ -662,8 +662,8 @@ function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArr
 end
 
 # SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
-function calcPatchMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                       tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function calcPatchMap(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                       tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     kDim        = tile.params.iDim + tile.params.patchOffsetL
@@ -701,8 +701,8 @@ end
 # RLZ spectral layout: z-level z_b (1-indexed) base = (z_b-1)*zstride_p (0-indexed),
 # zstride_p = b_iDim_p * (1 + 2*kDim).  RLZ convention: p = (k-1)*2 for k≥1.
 # Inner region per block = first (b_iDim_t - 4) rows (excluding 3-row halo).
-function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                       tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                       tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     kDim        = tile.params.iDim + tile.params.patchOffsetL
@@ -745,8 +745,8 @@ function calcPatchMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArr
 end
 
 # 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
-function calcPatchMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                       tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function calcPatchMap(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                       tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     kDim        = tile.params.iDim + tile.params.patchOffsetL
@@ -832,9 +832,9 @@ See also [`sumSharedSpectral`](@ref).
 
 See also: [`calcPatchMap`](@ref), [`getBorderSpectral`](@ref)
 """
-function calcHaloMap(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray},
-                      tile1::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray},
-                      tile2::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+function calcHaloMap(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray},
+                      tile1::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray},
+                      tile2::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     n     = size(patch.spectral, 1)
     nvars = size(patch.spectral, 2)
     hiL   = tile1.params.spectralIndexR - 2
@@ -846,9 +846,9 @@ function calcHaloMap(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray,
     return map_arr
 end
 
-function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                      tile1::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                      tile2::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                      tile1::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                      tile2::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     kDim        = tile1.params.iDim + tile1.params.patchOffsetL
@@ -881,9 +881,9 @@ function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArra
 end
 
 # SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
-function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                      tile1::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                      tile2::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                      tile1::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                      tile2::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     kDim        = tile1.params.iDim + tile1.params.patchOffsetL
@@ -916,9 +916,9 @@ function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray,
 end
 
 # 3D Cylindrical (RLZ) — 3-row halo from every z-level × wavenumber block.
-function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                      tile1::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                      tile2::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                      tile1::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                      tile2::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     kDim        = tile1.params.iDim + tile1.params.patchOffsetL
@@ -958,9 +958,9 @@ function calcHaloMap(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArra
 end
 
 # 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
-function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                      tile1::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                      tile2::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function calcHaloMap(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                      tile1::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                      tile2::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     kDim        = tile1.params.iDim + tile1.params.patchOffsetL
@@ -1037,16 +1037,16 @@ overlapping spectral rows. See RACE-1 in Developer Notes.
 
 See also: [`setSpectralTile!`](@ref), [`sumSharedSpectral`](@ref)
 """
-function sumSpectralTile!(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray},
-                           tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+function sumSpectralTile!(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     siL = tile.params.spectralIndexL
     siR = tile.params.spectralIndexR
     patch.spectral[siL:siR, :] .+= tile.spectral[:, :]
     return patch.spectral
 end
 
-function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                           tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     # Max Fourier wavenumber covered by this tile (includes patchOffset rings beyond tile start)
     kDim = tile.params.iDim + tile.params.patchOffsetL
     siL  = tile.params.spectralIndexL
@@ -1071,8 +1071,8 @@ function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasi
 end
 
 # SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
-function sumSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function sumSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     kDim = tile.params.iDim + tile.params.patchOffsetL
     siL  = tile.params.spectralIndexL
     siR  = tile.params.spectralIndexR
@@ -1098,8 +1098,8 @@ end
 # 3D Cylindrical (RLZ) — accumulate all z-level × wavenumber blocks.
 # Uses RLZ spectral layout: z-major with wavenumber-interleaved blocks per z-level.
 # RLZ convention: p = (k-1)*2 for k≥1 within each z-level.
-function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                           tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                           tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     kDim        = tile.params.iDim + tile.params.patchOffsetL
     b_kDim      = tile.params.b_kDim
     siL         = tile.params.spectralIndexL
@@ -1134,8 +1134,8 @@ function sumSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasi
 end
 
 # 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
-function sumSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function sumSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     kDim        = tile.params.iDim + tile.params.patchOffsetL
     b_kDim      = tile.params.b_kDim
     siL         = tile.params.spectralIndexL
@@ -1192,8 +1192,8 @@ simultaneously.
 
 See also: [`sumSpectralTile!`](@ref)
 """
-function setSpectralTile!(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray},
-                           tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+function setSpectralTile!(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     patch.spectral[:] .= 0.0
     siL = tile.params.spectralIndexL
     siR = tile.params.spectralIndexR
@@ -1201,8 +1201,8 @@ function setSpectralTile!(patch::SpringsteelGrid{CartesianGeometry, SplineBasisA
     return patch.spectral
 end
 
-function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                           tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     patch.spectral[:] .= 0.0
     kDim = tile.params.iDim + tile.params.patchOffsetL
     siL  = tile.params.spectralIndexL
@@ -1227,8 +1227,8 @@ function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasi
 end
 
 # SphericalGeometry 2-D (SL) — identical layout to CylindricalGeometry 2-D (RL)
-function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray},
-                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray})
+function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, NoBasisArray})
     patch.spectral[:] .= 0.0
     kDim = tile.params.iDim + tile.params.patchOffsetL
     siL  = tile.params.spectralIndexL
@@ -1253,8 +1253,8 @@ function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisA
 end
 
 # 3D Cylindrical (RLZ) — zero patch then write all z-level × wavenumber blocks.
-function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                           tile::SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                           tile::SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     patch.spectral[:] .= 0.0
     kDim        = tile.params.iDim + tile.params.patchOffsetL
     b_kDim      = tile.params.b_kDim
@@ -1290,8 +1290,8 @@ function setSpectralTile!(patch::SpringsteelGrid{CylindricalGeometry, SplineBasi
 end
 
 # 3D Spherical (SLZ) — identical z-major / wavenumber layout to RLZ.
-function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray},
-                           tile::SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray})
+function setSpectralTile!(patch::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray},
+                           tile::SpringsteelGrid{SphericalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray})
     patch.spectral[:] .= 0.0
     kDim        = tile.params.iDim + tile.params.patchOffsetL
     b_kDim      = tile.params.b_kDim
@@ -1359,7 +1359,7 @@ Callers **must serialise** halo-zone writes across workers.
 See also: [`splineTransform!`](@ref), [`getBorderSpectral`](@ref)
 """
 function sumSharedSpectral(sharedSpectral::SharedArray{real},
-                             tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray},
+                             tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray},
                              patchMap::SparseArrays.SparseMatrixCSC{Float64, Int64},
                              haloMap::SparseArrays.SparseMatrixCSC{Float64, Int64})
     # Interior (exclusive) write — safe to parallelise across tiles
@@ -1409,7 +1409,7 @@ Reads from `sharedSpectral` (SharedArray).  The caller **must** ensure that
 See also: [`tileTransform!`](@ref), [`sumSharedSpectral`](@ref)
 """
 function splineTransform!(sharedSpectral::SharedArray{real},
-                            tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+                            tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
     for v in 1:length(tile.params.vars)
         tile.spectral[:, v] .= SAtransform(tile.ibasis.data[1, v],
                                             view(sharedSpectral, :, v))
@@ -1446,7 +1446,7 @@ across variables without reviewing this invariant. See RACE-2 in Developer Notes
 See also: [`splineTransform!`](@ref), [`gridTransform!`](@ref)
 """
 function tileTransform!(sharedSpectral::SharedArray{real},
-                          tile::SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray},
+                          tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray},
                           physical::Array{real},
                           spectral::Array{real})
     pts = getGridpoints(tile)
@@ -2419,7 +2419,7 @@ end
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray},
+    calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, NoBasisArray},
                   tile_spec::NamedTuple) -> Vector{SpringsteelGrid}
 
 Multi-dimensional tile decomposition for a 2-D Cartesian Spline×Spline grid (RR or
@@ -2429,8 +2429,7 @@ Spline2D).  Returns a flat `Vector` of `ni × nj` tile sub-grids.
 and `:j` (number of j-tiles, default 1).  The resulting tiles are ordered with j
 varying fastest: `tiles[(ti-1)*nj + tj]` corresponds to i-strip `ti`, j-strip `tj`.
 
-Each tile is a fully-initialised `SpringsteelGrid{CartesianGeometry, SplineBasisArray,
-SplineBasisArray, NoBasisArray}` spanning the sub-domain
+Each tile is a fully-initialised `SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, NoBasisArray}` spanning the sub-domain
 `[iMin_ti, iMax_ti] × [jMin_tj, jMax_tj]`.
 
 # Splitting strategy
@@ -2532,7 +2531,7 @@ end
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray},
+    calcTileSizes(patch::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, <:SplineBasisArray},
                   tile_spec::NamedTuple) -> Vector{SpringsteelGrid}
 
 Multi-dimensional tile decomposition for a 3-D Cartesian Spline×Spline×Spline grid (RRR).
@@ -2646,7 +2645,7 @@ end
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    calcTileSizes(patch::SpringsteelGrid{G, SplineBasisArray, J, K}, tile_spec::NamedTuple) -> Vector{SpringsteelGrid}
+    calcTileSizes(patch::SpringsteelGrid{G, <:SplineBasisArray, J, K}, tile_spec::NamedTuple) -> Vector{SpringsteelGrid}
 
 Generic NamedTuple dispatch for grids whose i-dimension uses a Spline basis.
 
@@ -2663,7 +2662,7 @@ Fourier, not Spline).
 - `DomainError` if `:j > 1` and `J` is not `SplineBasisArray`, or `:k > 1` and `K` is
   not `SplineBasisArray`.
 """
-function calcTileSizes(patch::SpringsteelGrid{G, SplineBasisArray, J, K},
+function calcTileSizes(patch::SpringsteelGrid{G, <:SplineBasisArray, J, K},
                         tile_spec::NamedTuple) where {G, J, K}
     ni = get(tile_spec, :i, 1)
     nj = get(tile_spec, :j, 1)

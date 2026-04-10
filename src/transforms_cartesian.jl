@@ -19,7 +19,7 @@
 
 # ── Type alias for brevity ────────────────────────────────────────────────────
 # 1D Cartesian: only the i-dimension is active; j and k slots are NoBasisArray.
-const _1DCartesianGrid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+const _1DCartesianGrid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, NoBasisArray}
 
 # ────────────────────────────────────────────────────────────────────────────
 # getGridpoints
@@ -313,10 +313,10 @@ end
 # ── Type aliases for brevity ──────────────────────────────────────────────
 
 # 2D Cartesian Spline×Spline (RR):  i=Spline, j=Spline, k=NoBasis
-const _2DCartesianRR = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}
+const _2DCartesianRR = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, SplineBasisArray{2}, NoBasisArray}
 
 # 2D Cartesian Spline×Chebyshev (RZ): i=Spline, j=NoBasis, k=Chebyshev
-const _2DCartesianRZ = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray}
+const _2DCartesianRZ = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, ChebyshevBasisArray{1}}
 
 # ────────────────────────────────────────────────────────────────────────────
 # getGridpoints — 2D grids
@@ -779,7 +779,7 @@ function regularGridTransform(grid::_2DCartesianRR,
 
     physical = zeros(Float64, n_i * n_j, nvars, 5)
 
-    for v in values(gp.vars)
+    for v in 1:length(gp.vars)
         ibuf = zeros(Float64, n_i, b_jDim)
         tmp  = zeros(Float64, n_j)
         for dr in 0:2
@@ -915,7 +915,7 @@ function regularGridTransform(grid::_2DCartesianRZ,
 
     physical = zeros(Float64, n_i * n_k, nvars, 5)
 
-    for v in values(gp.vars)
+    for v in 1:length(gp.vars)
         ibuf     = zeros(Float64, n_i, b_kDim)
         cheb_col = grid.kbasis.data[v]
         for dr in 0:2
@@ -980,7 +980,7 @@ end
 # ── Type alias for brevity ──────────────────────────────────────────────────
 
 # 3D Cartesian Spline×Spline×Spline (RRR):  i=Spline, j=Spline, k=Spline
-const _3DCartesianRRR = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+const _3DCartesianRRR = SpringsteelGrid{CartesianGeometry, SplineBasisArray{3}, SplineBasisArray{3}, SplineBasisArray{3}}
 
 # ────────────────────────────────────────────────────────────────────────────
 # getGridpoints — 3D Cartesian
@@ -1057,7 +1057,7 @@ function spectralTransform(
     tempsb_z = zeros(Float64, b_kDim, iDim, jDim)
     tempsb_l = zeros(Float64, b_jDim, b_kDim, iDim)
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
         # Step 1: k-direction (Z) transform for each (r, l) gridpoint
         for r in 1:iDim
             for l in 1:jDim
@@ -1160,7 +1160,7 @@ function gridTransform(
     splineBuffer_l_1st = zeros(Float64, jDim, b_kDim)          # ∂/∂j per r (dr==0)
     splineBuffer_l_2nd = zeros(Float64, jDim, b_kDim)          # ∂²/∂j² per r (dr==0)
 
-    for v in values(grid.params.vars)
+    for v in 1:size(spectral, 2)
         for dr in 0:2
             # ── Step 1: i-direction (R) inverse transform ─────────────────────
             for z in 1:b_kDim
@@ -1364,7 +1364,7 @@ function regularGridTransform(grid::_3DCartesianRRR,
 
     physical = zeros(Float64, n_x * n_y * n_z, nvars, 7)
 
-    for v in values(gp.vars)
+    for v in 1:length(gp.vars)
         for dr in 0:2
             # ── Step 1: i-spline evaluation at x_pts ────────────────────────
             # ibuf[x_out, l_coeff, z_coeff]

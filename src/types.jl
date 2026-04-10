@@ -112,49 +112,63 @@ struct NoBasisType <: AbstractBasisType end
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    SplineBasisArray
+    SplineBasisArray{N}
 
-Typed container for an array of [`CubicBSpline.Spline1D`](@ref) objects.
-Using a concrete wrapper (rather than `Vector{Any}`) preserves type stability
-across all grid operations.
+Typed container parameterized by dimensionality `N` for an N-dimensional array
+of [`CubicBSpline.Spline1D`](@ref) objects. Using a concrete dimensionality
+preserves type stability — the compiler can inline the inner-array indexing
+since `data` has fully specified type `Array{Spline1D, N}`.
+
+# Type parameter
+- `N::Int`: dimensionality of the underlying storage. Determined automatically
+  by Julia's type inference at construction sites — e.g.,
+  `SplineBasisArray(splines)` where `splines isa Matrix{Spline1D}` produces
+  `SplineBasisArray{2}`.
 
 # Fields
-- `data::Array{CubicBSpline.Spline1D}`: N-dimensional array of spline objects,
-  indexed as `data[var]` (1-D) or `data[indices..., var]` (multi-D).
+- `data::Array{CubicBSpline.Spline1D, N}`: N-dimensional array of spline objects.
 
 See also: [`FourierBasisArray`](@ref), [`ChebyshevBasisArray`](@ref),
 [`NoBasisArray`](@ref)
 """
-struct SplineBasisArray
-    data::Array{CubicBSpline.Spline1D}
+struct SplineBasisArray{N}
+    data::Array{CubicBSpline.Spline1D, N}
 end
 
 """
-    FourierBasisArray
+    FourierBasisArray{N}
 
-Typed container for an array of [`Fourier.Fourier1D`](@ref) objects.
+Typed container parameterized by dimensionality `N` for an N-dimensional array
+of [`Fourier.Fourier1D`](@ref) objects.
+
+# Type parameter
+- `N::Int`: dimensionality of the underlying storage.
 
 # Fields
-- `data::Array{Fourier.Fourier1D}`: Array of Fourier ring objects.
+- `data::Array{Fourier.Fourier1D, N}`: N-dimensional array of Fourier rings.
 
 See also: [`SplineBasisArray`](@ref)
 """
-struct FourierBasisArray
-    data::Array{Fourier.Fourier1D}
+struct FourierBasisArray{N}
+    data::Array{Fourier.Fourier1D, N}
 end
 
 """
-    ChebyshevBasisArray
+    ChebyshevBasisArray{N}
 
-Typed container for an array of [`Chebyshev.Chebyshev1D`](@ref) objects.
+Typed container parameterized by dimensionality `N` for an N-dimensional array
+of [`Chebyshev.Chebyshev1D`](@ref) objects.
+
+# Type parameter
+- `N::Int`: dimensionality of the underlying storage.
 
 # Fields
-- `data::Array{Chebyshev.Chebyshev1D}`: Array of Chebyshev column objects.
+- `data::Array{Chebyshev.Chebyshev1D, N}`: N-dimensional array of Chebyshev columns.
 
 See also: [`SplineBasisArray`](@ref)
 """
-struct ChebyshevBasisArray
-    data::Array{Chebyshev.Chebyshev1D}
+struct ChebyshevBasisArray{N}
+    data::Array{Chebyshev.Chebyshev1D, N}
 end
 
 """
@@ -294,7 +308,7 @@ const SL_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasi
 
 See also: [`SLZ_Grid`](@ref), [`RL_Grid`](@ref), [`SpringsteelGrid`](@ref)
 """
-const SL_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+const SL_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, NoBasisArray}
 
 """
     SLZ_Grid
@@ -302,12 +316,12 @@ const SL_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasi
 Type alias for a 3-D spherical grid (Spline × Fourier × Chebyshev).
 
 ```julia
-const SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+const SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, ChebyshevBasisArray{1}}
 ```
 
 See also: [`SL_Grid`](@ref), [`RLZ_Grid`](@ref), [`SpringsteelGrid`](@ref)
 """
-const SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+const SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, ChebyshevBasisArray{1}}
 
 # ────────────────────────────────────────────────────────────────────────────
 # Type aliases — backward-compatible old grid names
@@ -320,12 +334,12 @@ const SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBas
 Type alias for a 1-D Cartesian grid (Spline i-basis only).
 
 ```julia
-const R_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+const R_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, NoBasisArray}
 ```
 
 See also: [`Spline1D_Grid`](@ref), [`SpringsteelGrid`](@ref)
 """
-const R_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+const R_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, NoBasisArray}
 
 """
     Spline1D_Grid
@@ -344,12 +358,12 @@ const Spline1D_Grid = R_Grid
 Type alias for a 2-D Cartesian grid with Spline i-basis and Chebyshev k-basis.
 
 ```julia
-const RZ_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray}
+const RZ_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, ChebyshevBasisArray{1}}
 ```
 
 See also: [`SpringsteelGrid`](@ref)
 """
-const RZ_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray}
+const RZ_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, ChebyshevBasisArray{1}}
 
 """
     RL_Grid
@@ -357,12 +371,12 @@ const RZ_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArra
 Type alias for a 2-D cylindrical grid (Spline i-basis, Fourier j-basis).
 
 ```julia
-const RL_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+const RL_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, NoBasisArray}
 ```
 
 See also: [`RLZ_Grid`](@ref), [`SpringsteelGrid`](@ref)
 """
-const RL_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+const RL_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, NoBasisArray}
 
 """
     RR_Grid
@@ -370,12 +384,12 @@ const RL_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBa
 Type alias for a 2-D Cartesian grid with Spline i-basis and Spline j-basis.
 
 ```julia
-const RR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}
+const RR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, SplineBasisArray{2}, NoBasisArray}
 ```
 
 See also: [`Spline2D_Grid`](@ref), [`SpringsteelGrid`](@ref)
 """
-const RR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}
+const RR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, SplineBasisArray{2}, NoBasisArray}
 
 """
     Spline2D_Grid
@@ -394,12 +408,12 @@ const Spline2D_Grid = RR_Grid
 Type alias for a 3-D cylindrical grid (Spline × Fourier × Chebyshev).
 
 ```julia
-const RLZ_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+const RLZ_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, ChebyshevBasisArray{1}}
 ```
 
 See also: [`RL_Grid`](@ref), [`SpringsteelGrid`](@ref)
 """
-const RLZ_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+const RLZ_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, ChebyshevBasisArray{1}}
 
 """
     RRR_Grid
@@ -407,12 +421,12 @@ const RLZ_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierB
 Type alias for a 3-D Cartesian grid (Spline × Spline × Spline).
 
 ```julia
-const RRR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+const RRR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{3}, SplineBasisArray{3}, SplineBasisArray{3}}
 ```
 
 See also: [`SpringsteelGrid`](@ref)
 """
-const RRR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+const RRR_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{3}, SplineBasisArray{3}, SplineBasisArray{3}}
 
 # ────────────────────────────────────────────────────────────────────────────
 # Type aliases — geometry-name aliases for spline grids
@@ -449,7 +463,7 @@ const Sphere_Grid       = SLZ_Grid
 const L_Grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, NoBasisArray, NoBasisArray}
 ```
 """
-const L_Grid    = SpringsteelGrid{CartesianGeometry, FourierBasisArray, NoBasisArray,          NoBasisArray}
+const L_Grid    = SpringsteelGrid{CartesianGeometry, FourierBasisArray{1}, NoBasisArray, NoBasisArray}
 
 """Alias for [`L_Grid`](@ref). `geometry = "Ring1D"`."""
 const Ring1D_Grid = L_Grid
@@ -463,7 +477,7 @@ const Ring1D_Grid = L_Grid
 const LL_Grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, NoBasisArray}
 ```
 """
-const LL_Grid   = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray,  NoBasisArray}
+const LL_Grid   = SpringsteelGrid{CartesianGeometry, FourierBasisArray{1}, FourierBasisArray{1}, NoBasisArray}
 
 """Alias for [`LL_Grid`](@ref). `geometry = "Ring2D"`."""
 const Ring2D_Grid = LL_Grid
@@ -477,7 +491,7 @@ const Ring2D_Grid = LL_Grid
 const LLZ_Grid = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, ChebyshevBasisArray}
 ```
 """
-const LLZ_Grid           = SpringsteelGrid{CartesianGeometry, FourierBasisArray, FourierBasisArray, ChebyshevBasisArray}
+const LLZ_Grid           = SpringsteelGrid{CartesianGeometry, FourierBasisArray{1}, FourierBasisArray{1}, ChebyshevBasisArray{1}}
 
 """Alias for [`LLZ_Grid`](@ref). `geometry = "DoublyPeriodic"`."""
 const DoublyPeriodic_Grid = LLZ_Grid
@@ -495,7 +509,7 @@ const DoublyPeriodic_Grid = LLZ_Grid
 const Z_Grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, NoBasisArray, NoBasisArray}
 ```
 """
-const Z_Grid      = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, NoBasisArray,            NoBasisArray}
+const Z_Grid      = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray{1}, NoBasisArray, NoBasisArray}
 
 """Alias for [`Z_Grid`](@ref). `geometry = "Column1D"`."""
 const Column1D_Grid = Z_Grid
@@ -509,7 +523,7 @@ const Column1D_Grid = Z_Grid
 const ZZ_Grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, NoBasisArray}
 ```
 """
-const ZZ_Grid     = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, NoBasisArray}
+const ZZ_Grid     = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray{2}, ChebyshevBasisArray{1}, NoBasisArray}
 
 """Alias for [`ZZ_Grid`](@ref). `geometry = "Column2D"`."""
 const Column2D_Grid = ZZ_Grid
@@ -523,7 +537,7 @@ const Column2D_Grid = ZZ_Grid
 const ZZZ_Grid = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, ChebyshevBasisArray}
 ```
 """
-const ZZZ_Grid    = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, ChebyshevBasisArray, ChebyshevBasisArray}
+const ZZZ_Grid    = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray{3}, ChebyshevBasisArray{2}, ChebyshevBasisArray{1}}
 
 """Alias for [`ZZZ_Grid`](@ref). `geometry = "Column3D"`."""
 const Column3D_Grid = ZZZ_Grid

@@ -1199,10 +1199,10 @@
 
         @testset "SpringsteelGrid struct" begin
             # Test that SpringsteelGrid is a concrete parametric struct (not abstract)
-            @test !isabstracttype(SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
-            @test SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray} <: AbstractGrid
-            @test SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray} <: AbstractGrid
-            @test SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray} <: AbstractGrid
+            @test !isabstracttype(R_Grid)
+            @test R_Grid <: AbstractGrid
+            @test RL_Grid <: AbstractGrid
+            @test SLZ_Grid <: AbstractGrid
         end
 
         @testset "num_deriv_slots" begin
@@ -1218,8 +1218,8 @@
             # SL_Grid and SLZ_Grid are new — no conflict with existing structs
             @test SL_Grid  <: AbstractGrid
             @test SLZ_Grid <: AbstractGrid
-            @test SL_Grid  == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
-            @test SLZ_Grid == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+            @test SL_Grid  == SL_Grid
+            @test SLZ_Grid == SLZ_Grid
         end
 
         @testset "Existing type aliases still resolve" begin
@@ -1299,7 +1299,7 @@
                 BCR = Dict("u" => CubicBSpline.R0))
             grid = createGrid(gp)
 
-            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+            @test typeof(grid) == R_Grid
             @test grid.params.iDim  == 10 * 3     # num_cells * mubar
             @test grid.params.b_iDim == 10 + 3    # num_cells + 3
             @test size(grid.spectral, 1) == grid.params.b_iDim
@@ -1324,7 +1324,7 @@
                 BCR = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R0, "w" => CubicBSpline.R0))
             grid = createGrid(gp)
 
-            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray}
+            @test typeof(grid) == R_Grid
             @test size(grid.spectral, 2) == 3
             @test size(grid.physical, 2) == 3
             @test size(grid.ibasis.data) == (1, 3)
@@ -1351,7 +1351,7 @@
             # for physical-space use but no longer drives the spectral allocation.)
             exp_spectral_rows = b_iDim * (1 + 2 * iDim)
 
-            @test typeof(grid) == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+            @test typeof(grid) == RL_Grid
             @test grid.params.jDim   == exp_jDim
             @test grid.params.b_jDim == exp_b_jDim
             @test size(grid.spectral, 1) == exp_spectral_rows
@@ -1386,7 +1386,7 @@
             b_iDim = num_cells + 3
             b_kDim = min(kDim, Int(floor(((2*kDim) - 1) / 3)) + 1)
 
-            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, ChebyshevBasisArray}
+            @test typeof(grid) == RZ_Grid
             @test size(grid.spectral, 1) == b_kDim * b_iDim
             @test size(grid.physical, 1) == iDim * kDim
             @test size(grid.physical, 3) == 5     # 2D (j=NoBasis, k=Cheb): 5 slots
@@ -1419,7 +1419,7 @@
             jDim   = num_cells * 3   # same as iDim since same domain
             b_jDim = num_cells + 3
 
-            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, NoBasisArray}
+            @test typeof(grid) == RR_Grid
             @test grid.params.jDim   == jDim
             @test grid.params.b_jDim == b_jDim
             @test size(grid.spectral, 1) == b_iDim * b_jDim
@@ -1457,7 +1457,7 @@
             exp_b_jDim = sum(1 + 2*r for r in 1:iDim)
             exp_spectral = b_kDim * b_iDim * (1 + 2*(iDim + 0))  # patchOffsetL=0
 
-            @test typeof(grid) == SpringsteelGrid{CylindricalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+            @test typeof(grid) == RLZ_Grid
             @test grid.params.jDim   == exp_jDim
             @test grid.params.b_jDim == exp_b_jDim
             @test size(grid.spectral, 1) == exp_spectral
@@ -1498,7 +1498,7 @@
             kDim   = num_cells * 3
             b_kDim = num_cells + 3   # spline formula for k
 
-            @test typeof(grid) == SpringsteelGrid{CartesianGeometry, SplineBasisArray, SplineBasisArray, SplineBasisArray}
+            @test typeof(grid) == RRR_Grid
             @test grid.params.jDim   == jDim
             @test grid.params.b_jDim == b_jDim
             @test grid.params.kDim   == kDim
@@ -1529,7 +1529,7 @@
             iDim = num_cells * 3
 
             @test typeof(grid) == SL_Grid
-            @test typeof(grid) == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, NoBasisArray}
+            @test typeof(grid) == SL_Grid
             @test grid.params.jDim > 0
             @test grid.params.b_jDim > 0
             # Spectral array uses uniform wavenumber-interleaved layout: b_iDim*(1+2*kDim)
@@ -1562,7 +1562,7 @@
             grid = createGrid(gp)
 
             @test typeof(grid) == SLZ_Grid
-            @test typeof(grid) == SpringsteelGrid{SphericalGeometry, SplineBasisArray, FourierBasisArray, ChebyshevBasisArray}
+            @test typeof(grid) == SLZ_Grid
             @test grid.params.jDim > 0
             @test size(grid.physical, 3) == 7     # 3D
             @test grid.ibasis isa SplineBasisArray
@@ -1574,5 +1574,5 @@
 
     # ─────────────────────────────────────────────────────────────────────────
     # 1D Cartesian Transforms
-    # (SpringsteelGrid{CartesianGeometry, SplineBasisArray, NoBasisArray, NoBasisArray})
+    # (R_Grid)
     # ─────────────────────────────────────────────────────────────────────────
