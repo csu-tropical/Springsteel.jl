@@ -397,7 +397,7 @@ function spectralTransform(
     b_iDim = grid.params.b_iDim
     b_jDim = grid.params.b_jDim
     nvars = size(spectral, 2)
-    tempsb = zeros(Float64, b_jDim, iDim)
+    tempsb = _scratch(grid).tempsb
 
     for v in 1:nvars
         # Step 1: j-direction transform for each i gridpoint
@@ -476,10 +476,9 @@ function gridTransform(
     b_iDim = grid.params.b_iDim
     b_jDim = grid.params.b_jDim
     nvars = size(spectral, 2)
-    splineBuffer = zeros(Float64, iDim, b_jDim)
-    # Vector scratch for SI*xtransform writes — passing a Vector is 0-alloc, while
-    # passing a column view of splineBuffer leaks ~64 B/call from method specialisation.
-    spline_scratch = zeros(Float64, iDim)
+    s = _scratch(grid)
+    splineBuffer = s.splineBuffer
+    spline_scratch = s.spline_scratch
 
     for v in 1:nvars
         for dr in 0:2
@@ -580,7 +579,7 @@ function spectralTransform(
     b_iDim = grid.params.b_iDim
     b_kDim = grid.params.b_kDim
     nvars = size(spectral, 2)
-    tempcb = zeros(Float64, b_kDim, iDim)
+    tempcb = _scratch(grid).tempcb
 
     for v in 1:nvars
         # Step 1: k-direction (Chebyshev) transform for each i gridpoint
@@ -659,8 +658,9 @@ function gridTransform(
     b_iDim = grid.params.b_iDim
     b_kDim = grid.params.b_kDim
     nvars = size(spectral, 2)
-    splineBuffer = zeros(Float64, iDim, b_kDim)
-    spline_scratch = zeros(Float64, iDim)
+    s = _scratch(grid)
+    splineBuffer = s.splineBuffer
+    spline_scratch = s.spline_scratch
 
     for v in 1:nvars
         for dr in 0:2
@@ -1089,9 +1089,9 @@ function spectralTransform(
     b_jDim = grid.params.b_jDim
     b_kDim = grid.params.b_kDim
     nvars  = size(spectral, 2)
-
-    tempsb_z = zeros(Float64, b_kDim, iDim, jDim)
-    tempsb_l = zeros(Float64, b_jDim, b_kDim, iDim)
+    s = _scratch(grid)
+    tempsb_z = s.tempsb_z
+    tempsb_l = s.tempsb_l
 
     for v in 1:size(spectral, 2)
         # Step 1: k-direction (Z) transform for each (r, l) gridpoint
@@ -1200,15 +1200,14 @@ function gridTransform(
     b_kDim = grid.params.b_kDim
     nvars  = size(spectral, 2)
 
-    # Buffers (hoisted out of all loops; reused per dr/r/v):
-    splineBuffer_r     = zeros(Float64, iDim, b_jDim, b_kDim)  # i-output
-    splineBuffer_l     = zeros(Float64, jDim, b_kDim)          # j-value per r
-    splineBuffer_l_1st = zeros(Float64, jDim, b_kDim)          # ∂/∂j per r (dr==0)
-    splineBuffer_l_2nd = zeros(Float64, jDim, b_kDim)          # ∂²/∂j² per r (dr==0)
-    # Vector scratches for SI*xtransform writes — passing a Vector is 0-alloc, while
-    # passing a column view of the splineBuffer_* arrays leaks ~64 B/call.
-    scratch_i = zeros(Float64, iDim)
-    scratch_j = zeros(Float64, jDim)
+    # Per-grid scratch (cached): splineBuffer_r/l/l_1st/l_2nd, scratch_i, scratch_j
+    s = _scratch(grid)
+    splineBuffer_r     = s.splineBuffer_r
+    splineBuffer_l     = s.splineBuffer_l
+    splineBuffer_l_1st = s.splineBuffer_l_1st
+    splineBuffer_l_2nd = s.splineBuffer_l_2nd
+    scratch_i          = s.scratch_i
+    scratch_j          = s.scratch_j
 
     for v in 1:size(spectral, 2)
         for dr in 0:2

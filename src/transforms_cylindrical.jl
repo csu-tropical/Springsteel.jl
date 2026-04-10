@@ -263,15 +263,13 @@ function gridTransform(grid::_RLGrid, physical::Array{real}, spectral::Array{rea
     iDim = grid.params.iDim
     b_iDim = grid.params.b_iDim
 
-    # Buffers: spline evaluations at each radial gridpoint, for each spectral slot
-    # Indexed as [r, wavenumber_slot] where slot 1 = k0, slots 2/3 = k1 real/imag, ...
-    spline_r  = zeros(Float64, iDim, kDim * 2 + 1)   # first radial derivative
-    spline_rr = zeros(Float64, iDim, kDim * 2 + 1)   # second radial derivative
-    # Per-call scratch for spline-derivative writes — passing a Vector here is
-    # 0-alloc, while passing a column view of spline_r/spline_rr leaks ~64 B/call.
-    spline_scratch = zeros(Float64, iDim)
-    # For Fourier-derivative writes we reuse jring.uMish as scratch (it already
-    # has been copied out by the time we need it as a derivative target).
+    # Per-grid scratch (cached): spline_r, spline_rr, spline_scratch.
+    # Fourier-derivative writes reuse jring.uMish as scratch (it has been copied
+    # out by the time we need it as a derivative target).
+    s = _scratch(grid)
+    spline_r       = s.spline_r
+    spline_rr      = s.spline_rr
+    spline_scratch = s.spline_scratch
 
     has_wn_ahat = _has_wavenumber_ahat(grid)
 
@@ -538,7 +536,7 @@ function spectralTransform(grid::_RLZGrid, physical::Array{real}, spectral::Arra
     iDim    = grid.params.iDim
     b_iDim  = grid.params.b_iDim
 
-    tempcb  = zeros(Float64, b_kDim, 4 + 4*kDim_wn)   # Chebyshev coeffs per ring
+    tempcb  = _scratch(grid).tempcb   # cached: [b_kDim, 4 + 4*kDim_wn]
 
     for v in 1:size(spectral, 2)
         # ── Chebyshev + Fourier stage ────────────────────────────────────────
@@ -667,15 +665,11 @@ function gridTransform(grid::_RLZGrid, physical::Array{real}, spectral::Array{re
     iDim    = grid.params.iDim
     b_iDim  = grid.params.b_iDim
 
-    # Spline evaluation buffer: [iDim, 3] for (k=0, k_real, k_imag) working columns
-    splineBuffer = zeros(Float64, iDim, 3)
-    # Per-r ringBuffer reused across (dr,dl) iterations. Sized to the largest ring;
-    # only the first `lpoints` rows of each column are touched at each radius.
-    max_lpoints = 4 + 4 * (iDim + grid.params.patchOffsetL)
-    ringBuffer  = zeros(Float64, max_lpoints, b_kDim)
-    # Vector scratch for SI*xtransform writes — passing a Vector is 0-alloc, while
-    # passing a column view of splineBuffer leaks ~64 B/call from method specialisation.
-    spline_scratch = zeros(Float64, iDim)
+    # Per-grid scratch (cached): splineBuffer, ringBuffer, spline_scratch
+    sc = _scratch(grid)
+    splineBuffer   = sc.splineBuffer
+    ringBuffer     = sc.ringBuffer
+    spline_scratch = sc.spline_scratch
 
     has_wn_ahat = _has_wavenumber_ahat(grid)
     slots_per_z = 1 + 2 * kDim_wn

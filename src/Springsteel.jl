@@ -484,6 +484,10 @@ include("transforms_cylindrical.jl")
 # Must be included after transforms_cylindrical.jl (shares spectral layout conventions)
 include("transforms_spherical.jl")
 
+# ── Per-grid scratch buffer registry for transform inner loops ───────────────
+# Must be included after the transforms_*.jl files (uses _RLGrid, _SLZGrid, etc.)
+include("transform_scratch.jl")
+
 # ── 1D Tiling ───────────────────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses num_columns from Cylindrical/Spherical files)
 include("tiling.jl")
