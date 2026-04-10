@@ -174,42 +174,47 @@ function spectralTransform(grid::_RLGrid, physical::Array{real}, spectral::Array
             FBtransform!(grid.jbasis.data[r, v])
         end
 
-        # ── Spline stage — wavenumber 0 ──────────────────────────────────────
-        grid.ibasis.data[1, v].uMish .= 0.0
-        for r in 1:grid.params.iDim
-            grid.ibasis.data[1, v].uMish[r] = grid.jbasis.data[r, v].b[1]
-        end
-        SBtransform!(grid.ibasis.data[1, v])
+        b_iDim = grid.params.b_iDim
 
-        # Assign k=0 block: spectral[1 : b_iDim, v]
-        k1 = 1
-        k2 = grid.params.b_iDim
-        spectral[k1:k2, v] .= grid.ibasis.data[1, v].b
+        # ── Spline stage — wavenumber 0 ──────────────────────────────────────
+        isp0 = grid.ibasis.data[1, v]
+        isp0.uMish .= 0.0
+        @inbounds for r in 1:grid.params.iDim
+            isp0.uMish[r] = grid.jbasis.data[r, v].b[1]
+        end
+        SBtransform!(isp0)
+        @inbounds for k in 0:(b_iDim - 1)
+            spectral[1 + k, v] = isp0.b[k + 1]
+        end
 
         # ── Spline stage — wavenumbers 1..kDim ───────────────────────────────
+        ispR = grid.ibasis.data[2, v]
+        ispI = grid.ibasis.data[3, v]
         for k in 1:kDim
-            grid.ibasis.data[2, v].uMish .= 0.0
-            grid.ibasis.data[3, v].uMish .= 0.0
-            for r in 1:grid.params.iDim
+            ispR.uMish .= 0.0
+            ispI.uMish .= 0.0
+            @inbounds for r in 1:grid.params.iDim
                 if k <= r + grid.params.patchOffsetL
                     rk = k + 1                                     # real part index in b
                     ik = grid.jbasis.data[r, v].params.bDim - k + 1  # imag part index
-                    grid.ibasis.data[2, v].uMish[r] = grid.jbasis.data[r, v].b[rk]
-                    grid.ibasis.data[3, v].uMish[r] = grid.jbasis.data[r, v].b[ik]
+                    ispR.uMish[r] = grid.jbasis.data[r, v].b[rk]
+                    ispI.uMish[r] = grid.jbasis.data[r, v].b[ik]
                 end
             end
-            SBtransform!(grid.ibasis.data[2, v])
-            SBtransform!(grid.ibasis.data[3, v])
+            SBtransform!(ispR)
+            SBtransform!(ispI)
 
             # Interleaved layout: p = k*2  (RL convention — see TRAP-1 note)
             p  = k * 2
-            p1 = ((p - 1) * grid.params.b_iDim) + 1
-            p2 = p * grid.params.b_iDim
-            spectral[p1:p2, v] .= grid.ibasis.data[2, v].b
+            p1 = ((p - 1) * b_iDim) + 1
+            @inbounds for k2 in 0:(b_iDim - 1)
+                spectral[p1 + k2, v] = ispR.b[k2 + 1]
+            end
 
-            p1 = (p * grid.params.b_iDim) + 1
-            p2 = (p + 1) * grid.params.b_iDim
-            spectral[p1:p2, v] .= grid.ibasis.data[3, v].b
+            p1 = (p * b_iDim) + 1
+            @inbounds for k2 in 0:(b_iDim - 1)
+                spectral[p1 + k2, v] = ispI.b[k2 + 1]
+            end
         end
     end
 
@@ -538,63 +543,75 @@ function spectralTransform(grid::_RLZGrid, physical::Array{real}, spectral::Arra
     for v in 1:size(spectral, 2)
         # ── Chebyshev + Fourier stage ────────────────────────────────────────
         i = 1
+        kcol = grid.kbasis.data[v]
         for r in 1:iDim
             ri      = r + grid.params.patchOffsetL
             lpoints = 4 + 4*ri
             for l in 1:lpoints
-                for z in 1:kDim
-                    grid.kbasis.data[v].uMish[z] = physical[i, v, 1]
+                @inbounds for z in 1:kDim
+                    kcol.uMish[z] = physical[i, v, 1]
                     i += 1
                 end
-                tempcb[:, l] .= CBtransform!(grid.kbasis.data[v])
+                CBtransform!(kcol)
+                @inbounds for k in 1:b_kDim
+                    tempcb[k, l] = kcol.b[k]
+                end
             end
             # For each Chebyshev mode z_b, load the ring's uMish and Fourier-transform
             for z_b in 1:b_kDim
-                for l in 1:lpoints
-                    grid.jbasis.data[r, z_b].uMish[l] = tempcb[z_b, l]
+                jring = grid.jbasis.data[r, z_b]
+                @inbounds for l in 1:lpoints
+                    jring.uMish[l] = tempcb[z_b, l]
                 end
-                FBtransform!(grid.jbasis.data[r, z_b])
+                FBtransform!(jring)
             end
         end
 
         # ── Spline stage (per z_b Chebyshev coefficient) ─────────────────────
+        isp0 = grid.ibasis.data[1, v]
+        ispR = grid.ibasis.data[2, v]
+        ispI = grid.ibasis.data[3, v]
         for z_b in 1:b_kDim
             # k=0: wavenumber-0 spline
-            grid.ibasis.data[1, v].uMish .= 0.0
-            for r in 1:iDim
-                grid.ibasis.data[1, v].uMish[r] = grid.jbasis.data[r, z_b].b[1]
+            isp0.uMish .= 0.0
+            @inbounds for r in 1:iDim
+                isp0.uMish[r] = grid.jbasis.data[r, z_b].b[1]
             end
-            SBtransform!(grid.ibasis.data[1, v])
+            SBtransform!(isp0)
 
             # Spectral index for k=0 at this z_b level
             r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
             r2 = r1 + b_iDim - 1
-            spectral[r1:r2, v] .= grid.ibasis.data[1, v].b
+            @inbounds for k in 0:(b_iDim - 1)
+                spectral[r1 + k, v] = isp0.b[k + 1]
+            end
 
             # k ≥ 1: real and imaginary parts
             for k in 1:kDim_wn
-                grid.ibasis.data[2, v].uMish .= 0.0
-                grid.ibasis.data[3, v].uMish .= 0.0
-                for r in 1:iDim
+                ispR.uMish .= 0.0
+                ispI.uMish .= 0.0
+                @inbounds for r in 1:iDim
                     if k <= r + grid.params.patchOffsetL
                         rk = k + 1
                         ik = grid.jbasis.data[r, z_b].params.bDim - k + 1
-                        grid.ibasis.data[2, v].uMish[r] = grid.jbasis.data[r, z_b].b[rk]
-                        grid.ibasis.data[3, v].uMish[r] = grid.jbasis.data[r, z_b].b[ik]
+                        ispR.uMish[r] = grid.jbasis.data[r, z_b].b[rk]
+                        ispI.uMish[r] = grid.jbasis.data[r, z_b].b[ik]
                     end
                 end
-                SBtransform!(grid.ibasis.data[2, v])
-                SBtransform!(grid.ibasis.data[3, v])
+                SBtransform!(ispR)
+                SBtransform!(ispI)
 
                 # RLZ convention: p = (k-1)*2  (NOT k*2 — see Developer Notes §TRAP-1)
                 p  = (k - 1) * 2
                 p1 = r2 + 1 + (p * b_iDim)
-                p2 = p1 + b_iDim - 1
-                spectral[p1:p2, v] .= grid.ibasis.data[2, v].b
+                @inbounds for k2 in 0:(b_iDim - 1)
+                    spectral[p1 + k2, v] = ispR.b[k2 + 1]
+                end
 
-                p1 = p2 + 1
-                p2 = p1 + b_iDim - 1
-                spectral[p1:p2, v] .= grid.ibasis.data[3, v].b
+                p1 = p1 + b_iDim
+                @inbounds for k2 in 0:(b_iDim - 1)
+                    spectral[p1 + k2, v] = ispI.b[k2 + 1]
+                end
             end
         end
     end

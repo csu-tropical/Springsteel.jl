@@ -402,21 +402,27 @@ function spectralTransform(
     for v in 1:nvars
         # Step 1: j-direction transform for each i gridpoint
         for r in 1:iDim
-            for l in 1:jDim
-                grid.jbasis.data[r, v].uMish[l] = physical[(r-1)*jDim + l, v, 1]
+            jsp = grid.jbasis.data[r, v]
+            @inbounds for l in 1:jDim
+                jsp.uMish[l] = physical[(r-1)*jDim + l, v, 1]
             end
-            tempsb[:, r] .= SBtransform!(grid.jbasis.data[r, v])
+            SBtransform!(jsp)
+            @inbounds for k in 1:b_jDim
+                tempsb[k, r] = jsp.b[k]
+            end
         end
 
         # Step 2: i-direction transform for each j spectral coefficient
         for l in 1:b_jDim
-            for r in 1:iDim
-                grid.ibasis.data[l, v].uMish[r] = tempsb[l, r]
+            isp = grid.ibasis.data[l, v]
+            @inbounds for r in 1:iDim
+                isp.uMish[r] = tempsb[l, r]
             end
-            SBtransform!(grid.ibasis.data[l, v])
+            SBtransform!(isp)
             r1 = (l-1)*b_iDim + 1
-            r2 = r1 + b_iDim - 1
-            spectral[r1:r2, v] .= grid.ibasis.data[l, v].b
+            @inbounds for k in 0:(b_iDim - 1)
+                spectral[r1 + k, v] = isp.b[k + 1]
+            end
         end
     end
     return spectral
@@ -471,6 +477,9 @@ function gridTransform(
     b_jDim = grid.params.b_jDim
     nvars = size(spectral, 2)
     splineBuffer = zeros(Float64, iDim, b_jDim)
+    # Vector scratch for SI*xtransform writes — passing a Vector is 0-alloc, while
+    # passing a column view of splineBuffer leaks ~64 B/call from method specialisation.
+    spline_scratch = zeros(Float64, iDim)
 
     for v in 1:nvars
         for dr in 0:2
@@ -481,14 +490,21 @@ function gridTransform(
                 isp = grid.ibasis.data[l, v]
                 copyto!(isp.b, view(spectral, r1:r2, v))
                 SAtransform!(isp)
-                buf_col = view(splineBuffer, :, l)
                 if dr == 0
                     SItransform!(isp)
-                    copyto!(buf_col, isp.uMish)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, l] = isp.uMish[r]
+                    end
                 elseif dr == 1
-                    SIxtransform(isp, buf_col)
+                    SIxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, l] = spline_scratch[r]
+                    end
                 else
-                    SIxxtransform(isp, buf_col)
+                    SIxxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, l] = spline_scratch[r]
+                    end
                 end
             end
 
@@ -504,8 +520,11 @@ function gridTransform(
                 l2 = l1 + jDim - 1
                 if dr == 0
                     copyto!(view(physical, l1:l2, v, 1), jsp.uMish)
-                    SIxtransform(jsp,  view(physical, l1:l2, v, 4))
-                    SIxxtransform(jsp, view(physical, l1:l2, v, 5))
+                    # Reuse jsp.uMish as scratch — its prior content was just copied above.
+                    SIxtransform(jsp, jsp.uMish)
+                    copyto!(view(physical, l1:l2, v, 4), jsp.uMish)
+                    SIxxtransform(jsp, jsp.uMish)
+                    copyto!(view(physical, l1:l2, v, 5), jsp.uMish)
                 elseif dr == 1
                     copyto!(view(physical, l1:l2, v, 2), jsp.uMish)
                 else
@@ -565,22 +584,28 @@ function spectralTransform(
 
     for v in 1:nvars
         # Step 1: k-direction (Chebyshev) transform for each i gridpoint
+        kcol = grid.kbasis.data[v]
         for r in 1:iDim
-            for z in 1:kDim
-                grid.kbasis.data[v].uMish[z] = physical[(r-1)*kDim + z, v, 1]
+            @inbounds for z in 1:kDim
+                kcol.uMish[z] = physical[(r-1)*kDim + z, v, 1]
             end
-            tempcb[:, r] .= CBtransform!(grid.kbasis.data[v])
+            CBtransform!(kcol)
+            @inbounds for k in 1:b_kDim
+                tempcb[k, r] = kcol.b[k]
+            end
         end
 
         # Step 2: i-direction (spline) transform for each k spectral mode
         for z in 1:b_kDim
-            for r in 1:iDim
-                grid.ibasis.data[z, v].uMish[r] = tempcb[z, r]
+            isp = grid.ibasis.data[z, v]
+            @inbounds for r in 1:iDim
+                isp.uMish[r] = tempcb[z, r]
             end
-            SBtransform!(grid.ibasis.data[z, v])
+            SBtransform!(isp)
             r1 = (z-1)*b_iDim + 1
-            r2 = r1 + b_iDim - 1
-            spectral[r1:r2, v] .= grid.ibasis.data[z, v].b
+            @inbounds for k in 0:(b_iDim - 1)
+                spectral[r1 + k, v] = isp.b[k + 1]
+            end
         end
     end
     return spectral
@@ -635,6 +660,7 @@ function gridTransform(
     b_kDim = grid.params.b_kDim
     nvars = size(spectral, 2)
     splineBuffer = zeros(Float64, iDim, b_kDim)
+    spline_scratch = zeros(Float64, iDim)
 
     for v in 1:nvars
         for dr in 0:2
@@ -645,14 +671,21 @@ function gridTransform(
                 isp = grid.ibasis.data[z, v]
                 copyto!(isp.b, view(spectral, r1:r2, v))
                 SAtransform!(isp)
-                buf_col = view(splineBuffer, :, z)
                 if dr == 0
                     SItransform!(isp)
-                    copyto!(buf_col, isp.uMish)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = isp.uMish[r]
+                    end
                 elseif dr == 1
-                    SIxtransform(isp, buf_col)
+                    SIxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
                 else
-                    SIxxtransform(isp, buf_col)
+                    SIxxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
                 end
             end
 
@@ -668,8 +701,11 @@ function gridTransform(
                 z2 = z1 + kDim - 1
                 if dr == 0
                     copyto!(view(physical, z1:z2, v, 1), kcol.uMish)
-                    CIxtransform(kcol,  view(physical, z1:z2, v, 4))
-                    CIxxtransform(kcol, view(physical, z1:z2, v, 5))
+                    # Reuse kcol.uMish as scratch — its prior content was just copied above.
+                    CIxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 4), kcol.uMish)
+                    CIxxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 5), kcol.uMish)
                 elseif dr == 1
                     copyto!(view(physical, z1:z2, v, 2), kcol.uMish)
                 else
@@ -1061,33 +1097,43 @@ function spectralTransform(
         # Step 1: k-direction (Z) transform for each (r, l) gridpoint
         for r in 1:iDim
             for l in 1:jDim
-                for z in 1:kDim
-                    grid.kbasis.data[r, l, v].uMish[z] = physical[(r-1)*jDim*kDim + (l-1)*kDim + z, v, 1]
+                ksp = grid.kbasis.data[r, l, v]
+                @inbounds for z in 1:kDim
+                    ksp.uMish[z] = physical[(r-1)*jDim*kDim + (l-1)*kDim + z, v, 1]
                 end
-                tempsb_z[:, r, l] .= SBtransform!(grid.kbasis.data[r, l, v])
+                SBtransform!(ksp)
+                @inbounds for k in 1:b_kDim
+                    tempsb_z[k, r, l] = ksp.b[k]
+                end
             end
         end
 
         # Step 2: j-direction (L) transform for each (r, z_coeff)
         for z in 1:b_kDim
             for r in 1:iDim
-                for l in 1:jDim
-                    grid.jbasis.data[r, z, v].uMish[l] = tempsb_z[z, r, l]
+                jsp = grid.jbasis.data[r, z, v]
+                @inbounds for l in 1:jDim
+                    jsp.uMish[l] = tempsb_z[z, r, l]
                 end
-                tempsb_l[:, z, r] .= SBtransform!(grid.jbasis.data[r, z, v])
+                SBtransform!(jsp)
+                @inbounds for k in 1:b_jDim
+                    tempsb_l[k, z, r] = jsp.b[k]
+                end
             end
         end
 
         # Step 3: i-direction (R) transform for each (l_coeff, z_coeff)
         for z in 1:b_kDim
             for l in 1:b_jDim
-                grid.ibasis.data[l, z, v].uMish .= 0.0
-                for r in 1:iDim
-                    grid.ibasis.data[l, z, v].uMish[r] = tempsb_l[l, z, r]
+                isp = grid.ibasis.data[l, z, v]
+                @inbounds for r in 1:iDim
+                    isp.uMish[r] = tempsb_l[l, z, r]
                 end
-                SBtransform!(grid.ibasis.data[l, z, v])
+                SBtransform!(isp)
                 idx = (z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1
-                spectral[idx:idx+b_iDim-1, v] .= grid.ibasis.data[l, z, v].b
+                @inbounds for k in 0:(b_iDim - 1)
+                    spectral[idx + k, v] = isp.b[k + 1]
+                end
             end
         end
     end
@@ -1159,6 +1205,10 @@ function gridTransform(
     splineBuffer_l     = zeros(Float64, jDim, b_kDim)          # j-value per r
     splineBuffer_l_1st = zeros(Float64, jDim, b_kDim)          # ∂/∂j per r (dr==0)
     splineBuffer_l_2nd = zeros(Float64, jDim, b_kDim)          # ∂²/∂j² per r (dr==0)
+    # Vector scratches for SI*xtransform writes — passing a Vector is 0-alloc, while
+    # passing a column view of the splineBuffer_* arrays leaks ~64 B/call.
+    scratch_i = zeros(Float64, iDim)
+    scratch_j = zeros(Float64, jDim)
 
     for v in 1:size(spectral, 2)
         for dr in 0:2
@@ -1169,14 +1219,21 @@ function gridTransform(
                     isp = grid.ibasis.data[l, z, v]
                     copyto!(isp.b, view(spectral, idx:idx+b_iDim-1, v))
                     SAtransform!(isp)
-                    buf_col = view(splineBuffer_r, :, l, z)
                     if dr == 0
                         SItransform!(isp)
-                        copyto!(buf_col, isp.uMish)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = isp.uMish[r]
+                        end
                     elseif dr == 1
-                        SIxtransform(isp, buf_col)
+                        SIxtransform(isp, scratch_i)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = scratch_i[r]
+                        end
                     else
-                        SIxxtransform(isp, buf_col)
+                        SIxxtransform(isp, scratch_i)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = scratch_i[r]
+                        end
                     end
                 end
             end
@@ -1194,12 +1251,20 @@ function gridTransform(
                     SAtransform!(jsp)
                     # FIX: always call SItransform! — old code read stale uMish for dr≠0
                     SItransform!(jsp)
-                    copyto!(view(splineBuffer_l, :, z), jsp.uMish)
+                    @inbounds for l in 1:jDim
+                        splineBuffer_l[l, z] = jsp.uMish[l]
+                    end
 
                     # Compute j-derivatives during dr==0 pass using the VALUE A-coefficients
                     if dr == 0
-                        SIxtransform(jsp,  view(splineBuffer_l_1st, :, z))
-                        SIxxtransform(jsp, view(splineBuffer_l_2nd, :, z))
+                        SIxtransform(jsp, scratch_j)
+                        @inbounds for l in 1:jDim
+                            splineBuffer_l_1st[l, z] = scratch_j[l]
+                        end
+                        SIxxtransform(jsp, scratch_j)
+                        @inbounds for l in 1:jDim
+                            splineBuffer_l_2nd[l, z] = scratch_j[l]
+                        end
                     end
                 end
 
@@ -1216,8 +1281,11 @@ function gridTransform(
                     i_flat_end = i_flat + kDim - 1
                     if dr == 0
                         copyto!(view(physical, i_flat:i_flat_end, v, 1), ksp.uMish)
-                        SIxtransform(ksp,  view(physical, i_flat:i_flat_end, v, 6))
-                        SIxxtransform(ksp, view(physical, i_flat:i_flat_end, v, 7))
+                        # Reuse ksp.uMish — its prior content was just copied above.
+                        SIxtransform(ksp, ksp.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 6), ksp.uMish)
+                        SIxxtransform(ksp, ksp.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 7), ksp.uMish)
 
                         # FIX BUG-2: j-derivative slots via correct k-inverse-transform
                         # Slot 4: ∂f/∂j (first j-derivative)
