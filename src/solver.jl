@@ -89,6 +89,27 @@ the factorisation type differs.
 struct SparseLinearBackend <: AbstractSolverBackend end
 
 """
+    KrylovLinearBackend(; preconditioner=nothing) <: AbstractSolverBackend
+
+Backend sentinel for the Krylov-iterative solver path (S4b of the solver
+refactor). Uses `Krylov.gmres` for square systems and `Krylov.lsmr` for
+rectangular (overdetermined) ones. The optional `preconditioner` is passed
+through as the `M` (left) kwarg to Krylov; S4c extends this with a default
+diagonal preconditioner helper.
+
+Note for v1.0: this backend still builds the assembled sparse operator
+(same as `SparseLinearBackend`) — the truly-matrix-free path that avoids
+the `kron` materialisation is deferred to a future phase. The immediate
+win here is adding the iterative-solver option and the preconditioner
+plumbing for ill-conditioned problems.
+"""
+struct KrylovLinearBackend <: AbstractSolverBackend
+    preconditioner::Any
+end
+
+KrylovLinearBackend() = KrylovLinearBackend(nothing)
+
+"""
     OptimizationBackend <: AbstractSolverBackend
 
 Backend sentinel for the Optimization.jl extension. Requires the `Optimization`

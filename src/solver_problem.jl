@@ -12,6 +12,8 @@
 # is unchanged — this is strictly additive. See plan_solver_refactor.md §4
 # phase S2 for the full design and the allocation hotspots this targets.
 
+import Krylov
+
 # ────────────────────────────────────────────────────────────────────────────
 # SpringsteelField
 # ────────────────────────────────────────────────────────────────────────────
@@ -66,7 +68,17 @@ function _resolve_backend(b::Symbol, grid::AbstractGrid)
     b === :auto   && return _default_backend(grid)
     b === :dense  && return LocalLinearBackend()
     b === :sparse && return SparseLinearBackend()
-    throw(ArgumentError("Unknown backend symbol `:$b` — use :auto, :dense, or :sparse"))
+    b === :krylov && return KrylovLinearBackend()
+    throw(ArgumentError(
+        "Unknown backend symbol `:$b` — use :auto, :dense, :sparse, or :krylov"))
+end
+
+# Wrapper that holds the sparse operator plus any preconditioner the user
+# attached to the backend, so the backsolve dispatch knows which Krylov
+# method to call and what extras to pass through.
+struct KrylovOp
+    A::SparseMatrixCSC{Float64, Int}
+    preconditioner::Any
 end
 
 # Dispatched factorisation. Operators from the spline path are typically
@@ -79,6 +91,8 @@ function _factorize_operator(::SparseLinearBackend, L::Matrix{Float64})
     S = sparse(L)
     return size(S, 1) == size(S, 2) ? lu(S) : qr(S)
 end
+_factorize_operator(b::KrylovLinearBackend, L::Matrix{Float64}) =
+    KrylovOp(sparse(L), b.preconditioner)
 
 # Allocation-free backsolve with type-dispatched handling of UMFPACK, whose
 # 3-arg `ldiv!(x, F, b)` has dimension checks that conflict with our workspace
@@ -101,6 +115,25 @@ function _backsolve!(x::AbstractVector{Float64},
                      F::SparseArrays.SPQR.QRSparse,
                      f::AbstractVector{Float64})
     copyto!(x, F \ f)
+    return x
+end
+
+# Krylov backsolve: dispatch on shape (gmres square, lsmr rectangular) and
+# pass the cached preconditioner through as the `M` kwarg.
+function _backsolve!(x::AbstractVector{Float64},
+                     op::KrylovOp,
+                     f::AbstractVector{Float64})
+    m, n = size(op.A)
+    if m == n
+        xk, _stats = op.preconditioner === nothing ?
+            Krylov.gmres(op.A, f) :
+            Krylov.gmres(op.A, f; M = op.preconditioner)
+    else
+        xk, _stats = op.preconditioner === nothing ?
+            Krylov.lsmr(op.A, f) :
+            Krylov.lsmr(op.A, f; M = op.preconditioner)
+    end
+    copyto!(x, xk)
     return x
 end
 

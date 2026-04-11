@@ -515,7 +515,7 @@ export d_x, d_y, d_z, d_r, d_theta, d_lambda
 # eliminate the per-call rebuild cost of the legacy solve path.
 include("solver_problem.jl")
 export SpringsteelField, Field, TypedOperator, solve!
-export SparseLinearBackend
+export SparseLinearBackend, KrylovLinearBackend
 
 # ── Interpolation framework ──────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses _cheb_eval_pts!) and factory.jl

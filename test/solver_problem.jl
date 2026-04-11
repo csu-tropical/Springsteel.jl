@@ -7,6 +7,7 @@
 # Run via: TEST_GROUP=solver_problem julia --project test/runtests.jl
 
 using Test
+using LinearAlgebra
 using Springsteel
 using Springsteel.CubicBSpline, Springsteel.Chebyshev
 
@@ -272,6 +273,72 @@ using Springsteel.CubicBSpline, Springsteel.Chebyshev
         @test prob.backend isa SparseLinearBackend
         @test maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts)))  < 1e-3
         @test maximum(abs.(grid.physical[:, 2, 1] .- sin.(2π .* pts))) < 1e-3
+    end
+
+    @testset "S4b Krylov backend parity: square 1D Chebyshev" begin
+        N = 25
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0),
+            BCR = Dict("u" => Chebyshev.R1T0),
+            vars = Dict("u" => 1))
+        grid_d = createGrid(gp); pts = solver_gridpoints(grid_d, "u")
+        grid_k = createGrid(gp)
+        f = -π^2 .* sin.(π .* pts)
+
+        u_d = Field(grid_d, "u"); u_k = Field(grid_k, "u")
+        prob_d = SpringsteelProblem(grid_d, ∂ᵢ^2 * u_d => f; backend = :dense)
+        prob_k = SpringsteelProblem(grid_k, ∂ᵢ^2 * u_k => f; backend = :krylov)
+        solve!(prob_d); solve!(prob_k)
+
+        @test prob_k.backend isa KrylovLinearBackend
+        @test maximum(abs.(grid_d.physical[:, 1, 1] .- grid_k.physical[:, 1, 1])) < 1e-6
+        @test maximum(abs.(grid_k.physical[:, 1, 1] .- sin.(π .* pts))) < 1e-4
+    end
+
+    @testset "S4b Krylov backend parity: rectangular 1D spline" begin
+        gp = SpringsteelGridParameters(
+            geometry = "R",
+            iMin = 0.0, iMax = 1.0, num_cells = 30,
+            BCL = Dict("u" => CubicBSpline.R1T0),
+            BCR = Dict("u" => CubicBSpline.R1T0),
+            vars = Dict("u" => 1))
+        grid_s = createGrid(gp); pts = solver_gridpoints(grid_s, "u")
+        grid_k = createGrid(gp)
+        f = -(2π)^2 .* sin.(2π .* pts)
+
+        u_s = Field(grid_s, "u"); u_k = Field(grid_k, "u")
+        prob_s = SpringsteelProblem(grid_s, ∂_x^2 * u_s => f; backend = :sparse)
+        prob_k = SpringsteelProblem(grid_k, ∂_x^2 * u_k => f; backend = :krylov)
+        solve!(prob_s); solve!(prob_k)
+
+        @test prob_k.backend isa KrylovLinearBackend
+        @test maximum(abs.(grid_s.physical[:, 1, 1] .- grid_k.physical[:, 1, 1])) < 1e-6
+    end
+
+    @testset "S4b Krylov preconditioner plumbing" begin
+        # Pass an identity preconditioner through the backend to verify the
+        # hook is wired — an identity left-preconditioner must give the same
+        # answer as no preconditioner at all. S4c will add a proper default
+        # diagonal preconditioner helper.
+        N = 25
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0),
+            BCR = Dict("u" => Chebyshev.R1T0),
+            vars = Dict("u" => 1))
+        grid = createGrid(gp); pts = solver_gridpoints(grid, "u")
+        f = -π^2 .* sin.(π .* pts)
+
+        Minv = Diagonal(ones(N))   # identity left preconditioner
+        u = Field(grid, "u")
+        prob = SpringsteelProblem(grid, ∂ᵢ^2 * u => f;
+                                   backend = KrylovLinearBackend(Minv))
+        solve!(prob)
+        @test prob.backend.preconditioner === Minv
+        @test maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts))) < 1e-4
     end
 
     @testset "S4a unknown backend symbol errors" begin
