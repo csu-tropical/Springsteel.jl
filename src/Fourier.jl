@@ -81,11 +81,10 @@ One-dimensional Fourier ring object. Construct via `Fourier1D(fp::FourierParamet
 - `fftPlan::FFTW.r2rFFTWPlan`: Pre-measured real-to-halfcomplex forward FFT plan.
   **Do not serialise**; FFTW plans are not portable across processes.
 - `ifftPlan::FFTW.r2rFFTWPlan`: Pre-measured halfcomplex-to-real inverse FFT plan.
-- `phasefilter::Matrix{Float64}`: Size `(yDim, bDim)`. Combines a phase-shift rotation
-  (aligns each wavenumber to `ymin = 0` reference) with anti-aliasing truncation above `kmax`.
-- `invphasefilter::Matrix{Float64}`: Size `(bDim, yDim)`. Inverse phase shift plus
-  zero-padding: maps the `bDim` filtered coefficients back to a `yDim`-length array for
-  the inverse FFT.
+- `phasefilter::PhaseFilter`: Combined azimuthal phase-shift + spectral cutoff.
+  Stored as O(kmax) precomputed trig values (not a dense matrix) and shareable
+  across rings with identical `(yDim, kmax, bDim, ymin)`. Applied forward via
+  `apply_phasefilter_forward!` and inverted via `apply_phasefilter_inverse!`.
 - `uMish::Vector{Float64}`: Physical field values at the `yDim` ring points (mutable buffer).
 - `b::Vector{Float64}`: Filtered B-coefficients of length `bDim` (result of [`FBtransform`](@ref)).
 - `a::Vector{Float64}`: Zero-padded A-coefficients of length `yDim`, ready for inverse FFT
@@ -109,13 +108,15 @@ struct Fourier1D
     # Pre-calculated angular points
     mishPoints::Vector{real}
 
-    # Measured FFTW Plan
+    # Measured FFTW Plan — shared across rings with the same yDim when built
+    # via the factory plan cache.
     fftPlan::FFTW.r2rFFTWPlan
     ifftPlan::FFTW.r2rFFTWPlan
 
-    # Phase-shift and filter matrix
-    phasefilter::Matrix{real}
-    invphasefilter::Matrix{real}
+    # Azimuthal phase shift + spectral cutoff, O(kmax) storage.
+    # Shared across rings with identical (yDim, kmax, bDim, ymin) — notably
+    # across all b_kDim Chebyshev modes at a given θ-index in RLZ/SLZ.
+    phasefilter::PhaseFilter
 
     # In this context, uMish is the physical values
     # b is the filtered Fourier coefficients
@@ -163,32 +164,47 @@ ring = Fourier.Fourier1D(fp)
 See also: [`FBtransform`](@ref), [`FAtransform`](@ref), [`FItransform`](@ref)
 """
 function Fourier1D(fp::FourierParameters)
-
-    # Calculate evenly spaced points along the ring
+    # Standalone construction — builds fresh FFTW plans and a fresh PhaseFilter.
+    # For shared construction across many rings (factory / tiling / multipatch),
+    # use Fourier1D(fp, fftPlan, ifftPlan, phasefilter) directly with objects
+    # pulled from a cache.
     mishPoints = calcMishPoints(fp)
-
-    # Initialize the arrays to zero
-    uMish = zeros(real,fp.yDim)
-    b = zeros(real,fp.bDim)
-    a = zeros(real,fp.yDim)
-    ax = zeros(real,fp.yDim)
-    
-    # Plan the FFT
-    fftPlan = FFTW.plan_r2r(a, FFTW.FFTW.R2HC, flags=FFTW.PATIENT)
-    ifftPlan = FFTW.plan_r2r(a, FFTW.FFTW.HC2R, flags=FFTW.PATIENT)
-    
-    # Pre-calculate the phase filter matrix
-    phasefilter = calcPhaseFilter(fp)
-    invphasefilter = calcInvPhaseFilter(fp)
-
-    # Scratch buffer for in-place FBtransform!/FAtransform!
+    uMish = zeros(real, fp.yDim)
+    b     = zeros(real, fp.bDim)
+    a     = zeros(real, fp.yDim)
+    ax    = zeros(real, fp.yDim)
     scratch_fft = zeros(real, fp.yDim)
-    scratch_ax = zeros(real, fp.yDim)
+    scratch_ax  = zeros(real, fp.yDim)
 
-    # Construct the Fourier1D ring object
-    ring = Fourier1D(fp,mishPoints,fftPlan,ifftPlan,phasefilter,invphasefilter,
-                     uMish,b,a,ax,scratch_fft,scratch_ax)
-    return ring
+    fftPlan  = FFTW.plan_r2r(a, FFTW.FFTW.R2HC, flags=FFTW.PATIENT)
+    ifftPlan = FFTW.plan_r2r(a, FFTW.FFTW.HC2R, flags=FFTW.PATIENT)
+    phasefilter = PhaseFilter(fp)
+
+    return Fourier1D(fp, mishPoints, fftPlan, ifftPlan, phasefilter,
+                     uMish, b, a, ax, scratch_fft, scratch_ax)
+end
+
+"""
+    Fourier1D(fp, fftPlan, ifftPlan, phasefilter) -> Fourier1D
+
+Shared-construction variant: build a `Fourier1D` whose FFTW plans and
+`PhaseFilter` are passed in explicitly (so they can be reused across many
+rings with identical geometry). All working buffers are per-ring.
+"""
+function Fourier1D(fp::FourierParameters,
+                   fftPlan::FFTW.r2rFFTWPlan,
+                   ifftPlan::FFTW.r2rFFTWPlan,
+                   phasefilter::PhaseFilter)
+    mishPoints = calcMishPoints(fp)
+    uMish = zeros(real, fp.yDim)
+    b     = zeros(real, fp.bDim)
+    a     = zeros(real, fp.yDim)
+    ax    = zeros(real, fp.yDim)
+    scratch_fft = zeros(real, fp.yDim)
+    scratch_ax  = zeros(real, fp.yDim)
+
+    return Fourier1D(fp, mishPoints, fftPlan, ifftPlan, phasefilter,
+                     uMish, b, a, ax, scratch_fft, scratch_ax)
 end
 
 """
@@ -288,99 +304,88 @@ function calcMishPoints(fp::FourierParameters)
 end
 
 """
-    FBtransform(fp::FourierParameters, fftPlan, phasefilter::Matrix{Float64}, uMish::Vector{Float64}) -> Vector{Float64}
+    FBtransform(fp::FourierParameters, fftPlan, phasefilter::PhaseFilter, uMish::Vector{Float64}) -> Vector{Float64}
     FBtransform(ring::Fourier1D, uMish::Vector{Float64}) -> Vector{Float64}
     FBtransform!(ring::Fourier1D)
 
 Compute the forward Fourier transform (physical → filtered B-coefficients).
 
-``b = \\text{phasefilter}^T \\cdot \\bigl(\\text{FFT}(u) \\,/\\, N\\bigr)``
+``b = \\text{PhaseFilter}\\bigl(\\text{FFT}(u) \\,/\\, N\\bigr)``
 
 The `FFTW.R2HC` (real-to-halfcomplex) output is divided by `yDim` so that an
-amplitude-1 sinusoid in physical space maps to amplitude-1 in `b`. The phase-filter
-matrix then applies the azimuthal phase shift and zeroes wavenumbers above `kmax`,
-producing a compact `bDim`-length coefficient vector.
+amplitude-1 sinusoid in physical space maps to amplitude-1 in `b`. The
+[`PhaseFilter`](@ref) then applies the azimuthal phase-shift rotation and
+spectral cutoff in O(kmax) work, producing a compact `bDim`-length coefficient
+vector.
 
 # Variants
-- `FBtransform(fp, fftPlan, phasefilter, uMish)` — allocates; requires explicit plan and
-  filter objects (useful when constructing per-radius rings with varying parameters)
-- `FBtransform(ring, uMish)` — allocates using the `ring`'s cached plan and phase-filter
+- `FBtransform(fp, fftPlan, phasefilter, uMish)` — allocates; requires an
+  explicit plan and PhaseFilter (useful when constructing per-radius rings
+  with varying parameters)
+- `FBtransform(ring, uMish)` — allocates using the `ring`'s cached plan and PhaseFilter
 - `FBtransform!(ring)` — in-place; reads `ring.uMish`, writes `ring.b`
 
-# Arguments
-- `fp::FourierParameters`: Ring parameters
-- `fftPlan`: Pre-measured `FFTW.r2rFFTWPlan` for the forward transform
-- `phasefilter::Matrix{Float64}`: Phase-shift + truncation matrix from [`calcPhaseFilter`](@ref)
-- `uMish::Vector{Float64}`: Physical field values at the `yDim` ring points
-
-# Returns
-- `Vector{Float64}`: Filtered B-coefficient vector of length `bDim` (allocating variants)
-
-See also: [`FAtransform`](@ref), [`FItransform`](@ref)
+See also: [`PhaseFilter`](@ref), [`FAtransform`](@ref), [`FItransform`](@ref)
 """
-function FBtransform(fp::FourierParameters, fftPlan, phasefilter::Matrix{real}, uMish::Vector{real})
-
-    # Do the forward Fourier transform, scale, and filter
-    b = (fftPlan * uMish) ./ fp.yDim
-    bfilter = (b' * phasefilter)'
-    return bfilter
+function FBtransform(fp::FourierParameters, fftPlan, phasefilter::PhaseFilter, uMish::Vector{real})
+    # Allocating variant — scales the raw FFT and applies the PhaseFilter into
+    # a freshly allocated `b`.
+    fft_scratch = (fftPlan * uMish) ./ fp.yDim
+    b = zeros(real, fp.bDim)
+    apply_phasefilter_forward!(b, fft_scratch, phasefilter)
+    return b
 end
 
 function FBtransform(ring::Fourier1D, uMish::Vector{real})
-    b = (ring.fftPlan * uMish) ./ ring.params.yDim
-    return (b' * ring.phasefilter)'
+    fft_scratch = (ring.fftPlan * uMish) ./ ring.params.yDim
+    b = zeros(real, ring.params.bDim)
+    apply_phasefilter_forward!(b, fft_scratch, ring.phasefilter)
+    return b
 end
 
 function FBtransform!(ring::Fourier1D)
-    # In-place forward FFT, scale, and phase-filter using pre-allocated scratch.
-    # _scratch_fft holds the raw FFT result; ring.b receives phasefilter' * scaled.
+    # In-place: raw FFT into scratch, scale, then apply PhaseFilter into ring.b.
     mul!(ring._scratch_fft, ring.fftPlan, ring.uMish)
     scale = 1.0 / ring.params.yDim
     @. ring._scratch_fft *= scale
-    # ring.b = phasefilter' * _scratch_fft (replaces (scratch' * phasefilter)' pattern)
-    mul!(ring.b, ring.phasefilter', ring._scratch_fft)
+    apply_phasefilter_forward!(ring.b, ring._scratch_fft, ring.phasefilter)
     return ring.b
 end
 
 """
-    FAtransform(fp::FourierParameters, invphasefilter::Matrix{Float64}, b::Vector{Float64}) -> Vector{Float64}
+    FAtransform(fp::FourierParameters, phasefilter::PhaseFilter, b::Vector{Float64}) -> Vector{Float64}
     FAtransform(ring::Fourier1D, b::AbstractVector) -> Vector{Float64}
     FAtransform!(ring::Fourier1D)
 
-Compute the FA transform: convert filtered B-coefficients to zero-padded A-coefficients
-ready for the inverse FFT.
+Compute the FA transform: convert filtered B-coefficients to zero-padded
+A-coefficients ready for the inverse FFT, via [`apply_phasefilter_inverse!`](@ref).
 
-``a = \\text{invphasefilter}^T \\cdot b``
-
-Applies the inverse phase-shift to undo the azimuthal offset introduced in
-[`FBtransform`](@ref) and pads the `bDim`-length `b` back to a `yDim`-length `a`
-(with zeros for wavenumbers above `kmax`).
+Undoes the azimuthal phase shift introduced in [`FBtransform`](@ref) and
+pads the `bDim`-length `b` back to a `yDim`-length `a` (zeros for wavenumbers
+above `kmax`).
 
 # Variants
-- `FAtransform(fp, invphasefilter, b)` — allocates; requires explicit inverse-filter object
-- `FAtransform(ring, b)` — allocates using the `ring`'s cached `invphasefilter`
+- `FAtransform(fp, phasefilter, b)` — allocates; takes an explicit PhaseFilter
+- `FAtransform(ring, b)` — allocates using the `ring`'s cached PhaseFilter
 - `FAtransform!(ring)` — in-place; reads `ring.b`, writes `ring.a`
 
-# Returns
-- `Vector{Float64}`: Zero-padded A-coefficients of length `yDim` (allocating variants)
-
-See also: [`FBtransform`](@ref), [`FItransform`](@ref)
+See also: [`PhaseFilter`](@ref), [`FBtransform`](@ref), [`FItransform`](@ref)
 """
-function FAtransform(fp::FourierParameters, invphasefilter::Matrix{real}, b::Vector{real})
-
-    # Apply the inverse phasefilter to get padded Fourier coefficients for inverse FFT
-    a = (b' * invphasefilter)'
+function FAtransform(fp::FourierParameters, phasefilter::PhaseFilter, b::Vector{real})
+    # Allocating variant — undoes phase shift and zero-pads to yDim.
+    a = zeros(real, fp.yDim)
+    apply_phasefilter_inverse!(a, b, phasefilter)
     return a
 end
 
 function FAtransform(ring::Fourier1D, b::AbstractVector)
-    return (b' * ring.invphasefilter)'
+    a = zeros(real, ring.params.yDim)
+    apply_phasefilter_inverse!(a, b, ring.phasefilter)
+    return a
 end
 
 function FAtransform!(ring::Fourier1D)
-    # In-place inverse phase-filter via mul!.
-    # ring.a = invphasefilter' * ring.b (replaces (b' * invphasefilter)' pattern)
-    mul!(ring.a, ring.invphasefilter', ring.b)
+    apply_phasefilter_inverse!(ring.a, ring.b, ring.phasefilter)
     return ring.a
 end
 

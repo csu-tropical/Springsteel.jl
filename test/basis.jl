@@ -546,9 +546,13 @@
             @test length(ring.a)          == 32          # yDim (zero-padded for IFFT)
             @test length(ring.ax)         == 32          # yDim (derivative buffer)
 
-            # Phase filter matrix sizes
-            @test size(ring.phasefilter)    == (32, 17)  # (yDim, bDim)
-            @test size(ring.invphasefilter) == (17, 32)  # (bDim, yDim)
+            # PhaseFilter (shared, O(kmax) storage)
+            @test ring.phasefilter isa Fourier.PhaseFilter
+            @test ring.phasefilter.yDim == 32
+            @test ring.phasefilter.kmax == 8
+            @test ring.phasefilter.bDim == 17
+            @test length(ring.phasefilter.cos_k) == 8
+            @test length(ring.phasefilter.sin_k) == 8
 
             # Mish points: start at ymin, monotonically increasing, one step short of 2π
             @test ring.mishPoints[1] ≈ 0.0
@@ -572,19 +576,28 @@
             @test pts[end] ≈ 2π * 7/8
         end
 
-        @testset "Phase filter properties" begin
-            # With ymin=0, the phase-shift is identity (cos(0)=1, sin(0)=0)
+        @testset "PhaseFilter properties" begin
+            # With ymin=0, cos_k[k] = 1, sin_k[k] = 0 — rotation is identity.
             fp = Fourier.FourierParameters(ymin=0.0, kmax=2, yDim=8, bDim=5)
-            pf  = Fourier.calcPhaseFilter(fp)
-            ipf = Fourier.calcInvPhaseFilter(fp)
-            @test size(pf)  == (8, 5)
-            @test size(ipf) == (5, 8)
-            # Wavenumber-0 elements are pass-through
-            @test pf[1,1]  ≈ 1.0
-            @test ipf[1,1] ≈ 1.0
-            # For ymin=0: cos(-k*0)=1, sin(-k*0)=0, so diagonal blocks are identity
-            @test pf[2,2]  ≈ 1.0   # k=1 cosine
-            @test pf[7,2]  ≈ 0.0   # k=1 cross-term should be zero
+            pf = Fourier.PhaseFilter(fp)
+            @test pf.yDim == 8
+            @test pf.kmax == 2
+            @test pf.bDim == 5
+            @test all(pf.cos_k .≈ 1.0)
+            @test all(pf.sin_k .≈ 0.0)
+
+            # With ymin != 0, cos_k/sin_k encode the actual rotation angles.
+            fp2 = Fourier.FourierParameters(ymin=π/3, kmax=3, yDim=12, bDim=7)
+            pf2 = Fourier.PhaseFilter(fp2)
+            @test pf2.cos_k[1] ≈ cos(π/3)
+            @test pf2.sin_k[1] ≈ sin(π/3)
+            @test pf2.cos_k[2] ≈ cos(2*π/3)
+            @test pf2.sin_k[2] ≈ sin(2*π/3)
+
+            # Low-level no-shift constructor (for Chebyshev-style use)
+            pf3 = Fourier.PhaseFilter(yDim=16, kmax=4, bDim=9, shift=false)
+            @test isempty(pf3.cos_k)
+            @test isempty(pf3.sin_k)
         end
 
         @testset "FBtransform variants" begin
@@ -592,7 +605,7 @@
             ring = Fourier.Fourier1D(fp)
             u = sin.(ring.mishPoints)  # pure k=1 sine
 
-            # FourierParameters variant (4-arg)
+            # FourierParameters variant (4-arg, PhaseFilter form)
             b1 = Fourier.FBtransform(fp, ring.fftPlan, ring.phasefilter, u)
             @test length(b1) == fp.bDim
             @test maximum(abs.(b1)) > 0.0
@@ -610,8 +623,8 @@
             Fourier.FBtransform!(ring)
             b = copy(ring.b)
 
-            # Allocating variant
-            a1 = Fourier.FAtransform(fp, ring.invphasefilter, b)
+            # Allocating variant (PhaseFilter form)
+            a1 = Fourier.FAtransform(fp, ring.phasefilter, b)
             @test length(a1) == fp.yDim   # zero-padded back to yDim
 
             # In-place FAtransform!
