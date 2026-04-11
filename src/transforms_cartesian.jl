@@ -177,8 +177,14 @@ function spectralTransform(
         spectral :: Array{real})
     nvars = size(spectral, 2)
     for v in 1:nvars
-        b = SBtransform(grid.ibasis.data[1, v], physical[:, v, 1])
-        spectral[:, v] .= b
+        spline = grid.ibasis.data[1, v]
+        @inbounds for i in eachindex(spline.uMish)
+            spline.uMish[i] = physical[i, v, 1]
+        end
+        SBtransform!(spline)
+        @inbounds for i in eachindex(spline.b)
+            spectral[i, v] = spline.b[i]
+        end
     end
     return spectral
 end
