@@ -172,7 +172,26 @@ end
                        parameters=Dict{String,Any}(),
                        backend=LocalLinearBackend()) -> SpringsteelProblem
 
-Convenience constructor for [`SpringsteelProblem`](@ref).
+Legacy keyword-form constructor for [`SpringsteelProblem`](@ref). Kept for
+backward compatibility with code predating the v1.0 solver refactor.
+
+!!! note "Prefer the Pair-based constructor"
+    New code should build problems with the operator algebra DSL:
+
+    ```julia
+    u = Field(grid, "u")
+    prob = SpringsteelProblem(grid, (∂ᵢ^2 + ∂ⱼ^2) * u => :f_rhs)
+    solve!(prob)   # stateful, reuses cached factorisation
+    ```
+
+    That constructor caches a per-problem workspace (factorisation, eval
+    matrix, BC rows, scratch buffers) so repeated `solve!` calls are
+    allocation-free, and supports block multi-variable systems, backend
+    selection (`:dense` / `:sparse` / `:krylov`), `preconditioner=`, and
+    `Function`/`Symbol` coefficient resolution.
+
+    The legacy form rebuilds everything each call — it's fine for one-shot
+    solves but leaves performance on the table for iterated solves.
 """
 function SpringsteelProblem(grid::AbstractGrid;
     operator::Union{Matrix{Float64}, Nothing} = nothing,
@@ -461,6 +480,25 @@ three dimensions are available.
 Each coefficient can be a `Float64` (scalar), `Vector{Float64}` (spatially varying),
 or `nothing` (term not included).
 
+!!! note "Prefer the Pair-based `SpringsteelProblem` constructor"
+    As of the v1.0 solver refactor, new code should build operators via the
+    operator algebra DSL and pass them to `SpringsteelProblem` with a `Pair`:
+
+    ```julia
+    u = Field(grid, "u")
+    prob = SpringsteelProblem(grid, (∂ᵢ^2 + ∂ⱼ^2) * u => :f_rhs)
+    solve!(prob)
+    ```
+
+    That path caches a stateful workspace (factorisation, BC rows, eval
+    matrix, scratch buffers) so repeated `solve!` calls are allocation-free,
+    and gives you backend choice (`:dense` / `:sparse` / `:krylov`) plus
+    `Function`/`Symbol` coefficient resolution.
+
+    `assemble_from_equation` is kept as a thin compatibility shim that
+    internally builds the same DSL expression and delegates to `_lower`, so
+    the kwarg form and the DSL form always produce identical term vectors.
+
 # Example
 ```julia
 # 1D Poisson: u'' = f
@@ -510,7 +548,12 @@ function assemble_from_equation(grid::AbstractGrid, var::String="";
     d_ijjkk = nothing,
     d_iijjkk = nothing)
 
-    terms = OperatorTerm[]
+    # Build an OperatorExpr via the S1 DSL and delegate to `_lower`, so the
+    # kwarg form and the `L*u => rhs` DSL form share a single lowering path.
+    # The DSL types (`DerivMono`, `ScaledMono`, `OperatorExpr`) live in
+    # operator_algebra.jl which is included after this file, so the name
+    # lookups here happen at call time — not at module parse time.
+    scaled = ScaledMono[]
 
     # Exhaustive enumeration of all (i_order, j_order, k_order) combinations
     # where each order ∈ {0, 1, 2}  (3³ = 27 total)
@@ -533,16 +576,20 @@ function assemble_from_equation(grid::AbstractGrid, var::String="";
         # Mixed 6th-order
         (d_iijjkk,(2,2,2)),
     )
-        if kw !== nothing
-            push!(terms, OperatorTerm(ijo[1], ijo[2], ijo[3], _to_coeff(kw)))
-        end
+        kw === nothing && continue
+        orders = Dict{Symbol, Int}()
+        ijo[1] > 0 && (orders[:i] = ijo[1])
+        ijo[2] > 0 && (orders[:j] = ijo[2])
+        ijo[3] > 0 && (orders[:k] = ijo[3])
+        push!(scaled, ScaledMono(_to_coeff(kw), DerivMono(orders)))
     end
 
-    if isempty(terms)
+    if isempty(scaled)
         throw(ArgumentError("At least one coefficient must be non-nothing"))
     end
 
-    return assemble_operator(grid, terms, var)
+    lowered = _lower(OperatorExpr(scaled), grid)
+    return assemble_operator(grid, lowered, var)
 end
 
 _to_coeff(x::Float64) = x
