@@ -341,6 +341,103 @@ using Springsteel.CubicBSpline, Springsteel.Chebyshev
         @test maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts))) < 1e-4
     end
 
+    @testset "S4c preconditioner kwarg on constructor" begin
+        N = 25
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0),
+            BCR = Dict("u" => Chebyshev.R1T0),
+            vars = Dict("u" => 1))
+        grid_a = createGrid(gp); pts = solver_gridpoints(grid_a, "u")
+        grid_b = createGrid(gp)
+        grid_c = createGrid(gp)
+        f = -π^2 .* sin.(π .* pts)
+
+        # Identity matrix as a pass-through preconditioner
+        Ident = Diagonal(ones(N))
+        u_a = Field(grid_a, "u"); u_b = Field(grid_b, "u"); u_c = Field(grid_c, "u")
+
+        prob_a = SpringsteelProblem(grid_a, ∂ᵢ^2 * u_a => f;
+                                     backend = :krylov,
+                                     preconditioner = Ident)
+        prob_b = SpringsteelProblem(grid_b, ∂ᵢ^2 * u_b => f;
+                                     backend = :krylov,
+                                     preconditioner = nothing)
+        prob_c = SpringsteelProblem(grid_c, ∂ᵢ^2 * u_c => f;
+                                     backend = :krylov)      # default (= nothing)
+        solve!(prob_a); solve!(prob_b); solve!(prob_c)
+
+        @test prob_a.backend.preconditioner === Ident
+        @test prob_b.backend.preconditioner === nothing
+        @test prob_c.backend.preconditioner === nothing
+
+        u_ana = sin.(π .* pts)
+        @test maximum(abs.(grid_a.physical[:, 1, 1] .- u_ana)) < 1e-4
+        @test maximum(abs.(grid_b.physical[:, 1, 1] .- u_ana)) < 1e-4
+        @test maximum(abs.(grid_c.physical[:, 1, 1] .- u_ana)) < 1e-4
+    end
+
+    @testset "S4c :diag opt-in builds a diagonal preconditioner" begin
+        N = 20
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R0),    # free BCs → no row replacement
+            BCR = Dict("u" => Chebyshev.R0),
+            vars = Dict("u" => 1))
+        grid = createGrid(gp)
+        u = Field(grid, "u")
+        # Well-conditioned 0th-order system: α·I with α random
+        α = 2.0 .+ rand(N)
+        f = rand(N)
+        prob = SpringsteelProblem(grid, α * ∂ᵢ^0 * u => f;
+                                   backend = :krylov,
+                                   preconditioner = :diag)
+        solve!(prob)
+        @test prob.workspace.factorization.preconditioner isa Diagonal
+        # A·u = f with A = Diagonal(α), so u = f ./ α
+        @test maximum(abs.(grid.physical[:, 1, 1] .- f ./ α)) < 1e-8
+    end
+
+    @testset "S4c preconditioner rejected on non-Krylov backends" begin
+        gp = SpringsteelGridParameters(
+            geometry = "R",
+            iMin = 0.0, iMax = 1.0, num_cells = 5,
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            vars = Dict("u" => 1))
+        grid = createGrid(gp)
+        u = Field(grid, "u")
+        @test_throws ArgumentError SpringsteelProblem(grid,
+            ∂ᵢ^2 * u => zeros(gp.iDim);
+            backend = :sparse,
+            preconditioner = Diagonal(ones(gp.iDim)))
+
+        # :default and nothing are fine on non-Krylov backends
+        prob1 = SpringsteelProblem(grid, ∂ᵢ^2 * u => zeros(gp.iDim);
+                                    backend = :sparse, preconditioner = :default)
+        @test prob1.backend isa SparseLinearBackend
+        prob2 = SpringsteelProblem(grid, ∂ᵢ^2 * u => zeros(gp.iDim);
+                                    backend = :sparse, preconditioner = nothing)
+        @test prob2.backend isa SparseLinearBackend
+    end
+
+    @testset "S4c unknown preconditioner symbol errors" begin
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = 10, b_iDim = 10,
+            BCL = Dict("u" => Chebyshev.R0),
+            BCR = Dict("u" => Chebyshev.R0),
+            vars = Dict("u" => 1))
+        grid = createGrid(gp)
+        u = Field(grid, "u")
+        @test_throws ArgumentError SpringsteelProblem(grid,
+            ∂ᵢ^0 * u => ones(10);
+            backend = :krylov,
+            preconditioner = :bogus)
+    end
+
     @testset "S4a unknown backend symbol errors" begin
         gp = SpringsteelGridParameters(
             geometry = "R",

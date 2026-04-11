@@ -91,8 +91,80 @@ function _factorize_operator(::SparseLinearBackend, L::Matrix{Float64})
     S = sparse(L)
     return size(S, 1) == size(S, 2) ? lu(S) : qr(S)
 end
-_factorize_operator(b::KrylovLinearBackend, L::Matrix{Float64}) =
-    KrylovOp(sparse(L), b.preconditioner)
+function _factorize_operator(b::KrylovLinearBackend, L::Matrix{Float64})
+    A = sparse(L)
+    return KrylovOp(A, _resolve_preconditioner(b.preconditioner, A))
+end
+
+"""
+    _resolve_preconditioner(spec, A) -> preconditioner
+
+Turn a user-supplied preconditioner spec into the concrete object that gets
+handed to Krylov as the `M=` (left preconditioner) kwarg. Accepted forms:
+
+- `nothing`           → no preconditioner
+- `:default` / `:diag` → diagonal preconditioner built from `diag(A)`, with
+                         a small guard so zero diagonals don't explode
+- an `AbstractMatrix` → used as-is (Krylov applies it via `M * v`)
+- a callable          → used as-is (Krylov calls `M(v)` or similar — the
+                         caller is responsible for making it a valid
+                         Krylov `M` operand)
+
+S4c only plumbs the value through; Krylov.jl validates the object at
+solve time.
+"""
+_resolve_preconditioner(::Nothing, ::SparseMatrixCSC) = nothing
+
+function _resolve_preconditioner(spec::Symbol, A::SparseMatrixCSC)
+    if spec === :diag || spec === :default
+        return _build_diag_preconditioner(A)
+    end
+    throw(ArgumentError(
+        "Unknown preconditioner symbol `:$spec` — use :diag, :default, " *
+        "or pass a matrix/callable"))
+end
+
+_resolve_preconditioner(m::AbstractMatrix, ::SparseMatrixCSC) = m
+_resolve_preconditioner(f,  ::SparseMatrixCSC) = f   # callable pass-through
+
+"""
+    _build_diag_preconditioner(A) -> Diagonal
+
+Build a diagonal left-preconditioner approximating `A^{-1}` by inverting the
+absolute diagonal of `A` with a small zero-guard. Good enough for gently
+ill-conditioned problems; user can override with their own operator for
+anything harder.
+"""
+# Fold a `preconditioner=` kwarg into the backend instance. `:default` is
+# the sentinel for "user didn't specify" — it preserves whatever the backend
+# was constructed with. An explicit `nothing` / matrix / callable / symbol
+# overrides the backend's preconditioner (for Krylov) or errors (for direct
+# backends, since they can't use a preconditioner).
+#
+# Note: we intentionally do NOT wire a diagonal preconditioner as the Krylov
+# default. BC-augmented systems have wildly varying row magnitudes (interior
+# ~N², boundary ~O(1)) so naive 1/diag can hurt gmres convergence. Users who
+# want it can opt in explicitly with `preconditioner=:diag`.
+function _attach_preconditioner(b::AbstractSolverBackend, p)
+    p === :default && return b
+    p === nothing  && return b
+    throw(ArgumentError(
+        "preconditioner kwarg is only meaningful for Krylov-based backends; " *
+        "got $(typeof(b)). Switch to backend=:krylov or pass preconditioner=nothing."))
+end
+function _attach_preconditioner(b::KrylovLinearBackend, p)
+    p === :default && return b                    # keep backend's own setting
+    return KrylovLinearBackend(p)
+end
+
+function _build_diag_preconditioner(A::SparseMatrixCSC)
+    d = diag(A)
+    inv_d = similar(d)
+    @inbounds for i in eachindex(d)
+        inv_d[i] = abs(d[i]) > 1e-14 ? 1.0 / d[i] : 1.0
+    end
+    return Diagonal(inv_d)
+end
 
 # Allocation-free backsolve with type-dispatched handling of UMFPACK, whose
 # 3-arg `ldiv!(x, F, b)` has dimension checks that conflict with our workspace
@@ -226,7 +298,8 @@ Use `solve!(prob)` to run the solver and write into `grid.physical[:, u_idx, 1]`
 """
 function SpringsteelProblem(grid::AbstractGrid,
                              eq::Pair{TypedOperator, <:Any};
-                             backend::Union{AbstractSolverBackend, Symbol} = :auto)
+                             backend::Union{AbstractSolverBackend, Symbol} = :auto,
+                             preconditioner = :default)
     top  = eq.first
     rhs0 = eq.second
     isempty(top.terms) && throw(ArgumentError("Empty TypedOperator LHS"))
@@ -241,6 +314,7 @@ function SpringsteelProblem(grid::AbstractGrid,
         throw(ArgumentError("SpringsteelField.grid does not match problem grid"))
 
     backend_inst = _resolve_backend(backend, grid)
+    backend_inst = _attach_preconditioner(backend_inst, preconditioner)
 
     combined = top.terms[1].expr
     for k in 2:length(top.terms)
@@ -269,9 +343,11 @@ that bind to unknown `j`. `solve!(prob)` writes each variable back into
 """
 function SpringsteelProblem(grid::AbstractGrid,
                              eqs::Vector{<:Pair{TypedOperator,<:Any}};
-                             backend::Union{AbstractSolverBackend, Symbol} = :auto)
+                             backend::Union{AbstractSolverBackend, Symbol} = :auto,
+                             preconditioner = :default)
     isempty(eqs) && throw(ArgumentError("Empty equation list"))
     backend_inst = _resolve_backend(backend, grid)
+    backend_inst = _attach_preconditioner(backend_inst, preconditioner)
 
     # Collect unique fields across all equations, in first-appearance order.
     fields = SpringsteelField[]
