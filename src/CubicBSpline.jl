@@ -538,6 +538,10 @@ struct Spline1D
     _scratch_Min::Vector{real}
     _scratch_Mout::Vector{real}
     _scratch_bx::Vector{real}
+    # Precomputed SBtransform projection matrix: b = _sb_matrix * uMish.
+    # Sparse with at most 4*mubar nonzeros per row; entries bake in DX, qwts,
+    # and basis values. Built once at construction.
+    _sb_matrix::SparseMatrixCSC{real, int}
 end
 
 """
@@ -932,9 +936,48 @@ function Spline1D(sp::SplineParameters)
     scratch_Mout   = zeros(real, Minterior)     # pqFactor \ scratch_Min
     scratch_bx     = zeros(real, sp.bDim)       # bDim-length: SBxtransform output for SIInt
 
+    sb_matrix = _build_sb_matrix(sp, qpts, qwts)
+
     spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,
-                      uMish,b,a,ahat,scratch_btilde,scratch_Min,scratch_Mout,scratch_bx)
+                      uMish,b,a,ahat,scratch_btilde,scratch_Min,scratch_Mout,scratch_bx,
+                      sb_matrix)
     return spline
+end
+
+# Build the sparse projection matrix M such that b = M * uMish for SBtransform.
+# Mirrors the loop structure of SBtransform: for each row mi (basis index m=mi-2),
+# walk the at-most-4 cells whose support overlaps and accumulate
+#   M[mi, mu + mubar*mc] = DX * qwts[mu] * basis(sp, m, x_{mc,mu}, 0)
+function _build_sb_matrix(sp::SplineParameters, qpts::Vector{real}, qwts::Vector{real})
+    Mdim    = sp.num_cells + 3
+    mishDim = sp.num_cells * sp.mubar
+    # Estimated nnz: each row has at most 4*mubar entries
+    rows = Int64[]
+    cols = Int64[]
+    vals = Float64[]
+    sizehint!(rows, 4 * sp.mubar * Mdim)
+    sizehint!(cols, 4 * sp.mubar * Mdim)
+    sizehint!(vals, 4 * sp.mubar * Mdim)
+    for mi in 1:Mdim
+        m = mi - 2
+        for mc in 0:(sp.num_cells - 1)
+            if (mc < (m - 2)) || (mc > (m + 1))
+                continue
+            end
+            for mu in 1:sp.mubar
+                i  = mu + (sp.mubar * mc)
+                x  = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
+                bm = basis(sp, m, x, 0)
+                v  = sp.DX * qwts[mu] * bm
+                if v != 0.0
+                    push!(rows, mi)
+                    push!(cols, i)
+                    push!(vals, v)
+                end
+            end
+        end
+    end
+    return sparse(rows, cols, vals, Mdim, mishDim)
 end
 
 """
@@ -1013,28 +1056,8 @@ function SBtransform(spline::Spline1D, uMish::Vector{real})
 end
 
 function SBtransform!(spline::Spline1D)
-    # In-place forward transform using the spline's cached quadrature rule.
-    # Avoids the per-call allocation of qpts/qwts by `_quadrature_rule`.
-    sp = spline.params
-    qpts = spline.quadpoints
-    qwts = spline.quadweights
-    Mdim = sp.num_cells + 3
-    fill!(spline.b, 0.0)
-
-    @inbounds for mi = 1:Mdim
-        m = mi - 2
-        for mc = 0:(sp.num_cells - 1)
-            if (mc < (m - 2)) || (mc > (m + 1))
-                continue
-            end
-            for mu = 1:sp.mubar
-                i = mu + (sp.mubar * mc)
-                x = sp.xmin + mc * sp.DX + qpts[mu] * sp.DX
-                bm = basis(sp, m, x, 0)
-                spline.b[mi] += sp.DX * qwts[mu] * bm * spline.uMish[i]
-            end
-        end
-    end
+    # Single sparse matvec using the precomputed projection matrix.
+    mul!(spline.b, spline._sb_matrix, spline.uMish)
     return spline.b
 end
 
