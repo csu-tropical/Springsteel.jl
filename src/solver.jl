@@ -121,13 +121,16 @@ sol = solve(prob)
 
 See also: [`solve`](@ref), [`SpringsteelSolution`](@ref), [`assemble_operator`](@ref)
 """
-struct SpringsteelProblem{B <: AbstractSolverBackend}
+mutable struct SpringsteelProblem{B <: AbstractSolverBackend}
     grid::AbstractGrid
     operator::Union{Matrix{Float64}, Nothing}
     rhs::Union{Vector{Float64}, Nothing}
     cost::Union{Function, Nothing}
     parameters::Dict{String, Any}
     backend::B
+    # S2 stateful workspace — `nothing` for legacy kwarg-constructed problems,
+    # populated for Pair-constructed problems via solver_problem.jl.
+    workspace::Any
 end
 
 """
@@ -144,7 +147,7 @@ function SpringsteelProblem(grid::AbstractGrid;
     parameters::Dict{String, Any} = Dict{String, Any}(),
     backend::AbstractSolverBackend = LocalLinearBackend())
 
-    return SpringsteelProblem(grid, operator, rhs, cost, parameters, backend)
+    return SpringsteelProblem(grid, operator, rhs, cost, parameters, backend, nothing)
 end
 
 # ────────────────────────────────────────────────────────────────────────────

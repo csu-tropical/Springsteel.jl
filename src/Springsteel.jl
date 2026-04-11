@@ -509,6 +509,13 @@ export ∂ᵢ, ∂ⱼ, ∂ₖ, d_i, d_j, d_k
 export ∂_x, ∂_y, ∂_z, ∂_r, ∂_θ, ∂_λ
 export d_x, d_y, d_z, d_r, d_theta, d_lambda
 
+# ── Stateful linear problem (S2 of the solver refactor) ────────────────────────────
+# Adds SpringsteelField, Field alias, Pair-based SpringsteelProblem constructor,
+# and solve! that reuses a cached workspace (factorisation, M_eval, BC rows) to
+# eliminate the per-call rebuild cost of the legacy solve path.
+include("solver_problem.jl")
+export SpringsteelField, Field, TypedOperator, solve!
+
 # ── Interpolation framework ──────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses _cheb_eval_pts!) and factory.jl
 include("interpolation.jl")

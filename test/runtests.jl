@@ -25,4 +25,5 @@ const TEST_GROUP = get(ENV, "TEST_GROUP", "all")
     TEST_GROUP in ("all", "multipatch")     && include("multipatch.jl")
     TEST_GROUP in ("all", "tile_multipatch") && include("tile_multipatch.jl")
     TEST_GROUP in ("all", "operator_algebra") && include("operator_algebra.jl")
+    TEST_GROUP in ("all", "solver_problem")   && include("solver_problem.jl")
 end
