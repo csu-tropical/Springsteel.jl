@@ -496,6 +496,19 @@ include("tiling.jl")
 # Must be included after basis modules and factory.jl
 include("solver.jl")
 
+# ── Operator algebra (S1 of the solver refactor) ────────────────────────────────────
+# High-level AST for building operators via ∂ᵢ/∂_r/... overloads. Lowers to the
+# Vector{OperatorTerm} format consumed by assemble_operator. Additive front-end —
+# the low-level solver.jl path is unchanged.
+# Must be included after solver.jl (uses OperatorTerm) and types.jl (uses
+# SpringsteelGrid and the *Geometry sentinel types).
+include("operator_algebra.jl")
+
+export DerivMono, ScaledMono, OperatorExpr
+export ∂ᵢ, ∂ⱼ, ∂ₖ, d_i, d_j, d_k
+export ∂_x, ∂_y, ∂_z, ∂_r, ∂_θ, ∂_λ
+export d_x, d_y, d_z, d_r, d_theta, d_lambda
+
 # ── Interpolation framework ──────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses _cheb_eval_pts!) and factory.jl
 include("interpolation.jl")
