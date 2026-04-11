@@ -29,7 +29,7 @@ Retrieve per-wavenumber ahat for variable `v` at spectral slot `slot`.
 Slot 0 = k=0; for RL: slot 2k = wavenumber k real, slot 2k+1 = wavenumber k imag.
 """
 function _get_wavenumber_ahat(grid::SpringsteelGrid, v::Int, slot::Int)
-    return _WN_AHAT_REGISTRY[objectid(grid)][v][:, slot + 1]
+    return view(_WN_AHAT_REGISTRY[objectid(grid)][v], :, slot + 1)
 end
 
 """
@@ -42,17 +42,22 @@ For RL: `n_slots = 2 + 2*kDim` (max slot = 2*kDim+1).
 For RLZ: `n_slots = b_kDim * (1 + 2*kDim)` (Chebyshev levels × wavenumber slots).
 """
 function _set_wavenumber_ahat!(grid::SpringsteelGrid, v::Int, slot::Int,
-                               ahat_vals::Vector{Float64}, n_slots::Int)
+                               ahat_vals::AbstractVector{Float64}, n_slots::Int)
     id = objectid(grid)
-    if !haskey(_WN_AHAT_REGISTRY, id)
-        _WN_AHAT_REGISTRY[id] = Dict{Int, Matrix{Float64}}()
+    buf = get(_WN_AHAT_REGISTRY, id, nothing)
+    if buf === nothing
+        buf = Dict{Int, Matrix{Float64}}()
+        _WN_AHAT_REGISTRY[id] = buf
     end
-    buf = _WN_AHAT_REGISTRY[id]
-    if !haskey(buf, v)
+    M = get(buf, v, nothing)
+    if M === nothing
         ahat_len = length(ahat_vals)
-        buf[v] = zeros(Float64, ahat_len, n_slots)
+        M = zeros(Float64, ahat_len, n_slots)
+        buf[v] = M
     end
-    buf[v][:, slot + 1] .= ahat_vals
+    @inbounds for i in eachindex(ahat_vals)
+        M[i, slot + 1] = ahat_vals[i]
+    end
 end
 
 """

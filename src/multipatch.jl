@@ -89,6 +89,9 @@ struct PatchInterface
     coupling_matrix::Matrix{Float64}
     is_stacked::Bool
     primary_node_indices::Tuple{Int,Int,Int}
+    # Per-call scratch buffers for the 3-element extract / coupling matvec
+    _a_extract::Vector{Float64}
+    _a_border::Vector{Float64}
 end
 
 # ── Validation helpers ─────────────────────────────────────────────────────
@@ -292,7 +295,8 @@ function PatchInterface(primary::SpringsteelGrid, secondary::SpringsteelGrid,
     end
 
     return PatchInterface(primary, secondary, primary_side, secondary_side,
-                          dimension, coupling_matrix, is_stacked, primary_node_indices)
+                          dimension, coupling_matrix, is_stacked, primary_node_indices,
+                          zeros(Float64, 3), zeros(Float64, 3))
 end
 
 # ── Coefficient transfer ───────────────────────────────────────────────────
@@ -302,9 +306,13 @@ end
 
 Extract 3 spectral coefficients from a primary spline's `.a` vector.
 """
-function _extract_primary_coeffs(spline::CubicBSpline.Spline1D,
-                                 indices::Tuple{Int,Int,Int})
-    return [spline.a[indices[1]], spline.a[indices[2]], spline.a[indices[3]]]
+function _extract_primary_coeffs!(buf::Vector{Float64},
+                                  spline::CubicBSpline.Spline1D,
+                                  indices::Tuple{Int,Int,Int})
+    @inbounds buf[1] = spline.a[indices[1]]
+    @inbounds buf[2] = spline.a[indices[2]]
+    @inbounds buf[3] = spline.a[indices[3]]
+    return buf
 end
 
 """
@@ -317,9 +325,14 @@ Write 3 coupled border coefficients into the secondary spline's `.ahat` vector.
 function _write_interface_ahat!(spline::CubicBSpline.Spline1D,
                                 coeffs::Vector{Float64}, side::Symbol)
     if side == :left
-        spline.ahat[1:3] .= coeffs
+        @inbounds spline.ahat[1] = coeffs[1]
+        @inbounds spline.ahat[2] = coeffs[2]
+        @inbounds spline.ahat[3] = coeffs[3]
     elseif side == :right
-        spline.ahat[end-2:end] .= coeffs
+        n = length(spline.ahat)
+        @inbounds spline.ahat[n - 2] = coeffs[1]
+        @inbounds spline.ahat[n - 1] = coeffs[2]
+        @inbounds spline.ahat[n]     = coeffs[3]
     else
         throw(ArgumentError("side must be :left or :right, got :$side"))
     end
@@ -360,16 +373,24 @@ Transfer interface coefficients for grids with dedicated splines per mode
 is valid after gridTransform!.
 """
 function _update_interface_per_mode!(iface::PatchInterface)
-    nvars = length(iface.secondary.params.vars)
-    n_modes = size(iface.secondary.ibasis.data, 1)
+    _per_mode_kernel!(iface, iface.primary, iface.secondary)
+end
+
+function _per_mode_kernel!(iface::PatchInterface,
+                           primary::SpringsteelGrid,
+                           secondary::SpringsteelGrid)
+    nvars = length(secondary.params.vars)
+    n_modes = size(secondary.ibasis.data, 1)
+    a_extract = iface._a_extract
+    a_border  = iface._a_border
 
     for v in 1:nvars
         for l in 1:n_modes
-            primary_spline = iface.primary.ibasis.data[l, v]
-            secondary_spline = iface.secondary.ibasis.data[l, v]
+            primary_spline = primary.ibasis.data[l, v]
+            secondary_spline = secondary.ibasis.data[l, v]
 
-            A_coeffs = _extract_primary_coeffs(primary_spline, iface.primary_node_indices)
-            a_border = iface.coupling_matrix * A_coeffs
+            _extract_primary_coeffs!(a_extract, primary_spline, iface.primary_node_indices)
+            mul!(a_border, iface.coupling_matrix, a_extract)
             _write_interface_ahat!(secondary_spline, a_border, iface.secondary_side)
         end
     end
@@ -389,67 +410,69 @@ Since ibasis.data has only 3 spline slots reused for all wavenumbers, we must:
 Uses RL offset convention `p = k*2`.
 """
 function _update_interface_per_wavenumber_rl!(iface::PatchInterface)
-    nvars = length(iface.secondary.params.vars)
-    b_iDim_p = iface.primary.params.b_iDim
-    kDim_p = iface.primary.params.iDim + iface.primary.params.patchOffsetL
-    kDim_s = iface.secondary.params.iDim + iface.secondary.params.patchOffsetL
+    # Function barrier: extract concrete-typed grids so the kernel specializes.
+    _rl_kernel!(iface, iface.primary, iface.secondary)
+end
 
-    # Use the secondary's kDim for the ahat buffer size (what gridTransform will iterate)
-    # But couple only up to min(kDim_p, kDim_s) wavenumbers
+function _rl_kernel!(iface::PatchInterface,
+                     primary::SpringsteelGrid,
+                     secondary::SpringsteelGrid)
+    nvars = length(secondary.params.vars)
+    b_iDim_p = primary.params.b_iDim
+    kDim_p = primary.params.iDim + primary.params.patchOffsetL
+    kDim_s = secondary.params.iDim + secondary.params.patchOffsetL
     kDim_couple = min(kDim_p, kDim_s)
+
+    a_extract = iface._a_extract
+    a_border  = iface._a_border
 
     for v in 1:nvars
         # ── k=0: spline slot 1 ───────────────────────────────────────────
-        spline_k0 = iface.primary.ibasis.data[1, v]
-        spline_k0.b .= view(iface.primary.spectral, 1:b_iDim_p, v)
+        spline_k0 = primary.ibasis.data[1, v]
+        copyto!(spline_k0.b, 1, primary.spectral, (v - 1) * size(primary.spectral, 1) + 1, b_iDim_p)
         CubicBSpline.SAtransform!(spline_k0)
 
-        A_coeffs = _extract_primary_coeffs(spline_k0, iface.primary_node_indices)
-        a_border = iface.coupling_matrix * A_coeffs
+        _extract_primary_coeffs!(a_extract, spline_k0, iface.primary_node_indices)
+        mul!(a_border, iface.coupling_matrix, a_extract)
 
         # Write to the secondary spline's ahat for k=0 (slot 1 is always unique)
-        sec_spline_k0 = iface.secondary.ibasis.data[1, v]
+        sec_spline_k0 = secondary.ibasis.data[1, v]
         _write_interface_ahat!(sec_spline_k0, a_border, iface.secondary_side)
 
         # Also store in per-wavenumber registry for k=0 (slot 0)
-        ahat_k0 = copy(sec_spline_k0.ahat)
-        _set_wavenumber_ahat!(iface.secondary, v, 0, ahat_k0, 2 + 2 * kDim_s)
+        _set_wavenumber_ahat!(secondary, v, 0, sec_spline_k0.ahat, 2 + 2 * kDim_s)
 
         # ── k=1..kDim: spline slots 2 (real) and 3 (imag) ────────────────
+        spec_col_off = (v - 1) * size(primary.spectral, 1)
         for k in 1:kDim_couple
             # RL convention: p = k * 2
             p = k * 2
 
             # Real part
             p1_r = (p - 1) * b_iDim_p + 1
-            p2_r = p * b_iDim_p
-            spline_real = iface.primary.ibasis.data[2, v]
-            spline_real.b .= view(iface.primary.spectral, p1_r:p2_r, v)
+            spline_real = primary.ibasis.data[2, v]
+            copyto!(spline_real.b, 1, primary.spectral, spec_col_off + p1_r, b_iDim_p)
             CubicBSpline.SAtransform!(spline_real)
 
-            A_real = _extract_primary_coeffs(spline_real, iface.primary_node_indices)
-            a_border_r = iface.coupling_matrix * A_real
+            _extract_primary_coeffs!(a_extract, spline_real, iface.primary_node_indices)
+            mul!(a_border, iface.coupling_matrix, a_extract)
 
-            # Build full ahat vector for this wavenumber's real part
-            sec_spline_real = iface.secondary.ibasis.data[2, v]
-            _write_interface_ahat!(sec_spline_real, a_border_r, iface.secondary_side)
-            ahat_real = copy(sec_spline_real.ahat)
-            _set_wavenumber_ahat!(iface.secondary, v, p, ahat_real, 2 + 2 * kDim_s)
+            sec_spline_real = secondary.ibasis.data[2, v]
+            _write_interface_ahat!(sec_spline_real, a_border, iface.secondary_side)
+            _set_wavenumber_ahat!(secondary, v, p, sec_spline_real.ahat, 2 + 2 * kDim_s)
 
             # Imaginary part
             p1_i = p * b_iDim_p + 1
-            p2_i = (p + 1) * b_iDim_p
-            spline_imag = iface.primary.ibasis.data[3, v]
-            spline_imag.b .= view(iface.primary.spectral, p1_i:p2_i, v)
+            spline_imag = primary.ibasis.data[3, v]
+            copyto!(spline_imag.b, 1, primary.spectral, spec_col_off + p1_i, b_iDim_p)
             CubicBSpline.SAtransform!(spline_imag)
 
-            A_imag = _extract_primary_coeffs(spline_imag, iface.primary_node_indices)
-            a_border_i = iface.coupling_matrix * A_imag
+            _extract_primary_coeffs!(a_extract, spline_imag, iface.primary_node_indices)
+            mul!(a_border, iface.coupling_matrix, a_extract)
 
-            sec_spline_imag = iface.secondary.ibasis.data[3, v]
-            _write_interface_ahat!(sec_spline_imag, a_border_i, iface.secondary_side)
-            ahat_imag = copy(sec_spline_imag.ahat)
-            _set_wavenumber_ahat!(iface.secondary, v, p + 1, ahat_imag, 2 + 2 * kDim_s)
+            sec_spline_imag = secondary.ibasis.data[3, v]
+            _write_interface_ahat!(sec_spline_imag, a_border, iface.secondary_side)
+            _set_wavenumber_ahat!(secondary, v, p + 1, sec_spline_imag.ahat, 2 + 2 * kDim_s)
         end
     end
 end
@@ -466,18 +489,30 @@ uses the RLZ offset convention `p = (k-1)*2` (TRAP-1).
 Composite registry slot = `(z_b-1) * (1 + 2*kDim) + wavenumber_slot_within_z_level`.
 """
 function _update_interface_per_wavenumber_rlz!(iface::PatchInterface)
-    nvars = length(iface.secondary.params.vars)
-    b_iDim_p = iface.primary.params.b_iDim
-    b_kDim = iface.primary.params.b_kDim
-    kDim_p = iface.primary.params.iDim + iface.primary.params.patchOffsetL
-    kDim_s = iface.secondary.params.iDim + iface.secondary.params.patchOffsetL
+    # Function barrier: concrete-type kernel for dispatch specialization.
+    _rlz_kernel!(iface, iface.primary, iface.secondary)
+end
+
+function _rlz_kernel!(iface::PatchInterface,
+                      primary::SpringsteelGrid,
+                      secondary::SpringsteelGrid)
+    nvars = length(secondary.params.vars)
+    b_iDim_p = primary.params.b_iDim
+    b_kDim = primary.params.b_kDim
+    kDim_p = primary.params.iDim + primary.params.patchOffsetL
+    kDim_s = secondary.params.iDim + secondary.params.patchOffsetL
     kDim_couple = min(kDim_p, kDim_s)
 
     # Slots per z-level: 1 (k=0) + 2*kDim (k real/imag pairs)
     slots_per_z = 1 + 2 * kDim_s
     total_slots = b_kDim * slots_per_z
 
+    a_extract = iface._a_extract
+    a_border  = iface._a_border
+    spec_stride = size(primary.spectral, 1)
+
     for v in 1:nvars
+        spec_col_off = (v - 1) * spec_stride
         for z_b in 1:b_kDim
             # Base offset in spectral array for this Chebyshev level
             base_p = (z_b - 1) * b_iDim_p * (1 + kDim_p * 2)
@@ -485,53 +520,51 @@ function _update_interface_per_wavenumber_rlz!(iface::PatchInterface)
 
             # ── k=0 ──────────────────────────────────────────────────────
             r1 = base_p + 1
-            r2 = base_p + b_iDim_p
-            spline_k0 = iface.primary.ibasis.data[1, v]
-            spline_k0.b .= view(iface.primary.spectral, r1:r2, v)
+            spline_k0 = primary.ibasis.data[1, v]
+            copyto!(spline_k0.b, 1, primary.spectral, spec_col_off + r1, b_iDim_p)
             CubicBSpline.SAtransform!(spline_k0)
 
-            A_coeffs = _extract_primary_coeffs(spline_k0, iface.primary_node_indices)
-            a_border = iface.coupling_matrix * A_coeffs
+            _extract_primary_coeffs!(a_extract, spline_k0, iface.primary_node_indices)
+            mul!(a_border, iface.coupling_matrix, a_extract)
 
-            sec_spline_k0 = iface.secondary.ibasis.data[1, v]
+            sec_spline_k0 = secondary.ibasis.data[1, v]
             _write_interface_ahat!(sec_spline_k0, a_border, iface.secondary_side)
-            ahat_k0 = copy(sec_spline_k0.ahat)
-            _set_wavenumber_ahat!(iface.secondary, v, z_slot_base + 0, ahat_k0, total_slots)
+            _set_wavenumber_ahat!(secondary, v, z_slot_base + 0,
+                                  sec_spline_k0.ahat, total_slots)
 
             # ── k=1..kDim ────────────────────────────────────────────────
+            r2 = base_p + b_iDim_p
             for k in 1:kDim_couple
                 # RLZ convention: p = (k-1)*2
                 p = (k - 1) * 2
 
                 # Real part
                 p1_r = r2 + 1 + p * b_iDim_p
-                p2_r = p1_r + b_iDim_p - 1
-                spline_real = iface.primary.ibasis.data[2, v]
-                spline_real.b .= view(iface.primary.spectral, p1_r:p2_r, v)
+                spline_real = primary.ibasis.data[2, v]
+                copyto!(spline_real.b, 1, primary.spectral, spec_col_off + p1_r, b_iDim_p)
                 CubicBSpline.SAtransform!(spline_real)
 
-                A_real = _extract_primary_coeffs(spline_real, iface.primary_node_indices)
-                a_border_r = iface.coupling_matrix * A_real
+                _extract_primary_coeffs!(a_extract, spline_real, iface.primary_node_indices)
+                mul!(a_border, iface.coupling_matrix, a_extract)
 
-                sec_spline_real = iface.secondary.ibasis.data[2, v]
-                _write_interface_ahat!(sec_spline_real, a_border_r, iface.secondary_side)
-                ahat_real = copy(sec_spline_real.ahat)
-                _set_wavenumber_ahat!(iface.secondary, v, z_slot_base + 1 + p, ahat_real, total_slots)
+                sec_spline_real = secondary.ibasis.data[2, v]
+                _write_interface_ahat!(sec_spline_real, a_border, iface.secondary_side)
+                _set_wavenumber_ahat!(secondary, v, z_slot_base + 1 + p,
+                                      sec_spline_real.ahat, total_slots)
 
                 # Imaginary part
-                p1_i = p2_r + 1
-                p2_i = p1_i + b_iDim_p - 1
-                spline_imag = iface.primary.ibasis.data[3, v]
-                spline_imag.b .= view(iface.primary.spectral, p1_i:p2_i, v)
+                p1_i = p1_r + b_iDim_p
+                spline_imag = primary.ibasis.data[3, v]
+                copyto!(spline_imag.b, 1, primary.spectral, spec_col_off + p1_i, b_iDim_p)
                 CubicBSpline.SAtransform!(spline_imag)
 
-                A_imag = _extract_primary_coeffs(spline_imag, iface.primary_node_indices)
-                a_border_i = iface.coupling_matrix * A_imag
+                _extract_primary_coeffs!(a_extract, spline_imag, iface.primary_node_indices)
+                mul!(a_border, iface.coupling_matrix, a_extract)
 
-                sec_spline_imag = iface.secondary.ibasis.data[3, v]
-                _write_interface_ahat!(sec_spline_imag, a_border_i, iface.secondary_side)
-                ahat_imag = copy(sec_spline_imag.ahat)
-                _set_wavenumber_ahat!(iface.secondary, v, z_slot_base + 1 + p + 1, ahat_imag, total_slots)
+                sec_spline_imag = secondary.ibasis.data[3, v]
+                _write_interface_ahat!(sec_spline_imag, a_border, iface.secondary_side)
+                _set_wavenumber_ahat!(secondary, v, z_slot_base + 1 + p + 1,
+                                      sec_spline_imag.ahat, total_slots)
             end
         end
     end
@@ -601,6 +634,9 @@ struct MultiPatchGrid
     patches::Vector{<:SpringsteelGrid}
     interfaces::Vector{PatchInterface}
     transform_order::Vector{Vector{Int}}
+    # Precomputed objectid → patch index for use by multiGridTransform!.
+    # Built once at construction; avoids per-call Dict allocation.
+    _patch_idx_map::Dict{UInt, Int}
 end
 
 """
@@ -698,7 +734,11 @@ Throws an error if circular dependencies are detected.
 function MultiPatchGrid(patches::Vector{<:SpringsteelGrid},
                         interfaces::Vector{PatchInterface})
     transform_order = _topological_sort(patches, interfaces)
-    return MultiPatchGrid(patches, interfaces, transform_order)
+    idx_map = Dict{UInt, Int}()
+    for (i, p) in enumerate(patches)
+        idx_map[objectid(p)] = i
+    end
+    return MultiPatchGrid(patches, interfaces, transform_order, idx_map)
 end
 
 """
@@ -727,11 +767,7 @@ multiGridTransform!(mpg)
 See also: [`MultiPatchGrid`](@ref), [`update_interface!`](@ref)
 """
 function multiGridTransform!(mpg::MultiPatchGrid)
-    idx_map = Dict{UInt, Int}()
-    for (i, p) in enumerate(mpg.patches)
-        idx_map[objectid(p)] = i
-    end
-
+    idx_map = mpg._patch_idx_map
     for layer in mpg.transform_order
         # Transform all patches in this layer
         for idx in layer
@@ -746,12 +782,6 @@ function multiGridTransform!(mpg::MultiPatchGrid)
             end
         end
     end
-
-    # Clean up per-wavenumber ahat registry
-    for p in mpg.patches
-        _clear_wavenumber_ahat!(p)
-    end
-
     return nothing
 end
 
