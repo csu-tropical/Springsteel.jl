@@ -105,6 +105,96 @@ using Springsteel.CubicBSpline, Springsteel.Chebyshev
         @test maximum(abs.(u2 .- sin.(2π .* pts)))     < 1e-3
     end
 
+    @testset "Block system: 2-variable decoupled diagonal" begin
+        # Two independent Poisson problems:
+        #   u'' = -π²sin(π x),     u(0)=u(1)=0, analytic: u = sin(π x)
+        #   v'' = -(2π)²sin(2π x), v(0)=v(1)=0, analytic: v = sin(2π x)
+        N = 30
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0,
+                       "fu" => Chebyshev.R0,  "fv" => Chebyshev.R0),
+            BCR = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0,
+                       "fu" => Chebyshev.R0,  "fv" => Chebyshev.R0),
+            vars = Dict("u" => 1, "v" => 2, "fu" => 3, "fv" => 4))
+        grid = createGrid(gp)
+        pts  = solver_gridpoints(grid, "u")
+
+        grid.physical[:, 3, 1] .= -π^2      .* sin.(π .* pts)
+        grid.physical[:, 4, 1] .= -(2π)^2   .* sin.(2π .* pts)
+
+        u = Field(grid, "u")
+        v = Field(grid, "v")
+        eqs = [
+            ∂ᵢ^2 * u => :fu,
+            ∂ᵢ^2 * v => :fv,
+        ]
+        prob = SpringsteelProblem(grid, eqs)
+        solve!(prob)
+
+        u_ana = sin.(π .* pts)
+        v_ana = sin.(2π .* pts)
+        @test maximum(abs.(grid.physical[:, 1, 1] .- u_ana)) < 1e-3
+        @test maximum(abs.(grid.physical[:, 2, 1] .- v_ana)) < 1e-3
+    end
+
+    @testset "Block system: 2-variable coupled (off-diagonal)" begin
+        # Manufactured coupled system on 1D Chebyshev, Dirichlet u=v=0 at ends:
+        #   u'' + v = f_u
+        #   u + v'' = f_v
+        # with u = sin(π x), v = sin(2π x):
+        #   f_u = -π² sin(π x)  + sin(2π x)
+        #   f_v = sin(π x)       - 4π² sin(2π x)
+        N = 40
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0,
+                       "fu" => Chebyshev.R0,  "fv" => Chebyshev.R0),
+            BCR = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0,
+                       "fu" => Chebyshev.R0,  "fv" => Chebyshev.R0),
+            vars = Dict("u" => 1, "v" => 2, "fu" => 3, "fv" => 4))
+        grid = createGrid(gp)
+        pts  = solver_gridpoints(grid, "u")
+
+        grid.physical[:, 3, 1] .= -π^2 .* sin.(π .* pts) .+ sin.(2π .* pts)
+        grid.physical[:, 4, 1] .= sin.(π .* pts) .- (2π)^2 .* sin.(2π .* pts)
+
+        u = Field(grid, "u")
+        v = Field(grid, "v")
+        eqs = [
+            (∂ᵢ^2 * u) + (∂ᵢ^0 * v) => :fu,
+            (∂ᵢ^0 * u) + (∂ᵢ^2 * v) => :fv,
+        ]
+        prob = SpringsteelProblem(grid, eqs)
+        solve!(prob)
+
+        @test maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts)))  < 1e-3
+        @test maximum(abs.(grid.physical[:, 2, 1] .- sin.(2π .* pts))) < 1e-3
+    end
+
+    @testset "Block system error paths" begin
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = 10, b_iDim = 10,
+            BCL = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0),
+            BCR = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0),
+            vars = Dict("u" => 1, "v" => 2))
+        grid = createGrid(gp)
+        u = Field(grid, "u")
+        v = Field(grid, "v")
+
+        # Wrong equation count
+        @test_throws ArgumentError SpringsteelProblem(grid,
+            Pair{TypedOperator,Any}[∂ᵢ^2 * u + ∂ᵢ^0 * v => 0])
+
+        # Diagonal missing: first-appearance ordering gives fields = [u, v];
+        # eq 2 only has a term in u → L[2,2] block is empty. Should error.
+        @test_throws ArgumentError SpringsteelProblem(grid,
+            [∂ᵢ^2 * u + ∂ᵢ^2 * v => 0, ∂ᵢ^2 * u => 0])
+    end
+
     @testset "Error paths" begin
         gp = SpringsteelGridParameters(
             geometry = "R",

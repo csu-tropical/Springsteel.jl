@@ -46,20 +46,38 @@ const Field = SpringsteelField
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    TypedOperator(expr, field)
+    TypedTerm(expr, field)
 
-The result of multiplying an `OperatorExpr` (or `DerivMono`/`ScaledMono`) by a
-`SpringsteelField`. Captures the unknown so `SpringsteelProblem` knows which
-variable's BCs to pull from the grid and where to write the solution.
+A single `OperatorExpr` acting on a single `SpringsteelField`. The
+atomic building block of a `TypedOperator`.
 """
-struct TypedOperator
+struct TypedTerm
     expr::OperatorExpr
     field::SpringsteelField
 end
 
-Base.:*(e::OperatorExpr, f::SpringsteelField) = TypedOperator(e, f)
-Base.:*(m::DerivMono,   f::SpringsteelField) = TypedOperator(_as_expr(m), f)
-Base.:*(s::ScaledMono,  f::SpringsteelField) = TypedOperator(_as_expr(s), f)
+"""
+    TypedOperator(terms)
+
+A sum of `TypedTerm`s — the left-hand side of one equation. Produced by
+multiplying an operator-algebra expression by a `SpringsteelField` and
+then combining via `+`/`-`. For single-variable problems it holds one
+term; for block systems each term can bind to a different field.
+"""
+struct TypedOperator
+    terms::Vector{TypedTerm}
+end
+
+# Single-term constructors
+Base.:*(e::OperatorExpr, f::SpringsteelField) = TypedOperator([TypedTerm(e, f)])
+Base.:*(m::DerivMono,    f::SpringsteelField) = TypedOperator([TypedTerm(_as_expr(m), f)])
+Base.:*(s::ScaledMono,   f::SpringsteelField) = TypedOperator([TypedTerm(_as_expr(s), f)])
+
+# Combine LHS pieces
+Base.:+(a::TypedOperator, b::TypedOperator) = TypedOperator(vcat(a.terms, b.terms))
+Base.:-(a::TypedOperator) =
+    TypedOperator([TypedTerm(-1.0 * t.expr, t.field) for t in a.terms])
+Base.:-(a::TypedOperator, b::TypedOperator) = a + (-b)
 
 # ────────────────────────────────────────────────────────────────────────────
 # LocalLinearWorkspace — cached state for repeated `solve!` calls
@@ -113,14 +131,65 @@ Use `solve!(prob)` to run the solver and write into `grid.physical[:, u_idx, 1]`
 function SpringsteelProblem(grid::AbstractGrid,
                              eq::Pair{TypedOperator, <:Any};
                              backend::AbstractSolverBackend = LocalLinearBackend())
-    top   = eq.first
-    rhs0  = eq.second
-    field = top.field
+    top  = eq.first
+    rhs0 = eq.second
+    isempty(top.terms) && throw(ArgumentError("Empty TypedOperator LHS"))
+
+    fields = unique([t.field for t in top.terms])
+    length(fields) == 1 || throw(ArgumentError(
+        "Single-equation constructor requires all TypedTerms to bind the " *
+        "same field — got $(length(fields)). For block systems pass a " *
+        "Vector{Pair} instead."))
+    field = fields[1]
     field.grid === grid ||
         throw(ArgumentError("SpringsteelField.grid does not match problem grid"))
 
-    lowered = _lower(top.expr, grid)
+    # Combine all term exprs into one (same field → plain sum).
+    combined = top.terms[1].expr
+    for k in 2:length(top.terms)
+        combined = combined + top.terms[k].expr
+    end
+    lowered = _lower(combined, grid)
     ws = _build_local_linear_workspace(grid, field, lowered, rhs0)
+
+    return SpringsteelProblem(grid, nothing, nothing, nothing,
+                               Dict{String, Any}(), backend, ws)
+end
+
+"""
+    SpringsteelProblem(grid, eqs::Vector{<:Pair{TypedOperator,<:Any}}; backend)
+
+Block-system constructor (S3). Each element of `eqs` is one equation
+`LHS_i => RHS_i` where `LHS_i` is a sum of `TypedTerm`s whose fields
+identify the unknowns participating in that row. The set of unique fields
+across all equations defines the unknown vector; `length(eqs)` must equal
+the number of unknowns.
+
+BCs come from each variable's grid BC spec. The resulting operator is a
+block matrix `L[i,j]` where `L[i,j]` accumulates terms from equation `i`
+that bind to unknown `j`. `solve!(prob)` writes each variable back into
+`grid.physical[:, var_idx, 1]`.
+"""
+function SpringsteelProblem(grid::AbstractGrid,
+                             eqs::Vector{<:Pair{TypedOperator,<:Any}};
+                             backend::AbstractSolverBackend = LocalLinearBackend())
+    isempty(eqs) && throw(ArgumentError("Empty equation list"))
+
+    # Collect unique fields across all equations, in first-appearance order.
+    fields = SpringsteelField[]
+    for eq in eqs, t in eq.first.terms
+        t.field.grid === grid ||
+            throw(ArgumentError("SpringsteelField.grid does not match problem grid"))
+        if !any(f -> f.var_idx == t.field.var_idx, fields)
+            push!(fields, t.field)
+        end
+    end
+
+    length(eqs) == length(fields) || throw(ArgumentError(
+        "Block system requires #equations == #unknowns " *
+        "(got $(length(eqs)) eqs, $(length(fields)) unknowns)"))
+
+    ws = _build_block_linear_workspace(grid, fields, eqs)
 
     return SpringsteelProblem(grid, nothing, nothing, nothing,
                                Dict{String, Any}(), backend, ws)
@@ -197,9 +266,9 @@ end
 """
     solve!(prob::SpringsteelProblem) -> SpringsteelProblem
 
-Stateful solve that reuses `prob.workspace`. Refreshes the RHS (from the
-grid if it was given as a `Symbol`), applies the cached ahat/BC corrections,
-backsolves against the cached factorisation, and writes the physical-space
+Stateful solve that reuses `prob.workspace`. Refreshes each RHS (from the
+grid if given as a `Symbol`), applies cached ahat/BC corrections, backsolves
+against the cached factorisation, and writes each variable's physical-space
 solution into `prob.grid.physical[:, var_idx, 1]`. Returns `prob`.
 """
 function solve!(prob::SpringsteelProblem)
@@ -207,7 +276,13 @@ function solve!(prob::SpringsteelProblem)
     ws === nothing && throw(ArgumentError(
         "solve! requires a stateful SpringsteelProblem built via the " *
         "Pair-based constructor (SpringsteelProblem(grid, L*u => rhs))"))
-    _solve_local_linear!(prob, ws::LocalLinearWorkspace)
+    if ws isa LocalLinearWorkspace
+        _solve_local_linear!(prob, ws)
+    elseif ws isa BlockLinearWorkspace
+        _solve_block_linear!(prob, ws)
+    else
+        error("Unknown workspace type: $(typeof(ws))")
+    end
     return prob
 end
 
@@ -256,7 +331,7 @@ end
 # RHS resolution — S5 will generalise this
 # ────────────────────────────────────────────────────────────────────────────
 
-function _fetch_rhs!(dst::Vector{Float64}, src::Symbol, grid::AbstractGrid, n_phys::Int)
+function _fetch_rhs!(dst::AbstractVector{Float64}, src::Symbol, grid::AbstractGrid, n_phys::Int)
     name = String(src)
     haskey(grid.params.vars, name) || throw(ArgumentError(
         "RHS symbol `:$name` is not a variable on this grid"))
@@ -268,7 +343,7 @@ function _fetch_rhs!(dst::Vector{Float64}, src::Symbol, grid::AbstractGrid, n_ph
     return dst
 end
 
-function _fetch_rhs!(dst::Vector{Float64}, src::AbstractVector{<:Real},
+function _fetch_rhs!(dst::AbstractVector{Float64}, src::AbstractVector{<:Real},
                      ::AbstractGrid, n_phys::Int)
     length(src) == n_phys || throw(ArgumentError(
         "RHS vector length $(length(src)) does not match physical size $n_phys"))
@@ -278,7 +353,213 @@ function _fetch_rhs!(dst::Vector{Float64}, src::AbstractVector{<:Real},
     return dst
 end
 
-function _fetch_rhs!(dst::Vector{Float64}, src::Real, ::AbstractGrid, n_phys::Int)
+function _fetch_rhs!(dst::AbstractVector{Float64}, src::Real, ::AbstractGrid, n_phys::Int)
     fill!(dst, Float64(src))
     return dst
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# S3 — Block linear workspace for multi-variable systems
+# ────────────────────────────────────────────────────────────────────────────
+
+mutable struct BlockLinearWorkspace
+    fields::Vector{SpringsteelField}
+    rhs_sources::Vector{Any}
+    n_phys::Int                              # per-equation row count
+    n_eq::Int                                # number of equations (= #unknowns)
+    col_offsets::Vector{Int}                 # 0-based col offsets into the full matrix, length n_eq+1
+    gammaBC_Ts::Vector{Union{Nothing,Matrix{Float64}}}
+    M_eval_raws::Vector{Matrix{Float64}}     # n_phys × n_spec_full_j (one per unknown)
+    M_evals::Vector{Matrix{Float64}}         # n_phys × n_reduced_j (post-gamma)
+    bc_rows_global::Vector{Int}              # row indices in L_full that are BC rows
+    bc_values::Vector{Float64}               # matching BC values
+    L_full::Matrix{Float64}                  # (n_eq*n_phys) × sum(n_reduced_j)
+    factorization::Any
+    f_work::Vector{Float64}
+    a_raw::Vector{Float64}                   # full reduced-spectral stack
+    phys_out::Matrix{Float64}                # n_phys × n_eq
+end
+
+function _build_block_linear_workspace(grid::AbstractGrid,
+                                        fields::Vector{SpringsteelField},
+                                        eqs::Vector{<:Pair{TypedOperator,<:Any}})
+    n_eq = length(eqs)
+
+    # Per-unknown basis data
+    gammaBC_Ts    = Vector{Union{Nothing,Matrix{Float64}}}(undef, n_eq)
+    M_eval_raws   = Vector{Matrix{Float64}}(undef, n_eq)
+    M_evals       = Vector{Matrix{Float64}}(undef, n_eq)
+    n_reduced_js  = Vector{Int}(undef, n_eq)
+
+    # Reject R3X for now — multi-var path doesn't plumb ahat yet.
+    for f in fields
+        _build_ahat_total(grid, f.var_idx) === nothing || throw(ArgumentError(
+            "Block-system S3 does not yet support R3X inhomogeneous BCs " *
+            "(variable `$(f.var_name)` has non-zero ahat). Use the " *
+            "single-variable path or wait for S4."))
+    end
+
+    # First pass: per-unknown basis stuff, sanity-check n_phys
+    n_phys = -1
+    for (j, fld) in enumerate(fields)
+        var = fld.var_name
+        M_raw = assemble_operator(grid, [OperatorTerm(0, 0, 0, nothing)], var)
+        M_eval_raws[j] = M_raw
+        if n_phys < 0
+            n_phys = size(M_raw, 1)
+        else
+            size(M_raw, 1) == n_phys || throw(ArgumentError(
+                "Unknowns must share the same physical row count " *
+                "(got $n_phys vs $(size(M_raw,1)) for `$var`)"))
+        end
+        gT = _build_gammaBC_total(grid, fld.var_idx)
+        gammaBC_Ts[j] = gT
+        M_evals[j]   = gT === nothing ? M_raw : M_raw * gT
+        n_reduced_js[j] = size(M_evals[j], 2)
+    end
+
+    # Column offsets (0-based)
+    col_offsets = zeros(Int, n_eq + 1)
+    for j in 1:n_eq
+        col_offsets[j+1] = col_offsets[j] + n_reduced_js[j]
+    end
+    n_cols_total = col_offsets[end]
+    n_rows_total = n_eq * n_phys
+
+    # Allocate block matrix and fill cell-by-cell
+    L_full = zeros(n_rows_total, n_cols_total)
+
+    for (i, eq) in enumerate(eqs)
+        row_offset = (i - 1) * n_phys
+        for j in 1:n_eq
+            terms = OperatorTerm[]
+            for t in eq.first.terms
+                if t.field.var_idx == fields[j].var_idx
+                    append!(terms, _lower(t.expr, grid))
+                end
+            end
+            isempty(terms) && continue   # zero block
+            L_ij_raw = assemble_operator(grid, terms, fields[j].var_name)
+            gT = gammaBC_Ts[j]
+            L_ij = gT === nothing ? L_ij_raw : L_ij_raw * gT
+
+            cols = (col_offsets[j] + 1):col_offsets[j+1]
+            rows = (row_offset + 1):(row_offset + n_phys)
+            @views L_full[rows, cols] .+= L_ij
+        end
+    end
+
+    # Collect BC rows + values per unknown. We re-use _apply_all_bcs on the
+    # diagonal cell to extract which rows got replaced and what values were
+    # placed there (matching the S2 technique). The replacement matrix (M_eval
+    # or M_deriv) is reconstructed per-row into the correct column block,
+    # with the remaining columns zeroed.
+    bc_rows_global = Int[]
+    bc_values      = Float64[]
+
+    for j in 1:n_eq
+        fld = fields[j]
+        var = fld.var_name
+        # Build a fresh diagonal cell (raw) and zero RHS, then apply BCs.
+        diag_terms = OperatorTerm[]
+        for t in eqs[j].first.terms
+            if t.field.var_idx == fld.var_idx
+                append!(diag_terms, _lower(t.expr, grid))
+            end
+        end
+        # Diagonal must be non-empty, else BC constraints can't be placed.
+        isempty(diag_terms) && throw(ArgumentError(
+            "Equation $j has no term in unknown `$(var)` — cannot place BCs " *
+            "for this variable. Reorder equations so eq i targets unknown i."))
+
+        L_jj_raw = assemble_operator(grid, diag_terms, var)
+        f_zero = zeros(n_phys)
+        L_jj_bc, f_jj_bc, _ =
+            _apply_all_bcs(grid, copy(L_jj_raw), f_zero, fld.var_idx, var)
+
+        # f_jj_bc rows that changed from 0 are BC rows.
+        for r in 1:n_phys
+            if f_jj_bc[r] != 0.0 || _row_is_bc(L_jj_bc, L_jj_raw, r, gammaBC_Ts[j])
+                # Overwrite the corresponding row in L_full. The correct
+                # replacement row is L_jj_bc[r, :] in the j'th column block,
+                # zeros elsewhere.
+                global_row = (j - 1) * n_phys + r
+                @views L_full[global_row, :] .= 0.0
+                cols = (col_offsets[j] + 1):col_offsets[j+1]
+                @views L_full[global_row, cols] .= L_jj_bc[r, :]
+                push!(bc_rows_global, global_row)
+                push!(bc_values, f_jj_bc[r])
+            end
+        end
+    end
+
+    # Square-system check
+    size(L_full, 1) == size(L_full, 2) || throw(ArgumentError(
+        "Block operator is not square (got $(size(L_full))). Each unknown's " *
+        "reduced spectral dimension must sum to n_eq*n_phys."))
+
+    F = factorize(L_full)
+
+    # Scratch
+    f_work   = zeros(n_rows_total)
+    a_raw    = zeros(n_cols_total)
+    phys_out = zeros(n_phys, n_eq)
+
+    rhs_sources = Any[eq.second for eq in eqs]
+
+    return BlockLinearWorkspace(fields, rhs_sources, n_phys, n_eq, col_offsets,
+                                 gammaBC_Ts, M_eval_raws, M_evals,
+                                 bc_rows_global, bc_values,
+                                 L_full, F,
+                                 f_work, a_raw, phys_out)
+end
+
+# Detect BC rows whose RHS happened to be zero (e.g. homogeneous Dirichlet).
+# In that case the f-difference trick misses them, but the L row will have
+# been replaced by an M_eval row that generally disagrees with the folded
+# raw-row version. Compares the row of the BC'd operator against the row of
+# `L_jj_raw * gammaBC_T` (or raw if no gamma).
+function _row_is_bc(L_bc::Matrix{Float64}, L_raw::Matrix{Float64}, r::Int,
+                    gammaBC_T::Union{Nothing,Matrix{Float64}})
+    if gammaBC_T === nothing
+        @views return L_bc[r, :] != L_raw[r, :]
+    else
+        # Compare L_bc[r, :] against (L_raw * gammaBC_T)[r, :] = L_raw[r, :] * gammaBC_T
+        @views raw_folded = L_raw[r, :]' * gammaBC_T
+        @views return vec(raw_folded) != L_bc[r, :]
+    end
+end
+
+function _solve_block_linear!(prob::SpringsteelProblem, ws::BlockLinearWorkspace)
+    grid   = prob.grid
+    n_phys = ws.n_phys
+    n_eq   = ws.n_eq
+
+    # 1) Fill f_work with each equation's RHS
+    for i in 1:n_eq
+        @views eq_slice = ws.f_work[((i - 1) * n_phys + 1):(i * n_phys)]
+        _fetch_rhs!(eq_slice, ws.rhs_sources[i], grid, n_phys)
+    end
+
+    # 2) Overwrite BC rows
+    @inbounds for k in eachindex(ws.bc_rows_global)
+        ws.f_work[ws.bc_rows_global[k]] = ws.bc_values[k]
+    end
+
+    # 3) Backsolve
+    ldiv!(ws.a_raw, ws.factorization, ws.f_work)
+
+    # 4) Per-unknown physical recovery + writeback
+    phys_mat = grid.physical
+    @inbounds for j in 1:n_eq
+        cols = (ws.col_offsets[j] + 1):ws.col_offsets[j + 1]
+        @views a_j = ws.a_raw[cols]
+        @views phys_j = ws.phys_out[:, j]
+        mul!(phys_j, ws.M_evals[j], a_j)
+        var_idx = ws.fields[j].var_idx
+        for r in 1:n_phys
+            phys_mat[r, var_idx, 1] = phys_j[r]
+        end
+    end
+    return prob
 end
