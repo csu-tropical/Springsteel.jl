@@ -670,6 +670,56 @@
             @test maximum(abs.(ring.uMish .- u_multi)) < 1e-10
         end
 
+        @testset "Round-trip with ymin != 0 (phase shift)" begin
+            # The ymin=0 round-trip cases above cannot detect a sign error in
+            # the phase-shift rotation because cos(0)=1, sin(0)=0 turns it into
+            # identity. Exercise a nontrivial shift so forward/inverse must
+            # actually cancel the rotation rather than skip it.
+            for ymin in (π/6, -π/4, π/3)
+                fp = Fourier.FourierParameters(ymin=ymin, kmax=8, yDim=32, bDim=17)
+                ring = Fourier.Fourier1D(fp)
+                pts = ring.mishPoints
+                @test pts[1] ≈ ymin
+
+                for k in (1, 2, 5, 8)
+                    u_orig = sin.(k .* pts) .+ 0.3 .* cos.(k .* pts)
+                    ring.uMish .= u_orig
+                    Fourier.FBtransform!(ring)
+                    Fourier.FAtransform!(ring)
+                    Fourier.FItransform!(ring)
+                    @test maximum(abs.(ring.uMish .- u_orig)) < 1e-10
+                end
+
+                # Multi-wavenumber round-trip under the shift
+                u_multi = cos.(pts) .+ 0.4 .* sin.(3 .* pts) .+ 0.2 .* cos.(6 .* pts)
+                ring.uMish .= u_multi
+                Fourier.FBtransform!(ring)
+                Fourier.FAtransform!(ring)
+                Fourier.FItransform!(ring)
+                @test maximum(abs.(ring.uMish .- u_multi)) < 1e-10
+            end
+
+            # Independent check: the forward-transformed coefficient for a
+            # pure sinusoid at wavenumber k should align with the ymin=0
+            # reference regardless of ring offset, because the phase filter
+            # normalises to a common reference. b[k+1]^2 + b[bDim-k+1]^2
+            # should equal |amplitude|^2 up to FFT normalisation.
+            fp_ref = Fourier.FourierParameters(ymin=0.0,  kmax=4, yDim=16, bDim=9)
+            fp_sh  = Fourier.FourierParameters(ymin=π/4, kmax=4, yDim=16, bDim=9)
+            ring_ref = Fourier.Fourier1D(fp_ref)
+            ring_sh  = Fourier.Fourier1D(fp_sh)
+            for k in 1:4
+                ring_ref.uMish .= cos.(k .* ring_ref.mishPoints)
+                ring_sh.uMish  .= cos.(k .* ring_sh.mishPoints)
+                Fourier.FBtransform!(ring_ref)
+                Fourier.FBtransform!(ring_sh)
+                # Absolute amplitude (√(re² + im²)) is invariant under the shift
+                amp_ref = sqrt(ring_ref.b[k+1]^2 + ring_ref.b[fp_ref.bDim-k+1]^2)
+                amp_sh  = sqrt(ring_sh.b[k+1]^2  + ring_sh.b[fp_sh.bDim-k+1]^2)
+                @test amp_ref ≈ amp_sh atol=1e-12
+            end
+        end
+
         @testset "FIxcoefficients" begin
             # For a pure cosine u = cos(k*θ), du/dθ = -k*sin(k*θ).
             # In halfcomplex layout: cosine coeff at index k+1, sine at yDim-k+1.

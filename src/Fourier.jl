@@ -64,6 +64,12 @@ Base.@kwdef struct FourierParameters
     bDim::int = 0    # Number of Fourier coefficients after filtering to kmax
 end
 
+# PhaseFilter: shared reusable azimuthal phase + spectral cutoff.
+# Replaces per-ring dense phasefilter matrices with an O(kmax) representation.
+include("phase_filter.jl")
+
+export PhaseFilter, apply_phasefilter_forward!, apply_phasefilter_inverse!
+
 """
     Fourier1D
 
