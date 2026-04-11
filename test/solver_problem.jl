@@ -451,6 +451,87 @@ using Springsteel.CubicBSpline, Springsteel.Chebyshev
             ∂ᵢ^2 * u => zeros(gp.iDim); backend = :nonsense)
     end
 
+    @testset "S5 coefficient resolution: Vector/Function/Symbol parity" begin
+        # Solve u''(x) + α(x) u'(x) = f(x) where α(x) = sin(x) + 2.
+        # Compare the three forms of α: precomputed Vector, Function, and
+        # Symbol (stored on the grid). Must produce identical results.
+        gp = SpringsteelGridParameters(
+            geometry = "R",
+            iMin = 0.1, iMax = 1.0, num_cells = 40,
+            BCL = Dict("u" => CubicBSpline.R1T0, "α" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R1T0, "α" => CubicBSpline.R0),
+            vars = Dict("u" => 1, "α" => 2))
+
+        α_fn(x) = sin(x) + 2.0
+
+        grid_v = createGrid(gp); pts = solver_gridpoints(grid_v, "u")
+        grid_f = createGrid(gp)
+        grid_s = createGrid(gp)
+
+        α_vec = α_fn.(pts)
+        # Seed α on the grid_s variable slot so the Symbol resolves against it
+        grid_s.physical[:, 2, 1] .= α_vec
+
+        f = -(2π)^2 .* sin.(2π .* pts)    # any reasonable RHS
+
+        u_v = Field(grid_v, "u")
+        u_f = Field(grid_f, "u")
+        u_s = Field(grid_s, "u")
+
+        prob_v = SpringsteelProblem(grid_v, (∂_x^2 + α_vec * ∂_x) * u_v => f)
+        prob_f = SpringsteelProblem(grid_f, (∂_x^2 + α_fn  * ∂_x) * u_f => f)
+        prob_s = SpringsteelProblem(grid_s, (∂_x^2 + :α    * ∂_x) * u_s => f)
+
+        solve!(prob_v); solve!(prob_f); solve!(prob_s)
+
+        uv = grid_v.physical[:, 1, 1]
+        uf = grid_f.physical[:, 1, 1]
+        us = grid_s.physical[:, 1, 1]
+
+        @test maximum(abs.(uv .- uf)) < 1e-12
+        @test maximum(abs.(uv .- us)) < 1e-12
+    end
+
+    @testset "S5 Function coefficient on 2D grid (RZ)" begin
+        gp = SpringsteelGridParameters(
+            geometry = "RZ",
+            iMin = 0.0, iMax = 1.0, num_cells = 10,
+            kMin = 0.0, kMax = 1.0, kDim = 10, b_kDim = 10,
+            BCL = Dict("u" => CubicBSpline.R1T0),
+            BCR = Dict("u" => CubicBSpline.R1T0),
+            BCB = Dict("u" => Chebyshev.R1T0),
+            BCT = Dict("u" => Chebyshev.R1T0),
+            vars = Dict("u" => 1))
+        grid1 = createGrid(gp); grid2 = createGrid(gp)
+
+        # Use a function that depends on both x and z
+        α_fn(x, z) = 1.0 + 0.1 * x * z
+        pts_mat = getGridpoints(grid1)
+        α_vec = [α_fn(pts_mat[i, 1], pts_mat[i, 2]) for i in 1:size(pts_mat, 1)]
+
+        u1 = Field(grid1, "u"); u2 = Field(grid2, "u")
+        rhs = zeros(gp.iDim * gp.kDim)
+
+        prob1 = SpringsteelProblem(grid1, (∂_x^2 + ∂_z^2 + α_vec * ∂_x^0) * u1 => rhs)
+        prob2 = SpringsteelProblem(grid2, (∂_x^2 + ∂_z^2 + α_fn  * ∂_x^0) * u2 => rhs)
+        solve!(prob1); solve!(prob2)
+
+        @test maximum(abs.(grid1.physical[:, 1, 1] .- grid2.physical[:, 1, 1])) < 1e-12
+    end
+
+    @testset "S5 unknown Symbol coefficient errors" begin
+        gp = SpringsteelGridParameters(
+            geometry = "R",
+            iMin = 0.0, iMax = 1.0, num_cells = 5,
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            vars = Dict("u" => 1))
+        grid = createGrid(gp)
+        u = Field(grid, "u")
+        @test_throws ArgumentError SpringsteelProblem(grid,
+            (:nonexistent * ∂_x) * u => zeros(gp.iDim))
+    end
+
     @testset "Error paths" begin
         gp = SpringsteelGridParameters(
             geometry = "R",

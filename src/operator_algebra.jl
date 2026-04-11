@@ -123,22 +123,32 @@ function Base.:*(a::DerivMono, b::DerivMono)
     return DerivMono(orders)
 end
 
-# Scalar / vector coefficient times DerivMono → ScaledMono → OperatorExpr
+# Scalar / vector / function / symbol coefficient times DerivMono → ScaledMono
+# → OperatorExpr. Function and Symbol coefficients are resolved against the
+# grid in `_lower` (see S5), so they flow through the AST unchanged.
 _is_coeff(::Number) = true
 _is_coeff(::Vector{Float64}) = true
 _is_coeff(::Nothing) = true
+_is_coeff(::Function) = true
+_is_coeff(::Symbol)   = true
 _is_coeff(::Any) = false
 
 Base.:*(c, m::DerivMono) = _is_coeff(c) ?
-    OperatorExpr([ScaledMono(c === nothing ? nothing : Float64(c), m)]) :
-    error("Coefficient must be Number, Vector{Float64}, or Nothing")
+    OperatorExpr([ScaledMono(_coerce_coeff(c), m)]) :
+    error("Coefficient must be Number, Vector{Float64}, Function, Symbol, or Nothing")
+
+# Only scalars need coercion to Float64; everything else (Vector, Function,
+# Symbol, Nothing) flows through untouched until `_resolve_coeff` at lowering.
+_coerce_coeff(::Nothing) = nothing
+_coerce_coeff(c::Number) = Float64(c)
+_coerce_coeff(c) = c
 Base.:*(c::Vector{Float64}, m::DerivMono) = OperatorExpr([ScaledMono(c, m)])
 Base.:*(m::DerivMono, c) = c * m
 
 # Scalar times OperatorExpr distributes
 function Base.:*(c, e::OperatorExpr)
-    _is_coeff(c) || error("Coefficient must be Number, Vector{Float64}, or Nothing")
-    cf = c isa Number ? Float64(c) : c
+    _is_coeff(c) || error("Coefficient must be Number, Vector{Float64}, Function, Symbol, or Nothing")
+    cf = _coerce_coeff(c)
     return OperatorExpr([ScaledMono(_combine_coeff(cf, s.coeff), s.mono) for s in e.terms])
 end
 Base.:*(c::Vector{Float64}, e::OperatorExpr) =
@@ -153,6 +163,13 @@ _combine_coeff(outer::Float64, inner::Float64) = outer * inner
 _combine_coeff(outer::Float64, inner::Vector{Float64}) = outer .* inner
 _combine_coeff(outer::Vector{Float64}, inner::Float64) = outer .* inner
 _combine_coeff(outer::Vector{Float64}, inner::Vector{Float64}) = outer .* inner
+
+# Unevaluated coefficients (Function / Symbol) can only combine with a
+# trivial `nothing` partner. Everything else must be pre-combined by the
+# user, since composing a symbolic grid-variable lookup with a scalar
+# broadcast makes no sense without first resolving the grid values.
+_combine_coeff(outer::Union{Function,Symbol}, inner::Nothing) = outer
+_combine_coeff(outer::Nothing, inner::Union{Function,Symbol}) = inner
 
 # Sums — promote both sides to OperatorExpr then concatenate terms.
 Base.:+(a::Union{DerivMono,ScaledMono,OperatorExpr},
@@ -248,9 +265,69 @@ function _lower(expr::OperatorExpr, grid)
         (i_order > 2 || j_order > 2 || k_order > 2) && throw(ArgumentError(
             "Combined derivative order exceeds 2 on some axis " *
             "(i=$i_order, j=$j_order, k=$k_order)"))
-        push!(terms, OperatorTerm(i_order, j_order, k_order, s.coeff))
+        coeff = _resolve_coeff(s.coeff, grid)
+        push!(terms, OperatorTerm(i_order, j_order, k_order, coeff))
     end
     return terms
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# S5 — Coefficient resolution
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    _resolve_coeff(c, grid) -> Union{Float64, Vector{Float64}, Nothing}
+
+Turn a user-supplied coefficient into the concrete form `OperatorTerm`
+expects. Accepted inputs:
+
+- `Nothing`         → `nothing` (treated as 1.0 in assembly)
+- `Number`          → `Float64(c)`
+- `Vector{Float64}` → used as-is (size must match the grid's physical dim)
+- `Symbol`          → looked up in `grid.params.vars`, pulled from
+                      `grid.physical[:, var_idx, 1]` as a snapshot
+- `Function`        → evaluated at the grid's physical points; 1D grids
+                      pass `f(x)`, multi-D grids pass `f(x, y, ...)` with
+                      the coordinate columns splatted per point
+
+Function/Symbol resolution produces a snapshot at constructor time — the
+solver does not track changes to the underlying grid variable after the
+problem is built. S6 can extend this if live resolution is needed.
+"""
+_resolve_coeff(::Nothing, ::AbstractGrid) = nothing
+_resolve_coeff(c::Float64, ::AbstractGrid) = c
+_resolve_coeff(c::Number, ::AbstractGrid) = Float64(c)
+_resolve_coeff(c::Vector{Float64}, ::AbstractGrid) = c
+
+function _resolve_coeff(sym::Symbol, grid::AbstractGrid)
+    name = String(sym)
+    haskey(grid.params.vars, name) || throw(ArgumentError(
+        "Coefficient symbol `:$name` is not a variable on this grid " *
+        "(known: $(sort!(collect(keys(grid.params.vars)))))"))
+    var_idx = grid.params.vars[name]
+    return copy(grid.physical[:, var_idx, 1])
+end
+
+function _resolve_coeff(f::Function, grid::AbstractGrid)
+    pts = getGridpoints(grid)
+    if pts isa AbstractVector
+        out = Vector{Float64}(undef, length(pts))
+        @inbounds for i in eachindex(pts)
+            out[i] = Float64(f(pts[i]))
+        end
+        return out
+    elseif pts isa AbstractMatrix
+        n, d = size(pts)
+        out = Vector{Float64}(undef, n)
+        @inbounds for i in 1:n
+            out[i] = Float64(f(ntuple(k -> pts[i, k], d)...))
+        end
+        return out
+    else
+        throw(ArgumentError(
+            "getGridpoints returned an unexpected shape ($(typeof(pts))) — " *
+            "cannot evaluate Function coefficient on this grid"))
+    end
 end
 
 # ────────────────────────────────────────────────────────────────────────────
