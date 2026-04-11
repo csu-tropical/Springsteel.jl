@@ -195,6 +195,98 @@ using Springsteel.CubicBSpline, Springsteel.Chebyshev
             [∂ᵢ^2 * u + ∂ᵢ^2 * v => 0, ∂ᵢ^2 * u => 0])
     end
 
+    @testset "S4a backend parity: dense vs sparse" begin
+        # 1D CubicBSpline Poisson — sparse is the default (non-Chebyshev grid)
+        gp = SpringsteelGridParameters(
+            geometry = "R",
+            iMin = 0.0, iMax = 1.0, num_cells = 30,
+            BCL = Dict("u" => CubicBSpline.R1T0),
+            BCR = Dict("u" => CubicBSpline.R1T0),
+            vars = Dict("u" => 1))
+        grid_d = createGrid(gp); pts = solver_gridpoints(grid_d, "u")
+        grid_s = createGrid(gp)
+        f = -(2π)^2 .* sin.(2π .* pts)
+
+        u_d = Field(grid_d, "u")
+        u_s = Field(grid_s, "u")
+        prob_d = SpringsteelProblem(grid_d, ∂_x^2 * u_d => f; backend = :dense)
+        prob_s = SpringsteelProblem(grid_s, ∂_x^2 * u_s => f; backend = :sparse)
+        solve!(prob_d); solve!(prob_s)
+
+        @test prob_d.backend isa LocalLinearBackend
+        @test prob_s.backend isa SparseLinearBackend
+        @test maximum(abs.(grid_d.physical[:, 1, 1] .- grid_s.physical[:, 1, 1])) < 1e-10
+    end
+
+    @testset "S4a auto-pick: pure Chebyshev → dense, RZ → sparse" begin
+        gp_cheb = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = 12, b_iDim = 12,
+            BCL = Dict("u" => Chebyshev.R1T0),
+            BCR = Dict("u" => Chebyshev.R1T0),
+            vars = Dict("u" => 1))
+        grid_cheb = createGrid(gp_cheb)
+        u_c = Field(grid_cheb, "u")
+        pts_c = solver_gridpoints(grid_cheb, "u")
+        f_c = -π^2 .* sin.(π .* pts_c)
+        prob_c = SpringsteelProblem(grid_cheb, ∂ᵢ^2 * u_c => f_c)
+        @test prob_c.backend isa LocalLinearBackend
+
+        gp_rz = SpringsteelGridParameters(
+            geometry = "RZ",
+            iMin = 0.0, iMax = 1.0, num_cells = 10,
+            kMin = 0.0, kMax = 1.0, kDim = 10, b_kDim = 10,
+            BCL = Dict("u" => CubicBSpline.R1T0),
+            BCR = Dict("u" => CubicBSpline.R1T0),
+            BCB = Dict("u" => Chebyshev.R1T0),
+            BCT = Dict("u" => Chebyshev.R1T0),
+            vars = Dict("u" => 1))
+        grid_rz = createGrid(gp_rz)
+        u_rz = Field(grid_rz, "u")
+        prob_rz = SpringsteelProblem(grid_rz, (∂_x^2 + ∂_z^2) * u_rz => zeros(gp_rz.iDim * gp_rz.kDim))
+        @test prob_rz.backend isa SparseLinearBackend
+    end
+
+    @testset "S4a block system with sparse backend" begin
+        # Coupled 1D Chebyshev — force sparse backend even though auto-pick
+        # would choose dense (to verify sparse LU handles blocks correctly).
+        N = 30
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0,
+                       "fu" => Chebyshev.R0,  "fv" => Chebyshev.R0),
+            BCR = Dict("u" => Chebyshev.R1T0, "v" => Chebyshev.R1T0,
+                       "fu" => Chebyshev.R0,  "fv" => Chebyshev.R0),
+            vars = Dict("u" => 1, "v" => 2, "fu" => 3, "fv" => 4))
+        grid = createGrid(gp)
+        pts  = solver_gridpoints(grid, "u")
+
+        grid.physical[:, 3, 1] .= -π^2    .* sin.(π .* pts)
+        grid.physical[:, 4, 1] .= -(2π)^2 .* sin.(2π .* pts)
+
+        u = Field(grid, "u"); v = Field(grid, "v")
+        eqs = [∂ᵢ^2 * u => :fu, ∂ᵢ^2 * v => :fv]
+        prob = SpringsteelProblem(grid, eqs; backend = :sparse)
+        solve!(prob)
+        @test prob.backend isa SparseLinearBackend
+        @test maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts)))  < 1e-3
+        @test maximum(abs.(grid.physical[:, 2, 1] .- sin.(2π .* pts))) < 1e-3
+    end
+
+    @testset "S4a unknown backend symbol errors" begin
+        gp = SpringsteelGridParameters(
+            geometry = "R",
+            iMin = 0.0, iMax = 1.0, num_cells = 5,
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            vars = Dict("u" => 1))
+        grid = createGrid(gp)
+        u = Field(grid, "u")
+        @test_throws ArgumentError SpringsteelProblem(grid,
+            ∂ᵢ^2 * u => zeros(gp.iDim); backend = :nonsense)
+    end
+
     @testset "Error paths" begin
         gp = SpringsteelGridParameters(
             geometry = "R",

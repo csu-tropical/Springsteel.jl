@@ -76,6 +76,19 @@ See also: [`solve`](@ref), [`SpringsteelProblem`](@ref)
 struct LocalLinearBackend <: AbstractSolverBackend end
 
 """
+    SparseLinearBackend <: AbstractSolverBackend
+
+Backend sentinel for the sparse LU solver path used by the Pair-based
+`SpringsteelProblem` constructor (S4a of the solver refactor). The assembled
+operator is converted to a `SparseMatrixCSC` and factorised via
+`SparseArrays.lu`, so the cached factor stays small for the structurally
+sparse operators that come out of B-spline / Fourier / Chebyshev tensor
+products. The `solve!` hot path is identical to the dense backend — only
+the factorisation type differs.
+"""
+struct SparseLinearBackend <: AbstractSolverBackend end
+
+"""
     OptimizationBackend <: AbstractSolverBackend
 
 Backend sentinel for the Optimization.jl extension. Requires the `Optimization`

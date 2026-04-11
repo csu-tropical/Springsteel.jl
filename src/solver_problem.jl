@@ -42,6 +42,69 @@ end
 const Field = SpringsteelField
 
 # ────────────────────────────────────────────────────────────────────────────
+# Backend resolution + dispatched factorisation (S4a)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Auto-pick rule: pure Chebyshev grids (Z, ZZ, ZZZ) have no structural
+# sparsity worth exploiting, so dense LU wins. Everything else (anything
+# involving a B-spline or Fourier dimension) defaults to sparse LU so the
+# factor stays small as nc grows.
+function _default_backend(grid::AbstractGrid)
+    all_cheb = true
+    for ba in (grid.ibasis, grid.jbasis, grid.kbasis)
+        ba isa NoBasisArray && continue
+        if !(ba isa ChebyshevBasisArray)
+            all_cheb = false
+            break
+        end
+    end
+    return all_cheb ? LocalLinearBackend() : SparseLinearBackend()
+end
+
+_resolve_backend(b::AbstractSolverBackend, ::AbstractGrid) = b
+function _resolve_backend(b::Symbol, grid::AbstractGrid)
+    b === :auto   && return _default_backend(grid)
+    b === :dense  && return LocalLinearBackend()
+    b === :sparse && return SparseLinearBackend()
+    throw(ArgumentError("Unknown backend symbol `:$b` — use :auto, :dense, or :sparse"))
+end
+
+# Dispatched factorisation. Operators from the spline path are typically
+# rectangular (n_phys > reduced_bDim), so we fall back to QR in both the
+# dense and sparse cases when the matrix isn't square.
+function _factorize_operator(::LocalLinearBackend, L::Matrix{Float64})
+    return size(L, 1) == size(L, 2) ? factorize(L) : qr(L)
+end
+function _factorize_operator(::SparseLinearBackend, L::Matrix{Float64})
+    S = sparse(L)
+    return size(S, 1) == size(S, 2) ? lu(S) : qr(S)
+end
+
+# Allocation-free backsolve with type-dispatched handling of UMFPACK, whose
+# 3-arg `ldiv!(x, F, b)` has dimension checks that conflict with our workspace
+# layout. For sparse we copy f → x and do the 2-arg in-place solve.
+_backsolve!(x::AbstractVector{Float64}, F, f::AbstractVector{Float64}) =
+    ldiv!(x, F, f)
+
+function _backsolve!(x::AbstractVector{Float64},
+                     F::SparseArrays.UMFPACK.UmfpackLU,
+                     f::AbstractVector{Float64})
+    copyto!(x, f)
+    ldiv!(F, x)
+    return x
+end
+
+# SuiteSparseQR (rectangular sparse) has no in-place ldiv! → fall back to
+# the allocating `\` operator. Only used for overdetermined spline systems
+# that can't be factorised as square LU.
+function _backsolve!(x::AbstractVector{Float64},
+                     F::SparseArrays.SPQR.QRSparse,
+                     f::AbstractVector{Float64})
+    copyto!(x, F \ f)
+    return x
+end
+
+# ────────────────────────────────────────────────────────────────────────────
 # TypedOperator — `OperatorExpr * SpringsteelField`
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -130,7 +193,7 @@ Use `solve!(prob)` to run the solver and write into `grid.physical[:, u_idx, 1]`
 """
 function SpringsteelProblem(grid::AbstractGrid,
                              eq::Pair{TypedOperator, <:Any};
-                             backend::AbstractSolverBackend = LocalLinearBackend())
+                             backend::Union{AbstractSolverBackend, Symbol} = :auto)
     top  = eq.first
     rhs0 = eq.second
     isempty(top.terms) && throw(ArgumentError("Empty TypedOperator LHS"))
@@ -144,16 +207,17 @@ function SpringsteelProblem(grid::AbstractGrid,
     field.grid === grid ||
         throw(ArgumentError("SpringsteelField.grid does not match problem grid"))
 
-    # Combine all term exprs into one (same field → plain sum).
+    backend_inst = _resolve_backend(backend, grid)
+
     combined = top.terms[1].expr
     for k in 2:length(top.terms)
         combined = combined + top.terms[k].expr
     end
     lowered = _lower(combined, grid)
-    ws = _build_local_linear_workspace(grid, field, lowered, rhs0)
+    ws = _build_local_linear_workspace(grid, field, lowered, rhs0, backend_inst)
 
     return SpringsteelProblem(grid, nothing, nothing, nothing,
-                               Dict{String, Any}(), backend, ws)
+                               Dict{String, Any}(), backend_inst, ws)
 end
 
 """
@@ -172,8 +236,9 @@ that bind to unknown `j`. `solve!(prob)` writes each variable back into
 """
 function SpringsteelProblem(grid::AbstractGrid,
                              eqs::Vector{<:Pair{TypedOperator,<:Any}};
-                             backend::AbstractSolverBackend = LocalLinearBackend())
+                             backend::Union{AbstractSolverBackend, Symbol} = :auto)
     isempty(eqs) && throw(ArgumentError("Empty equation list"))
+    backend_inst = _resolve_backend(backend, grid)
 
     # Collect unique fields across all equations, in first-appearance order.
     fields = SpringsteelField[]
@@ -189,10 +254,10 @@ function SpringsteelProblem(grid::AbstractGrid,
         "Block system requires #equations == #unknowns " *
         "(got $(length(eqs)) eqs, $(length(fields)) unknowns)"))
 
-    ws = _build_block_linear_workspace(grid, fields, eqs)
+    ws = _build_block_linear_workspace(grid, fields, eqs, backend_inst)
 
     return SpringsteelProblem(grid, nothing, nothing, nothing,
-                               Dict{String, Any}(), backend, ws)
+                               Dict{String, Any}(), backend_inst, ws)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -202,7 +267,8 @@ end
 function _build_local_linear_workspace(grid::AbstractGrid,
                                         field::SpringsteelField,
                                         terms::Vector{OperatorTerm},
-                                        rhs_source)
+                                        rhs_source,
+                                        backend::AbstractSolverBackend)
     var = field.var_name
     var_idx = field.var_idx
 
@@ -243,8 +309,8 @@ function _build_local_linear_workspace(grid::AbstractGrid,
         end
     end
 
-    # Cache factorisation
-    F = size(L_bc, 1) == size(L_bc, 2) ? factorize(L_bc) : qr(L_bc)
+    # Cache factorisation (dispatched on backend)
+    F = _factorize_operator(backend, L_bc)
 
     # Scratch
     f_work   = zeros(size(L_bc, 1))
@@ -307,7 +373,7 @@ function _solve_local_linear!(prob::SpringsteelProblem, ws::LocalLinearWorkspace
     end
 
     # 4) Backsolve (this is the only unavoidable cost)
-    ldiv!(ws.a_raw, ws.factorization, ws.f_work)
+    _backsolve!(ws.a_raw, ws.factorization, ws.f_work)
 
     # 5) Physical recovery: phys = M_eval * a_raw + phys_ahat
     mul!(ws.phys_out, ws.M_eval, ws.a_raw)
@@ -382,7 +448,8 @@ end
 
 function _build_block_linear_workspace(grid::AbstractGrid,
                                         fields::Vector{SpringsteelField},
-                                        eqs::Vector{<:Pair{TypedOperator,<:Any}})
+                                        eqs::Vector{<:Pair{TypedOperator,<:Any}},
+                                        backend::AbstractSolverBackend)
     n_eq = length(eqs)
 
     # Per-unknown basis data
@@ -498,7 +565,7 @@ function _build_block_linear_workspace(grid::AbstractGrid,
         "Block operator is not square (got $(size(L_full))). Each unknown's " *
         "reduced spectral dimension must sum to n_eq*n_phys."))
 
-    F = factorize(L_full)
+    F = _factorize_operator(backend, L_full)
 
     # Scratch
     f_work   = zeros(n_rows_total)
@@ -547,7 +614,7 @@ function _solve_block_linear!(prob::SpringsteelProblem, ws::BlockLinearWorkspace
     end
 
     # 3) Backsolve
-    ldiv!(ws.a_raw, ws.factorization, ws.f_work)
+    _backsolve!(ws.a_raw, ws.factorization, ws.f_work)
 
     # 4) Per-unknown physical recovery + writeback
     phys_mat = grid.physical
