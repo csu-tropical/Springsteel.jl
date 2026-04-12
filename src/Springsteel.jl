@@ -524,6 +524,11 @@ export SparseLinearBackend, KrylovLinearBackend
 # Must be included after transforms_*.jl (uses _cheb_eval_pts!) and factory.jl
 include("interpolation.jl")
 
+# ── Grid relocation ────────────────────────────────────────────────────────────────
+# Must be included after interpolation.jl (uses evaluate_unstructured)
+include("relocation.jl")
+export relocate_grid, relocate_grid!
+
 # ── Filtering framework ─────────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses grid type aliases)
 include("filtering.jl")
