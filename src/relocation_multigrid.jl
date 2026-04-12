@@ -29,14 +29,18 @@ function relocate_grid!(mg::SpringsteelMultiGrid,
                         taper_width::Int = 0)
 
     outer_grid = get(mg.config, :embedded_in, nothing)
-    snap_q = get(mg.config, :snap_quantum, nothing)
 
     if snap == :outer_nodes && outer_grid === nothing
         throw(ArgumentError("snap=:outer_nodes requires an embedded_in outer grid"))
     end
 
     Δx, Δy = new_center
-    if snap_q !== nothing && snap != false
+    if outer_grid !== nothing && snap != false
+        snap_q = get(mg.config, :snap_quantum, nothing)
+        if snap_q === nothing
+            snap_q = _compute_snap_quantum(outer_grid)
+            mg.config[:snap_quantum] = snap_q
+        end
         dx_q, dy_q = snap_q
         Δx = round(Δx / dx_q) * dx_q
         Δy = round(Δy / dy_q) * dy_q

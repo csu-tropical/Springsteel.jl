@@ -293,11 +293,8 @@
             :BCL        => Dict("u" => NaturalBC()),
             :BCR        => Dict("u" => NaturalBC()),
         )
-        mg = createMultiGrid(config)
-
-        Springsteel._setup_embedding!(mg, outer)
+        mg = createMultiGrid(config; embedded_in=outer)
         @test haskey(mg.config, :embedded_in)
-        @test haskey(mg.config, :snap_quantum)
 
         for patch in mg.mpg.patches
             pts = getGridpoints(patch)
@@ -332,10 +329,9 @@
             :BCL        => Dict("u" => NaturalBC()),
             :BCR        => Dict("u" => NaturalBC()),
         )
-        mg = createMultiGrid(config)
-        Springsteel._setup_embedding!(mg, outer)
+        mg = createMultiGrid(config; embedded_in=outer)
 
-        dx, dy = mg.config[:snap_quantum]
+        dx, dy = Springsteel._compute_snap_quantum(outer)
         @test dx ≈ 4.0
         @test dy ≈ 4.0
 

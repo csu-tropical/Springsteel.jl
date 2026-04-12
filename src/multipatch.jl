@@ -1238,7 +1238,8 @@ multiGridTransform!(mg)
 
 See also: [`SpringsteelMultiGrid`](@ref), [`PatchChain`](@ref), [`PatchEmbedded`](@ref)
 """
-function createMultiGrid(config::Dict{Symbol, Any})
+function createMultiGrid(config::Dict{Symbol, Any};
+                         embedded_in::Union{Nothing, SpringsteelGrid} = nothing)
     _validate_multigrid_config(config)
     topology = config[:topology]
     if topology == :chain
@@ -1248,5 +1249,9 @@ function createMultiGrid(config::Dict{Symbol, Any})
     else
         throw(ArgumentError("Unknown topology: $topology"))
     end
-    return SpringsteelMultiGrid(copy(config), mpg)
+    cfg = copy(config)
+    if embedded_in !== nothing
+        cfg[:embedded_in] = embedded_in
+    end
+    return SpringsteelMultiGrid(cfg, mpg)
 end
