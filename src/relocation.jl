@@ -34,9 +34,11 @@ See also: [`relocate_grid!`](@ref)
 function relocate_grid(grid::Union{_RL_Grid, _RLZ_Grid_Reloc},
                        new_center::NTuple{2, Float64};
                        boundary::Symbol = :azimuthal_mean,
-                       out_of_bounds = :nan)
+                       out_of_bounds = :nan,
+                       taper_width::Int = 0)
     new_grid = createGrid(grid.params)
-    _relocate_core!(new_grid, grid, new_center; boundary=boundary, out_of_bounds=out_of_bounds)
+    _relocate_core!(new_grid, grid, new_center; boundary=boundary,
+                    out_of_bounds=out_of_bounds, taper_width=taper_width)
     return new_grid
 end
 
@@ -55,8 +57,10 @@ See also: [`relocate_grid`](@ref)
 function relocate_grid!(grid::Union{_RL_Grid, _RLZ_Grid_Reloc},
                         new_center::NTuple{2, Float64};
                         boundary::Symbol = :azimuthal_mean,
-                        out_of_bounds = :nan)
-    _relocate_core!(grid, grid, new_center; boundary=boundary, out_of_bounds=out_of_bounds)
+                        out_of_bounds = :nan,
+                        taper_width::Int = 0)
+    _relocate_core!(grid, grid, new_center; boundary=boundary,
+                    out_of_bounds=out_of_bounds, taper_width=taper_width)
     return grid
 end
 
@@ -72,7 +76,7 @@ end
 
 function _relocate_core!(target::SpringsteelGrid, source::SpringsteelGrid,
                          new_center::NTuple{2, Float64};
-                         boundary::Symbol, out_of_bounds)
+                         boundary::Symbol, out_of_bounds, taper_width::Int = 0)
     if boundary ∉ (:nan, :nearest, :azimuthal_mean, :bc_respecting)
         throw(ArgumentError("Unknown boundary strategy: $boundary. " *
             "Must be :nan, :nearest, :azimuthal_mean, or :bc_respecting."))
@@ -92,6 +96,7 @@ function _relocate_core!(target::SpringsteelGrid, source::SpringsteelGrid,
     src_pts = zeros(Float64, nphys, ndims_grid)
 
     oob_mask = falses(nphys)
+    r_old_arr = zeros(Float64, nphys)
 
     for i in 1:nphys
         r_new = pts[i, 1]
@@ -101,6 +106,8 @@ function _relocate_core!(target::SpringsteelGrid, source::SpringsteelGrid,
         y_old = r_new * sin(λ_new) + Δy
         r_old = sqrt(x_old^2 + y_old^2)
         λ_old = atan(y_old, x_old)
+
+        r_old_arr[i] = r_old
 
         if r_old > gp.iMax || r_old < gp.iMin
             oob_mask[i] = true
@@ -114,6 +121,12 @@ function _relocate_core!(target::SpringsteelGrid, source::SpringsteelGrid,
         if is_3d
             src_pts[i, 3] = pts[i, 3]
         end
+    end
+
+    taper_r_start = gp.iMax
+    if taper_width > 0
+        dr = (gp.iMax - gp.iMin) / gp.num_cells
+        taper_r_start = gp.iMax - taper_width * dr
     end
 
     source_eval = _make_eval_grid(source, spectral_copy)
@@ -137,6 +150,11 @@ function _relocate_core!(target::SpringsteelGrid, source::SpringsteelGrid,
         if any(oob_mask)
             _fill_oob!(target, source_eval, spectral_copy, sv, gp,
                        pts, src_pts, oob_mask, boundary, out_of_bounds, is_3d)
+        end
+
+        if taper_width > 0 && boundary ∈ (:azimuthal_mean, :nearest)
+            _apply_taper!(target, source_eval, spectral_copy, sv, gp,
+                          pts, r_old_arr, taper_r_start, is_3d)
         end
 
         for d in 2:size(target.physical, 3)
@@ -229,6 +247,47 @@ function _fill_oob_azimuthal_mean!(target, source_eval, spectral_copy, sv, gp,
             CAtransform!(cheb_col)
             target.physical[idx, sv, 1] = _cheb_eval_single(cheb_col, z)
         end
+    end
+end
+
+function _apply_taper!(target, source_eval, spectral_copy, sv, gp,
+                       pts, r_old_arr, taper_r_start, is_3d)
+    b_iDim = gp.b_iDim
+    taper_r_end = gp.iMax
+
+    sp0 = source_eval.ibasis.data[1, sv]
+
+    for i in 1:size(pts, 1)
+        r_old = r_old_arr[i]
+        if r_old < taper_r_start || r_old > taper_r_end
+            continue
+        end
+
+        w = 0.5 * (1.0 + cos(π * (r_old - taper_r_start) / (taper_r_end - taper_r_start)))
+
+        r_eval = clamp(r_old, gp.iMin + 1e-10, gp.iMax - 1e-10)
+
+        if !is_3d
+            sp0.b .= view(spectral_copy, 1:b_iDim, sv)
+            SAtransform!(sp0)
+            azm_val = CubicBSpline.SItransform(sp0.params, sp0.a, r_eval, 0)
+        else
+            b_kDim = gp.b_kDim
+            kDim_wn = gp.iDim + gp.patchOffsetL
+            cheb_col = source_eval.kbasis.data[sv]
+            for z_b in 1:b_kDim
+                r1_base = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+                r2_base = r1_base + b_iDim - 1
+                sp0.b .= view(spectral_copy, r1_base:r2_base, sv)
+                SAtransform!(sp0)
+                cheb_col.b[z_b] = CubicBSpline.SItransform(sp0.params, sp0.a, r_eval, 0)
+            end
+            CAtransform!(cheb_col)
+            azm_val = _cheb_eval_single(cheb_col, pts[i, 3])
+        end
+
+        full_val = target.physical[i, sv, 1]
+        target.physical[i, sv, 1] = w * full_val + (1.0 - w) * azm_val
     end
 end
 

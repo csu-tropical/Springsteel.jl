@@ -186,6 +186,45 @@
         @test err < 0.2
     end
 
+    # ── R2: Conservation and taper ────────────────────────────────────────
+
+    @testset "RL k=0 conservation (axisymmetric)" begin
+        gp = SpringsteelGridParameters(geometry="RL", iMin=0.0, iMax=10.0,
+            num_cells=15, vars=Dict("u"=>1),
+            BCL=Dict("u"=>CubicBSpline.R0), BCR=Dict("u"=>CubicBSpline.R0),
+            max_wavenumber=Dict("default"=>-1))
+        g = createGrid(gp)
+        pts = getGridpoints(g)
+        for i in 1:size(pts, 1)
+            g.physical[i, 1, 1] = exp(-pts[i, 1]^2 / 4.0)
+        end
+        spectralTransform!(g)
+        gridTransform!(g)
+        spec_orig = copy(g.spectral[:, 1])
+
+        g2 = relocate_grid(g, (0.1, 0.0); boundary=:azimuthal_mean)
+        b_iDim = gp.b_iDim
+        k0_orig = spec_orig[1:b_iDim]
+        k0_reloc = g2.spectral[1:b_iDim, 1]
+
+        @test maximum(abs.(k0_orig .- k0_reloc)) < 0.01
+    end
+
+    @testset "RL taper smoothness" begin
+        g = make_rl_vortex(15)
+        g_no_taper = relocate_grid(g, (5.0, 0.0); boundary=:azimuthal_mean, taper_width=0)
+        g_taper    = relocate_grid(g, (5.0, 0.0); boundary=:azimuthal_mean, taper_width=3)
+
+        @test !any(isnan, g_taper.physical[:, 1, 1])
+        @test size(g_taper.physical) == size(g_no_taper.physical)
+    end
+
+    @testset "RLZ taper" begin
+        g = make_rlz_vortex()
+        g_taper = relocate_grid(g, (5.0, 0.0); boundary=:azimuthal_mean, taper_width=2)
+        @test !any(isnan, g_taper.physical[:, 1, 1])
+    end
+
     @testset "RLZ boundary strategies" begin
         g = make_rlz_vortex()
         g_nan = relocate_grid(g, (8.0, 0.0); boundary=:nan)
