@@ -31,7 +31,23 @@ A new `SpringsteelGrid` with relocated spectral and physical data.
 
 See also: [`relocate_grid!`](@ref)
 """
-function relocate_grid(grid::Union{_RL_Grid, _RLZ_Grid_Reloc},
+function relocate_grid(grid::_RL_Grid,
+                       new_center::NTuple{2, Float64};
+                       boundary::Symbol = :azimuthal_mean,
+                       out_of_bounds = :nan,
+                       taper_width::Int = 0)
+    if boundary == :bc_respecting
+        new_grid = createGrid(grid.params)
+        _relocate_core!(new_grid, grid, new_center; boundary=boundary,
+                        out_of_bounds=out_of_bounds, taper_width=taper_width)
+        return new_grid
+    end
+    new_grid = createGrid(grid.params)
+    _relocate_rl_fast!(new_grid, grid, new_center; boundary=boundary, taper_width=taper_width)
+    return new_grid
+end
+
+function relocate_grid(grid::_RLZ_Grid_Reloc,
                        new_center::NTuple{2, Float64};
                        boundary::Symbol = :azimuthal_mean,
                        out_of_bounds = :nan,
@@ -54,7 +70,21 @@ Returns the modified `grid`.
 
 See also: [`relocate_grid`](@ref)
 """
-function relocate_grid!(grid::Union{_RL_Grid, _RLZ_Grid_Reloc},
+function relocate_grid!(grid::_RL_Grid,
+                        new_center::NTuple{2, Float64};
+                        boundary::Symbol = :azimuthal_mean,
+                        out_of_bounds = :nan,
+                        taper_width::Int = 0)
+    if boundary == :bc_respecting
+        _relocate_core!(grid, grid, new_center; boundary=boundary,
+                        out_of_bounds=out_of_bounds, taper_width=taper_width)
+    else
+        _relocate_rl_fast!(grid, grid, new_center; boundary=boundary, taper_width=taper_width)
+    end
+    return grid
+end
+
+function relocate_grid!(grid::_RLZ_Grid_Reloc,
                         new_center::NTuple{2, Float64};
                         boundary::Symbol = :azimuthal_mean,
                         out_of_bounds = :nan,
@@ -72,7 +102,143 @@ function relocate_grid!(grid::SpringsteelGrid, new_center::NTuple{2, Float64}; k
     throw(ArgumentError("relocate_grid! is only implemented for RL and RLZ grids, got $(typeof(grid))"))
 end
 
-# ── Core relocation ────────────────────────────────────────────────────────
+# ── Fast per-radius relocation for RL grids ────────────────────────────────
+
+function _relocate_rl_fast!(target::_RL_Grid, source::_RL_Grid,
+                            new_center::NTuple{2, Float64};
+                            boundary::Symbol, taper_width::Int)
+    if boundary ∉ (:nan, :nearest, :azimuthal_mean)
+        throw(ArgumentError("Unknown boundary strategy: $boundary. " *
+            "Fast path supports :nan, :nearest, :azimuthal_mean."))
+    end
+    Δx, Δy = new_center
+    gp = source.params
+    b_iDim = gp.b_iDim
+    iDim = gp.iDim
+    kDim = iDim + gp.patchOffsetL
+
+    spectral_copy = copy(source.spectral)
+    eval_grid = _make_eval_grid(source, spectral_copy)
+
+    n_kslots = 1 + 2 * kDim
+    dr = (gp.iMax - gp.iMin) / gp.num_cells
+    taper_r_start = taper_width > 0 ? gp.iMax - taper_width * dr : gp.iMax
+
+    max_lpoints = 4 + 4 * (iDim + gp.patchOffsetL)
+    r_src = Vector{Float64}(undef, max_lpoints)
+    λ_src = Vector{Float64}(undef, max_lpoints)
+    oob   = falses(max_lpoints)
+    ak    = zeros(Float64, max_lpoints, n_kslots)
+
+    for vname in sort(collect(keys(gp.vars)))
+        sv = gp.vars[vname]
+        a_cache = _get_ahat_cache_rl(eval_grid, sv)
+        sp0 = eval_grid.ibasis.data[1, sv]
+
+        flat = 0
+        for r in 1:iDim
+            ri = r + gp.patchOffsetL
+            lpoints = 4 + 4 * ri
+            r_mish = target.ibasis.data[1, 1].mishPoints[r]
+
+            fill!(oob, false)
+
+            for l in 1:lpoints
+                λ_new = target.jbasis.data[r, 1].mishPoints[l]
+                x_old = r_mish * cos(λ_new) + Δx
+                y_old = r_mish * sin(λ_new) + Δy
+                r_old = sqrt(x_old^2 + y_old^2)
+                λ_old = atan(y_old, x_old)
+
+                if r_old > gp.iMax || r_old < gp.iMin
+                    oob[l] = true
+                    r_src[l] = clamp(r_old, gp.iMin + 1e-10, gp.iMax - 1e-10)
+                else
+                    r_src[l] = r_old
+                end
+                λ_src[l] = λ_old
+            end
+
+            for col in 1:n_kslots
+                for row in 1:lpoints
+                    ak[row, col] = 0.0
+                end
+            end
+
+            n_ib = 0
+            for l in 1:lpoints
+                if !oob[l]; n_ib += 1; end
+            end
+
+            if n_ib == lpoints
+                r_view = view(r_src, 1:lpoints)
+                for slot in 1:n_kslots
+                    CubicBSpline.SItransform(sp0.params, view(a_cache, :, slot),
+                                             r_view, view(ak, 1:lpoints, slot))
+                end
+            elseif n_ib > 0
+                for slot in 1:n_kslots
+                    for l in 1:lpoints
+                        if !oob[l]
+                            ak[l, slot] = CubicBSpline.SItransform(
+                                sp0.params, view(a_cache, :, slot), r_src[l], 0)
+                        end
+                    end
+                end
+            end
+
+            for l in 1:lpoints
+                idx = flat + l
+                if oob[l]
+                    if boundary == :nan
+                        target.physical[idx, sv, 1] = NaN
+                    elseif boundary == :azimuthal_mean
+                        r_eval = r_src[l]
+                        target.physical[idx, sv, 1] = CubicBSpline.SItransform(
+                            sp0.params, view(a_cache, :, 1), r_eval, 0)
+                    elseif boundary == :nearest
+                        for slot in 1:n_kslots
+                            ak[l, slot] = CubicBSpline.SItransform(
+                                sp0.params, view(a_cache, :, slot), r_src[l], 0)
+                        end
+                        f = ak[l, 1]
+                        λ = λ_src[l]
+                        for k in 1:kDim
+                            f += 2.0 * (ak[l, 2k] * cos(k * λ) + ak[l, 2k + 1] * sin(k * λ))
+                        end
+                        target.physical[idx, sv, 1] = f
+                    end
+                else
+                    f = ak[l, 1]
+                    λ = λ_src[l]
+                    for k in 1:kDim
+                        f += 2.0 * (ak[l, 2k] * cos(k * λ) + ak[l, 2k + 1] * sin(k * λ))
+                    end
+                    target.physical[idx, sv, 1] = f
+
+                    if taper_width > 0 && r_src[l] > taper_r_start
+                        w = 0.5 * (1.0 + cos(π * (r_src[l] - taper_r_start) / (gp.iMax - taper_r_start)))
+                        azm_val = CubicBSpline.SItransform(
+                            sp0.params, view(a_cache, :, 1), r_src[l], 0)
+                        target.physical[idx, sv, 1] = w * f + (1.0 - w) * azm_val
+                    end
+                end
+            end
+
+            flat += lpoints
+        end
+
+        for d in 2:size(target.physical, 3)
+            target.physical[:, sv, d] .= NaN
+        end
+    end
+
+    spectralTransform!(target)
+    gridTransform!(target)
+    return target
+end
+
+# ── Core relocation (naive fallback) ──────────────────────────────────────
 
 function _relocate_core!(target::SpringsteelGrid, source::SpringsteelGrid,
                          new_center::NTuple{2, Float64};

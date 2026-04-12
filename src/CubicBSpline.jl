@@ -1505,7 +1505,7 @@ This is the spectral→physical step and is the inverse of the SB+SA pipeline.
 
 See also: [`SAtransform`](@ref), [`SIxtransform`](@ref), [`SIxxtransform`](@ref)
 """
-function SItransform(sp::SplineParameters, a::Vector{real}, x::real, derivative::int = 0)
+function SItransform(sp::SplineParameters, a::AbstractVector{<:Real}, x::real, derivative::int = 0)
     u = 0.0
     xm = ceil(int,(x - sp.xmin - (2.0 * sp.DX)) * sp.DXrecip)
     for m = xm:(xm + 3)
@@ -1517,7 +1517,7 @@ function SItransform(sp::SplineParameters, a::Vector{real}, x::real, derivative:
     return u
 end
 
-function SItransform(sp::SplineParameters, a::Vector{real}, derivative::int = 0)
+function SItransform(sp::SplineParameters, a::AbstractVector{<:Real}, derivative::int = 0)
     qpts, _ = _quadrature_rule(sp.mubar, sp.quadrature)
 
     u = zeros(real,sp.mishDim)
