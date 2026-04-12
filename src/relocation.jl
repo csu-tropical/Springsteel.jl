@@ -75,8 +75,12 @@ function relocate_grid(grid::_RLZ_Grid_Reloc,
                        out_of_bounds = :nan,
                        taper_width::Int = 0)
     new_grid = createGrid(grid.params)
-    _relocate_core!(new_grid, grid, new_center; boundary=boundary,
-                    out_of_bounds=out_of_bounds, taper_width=taper_width)
+    if boundary == :bc_respecting
+        _relocate_core!(new_grid, grid, new_center; boundary=boundary,
+                        out_of_bounds=out_of_bounds, taper_width=taper_width)
+    else
+        _relocate_rlz_fast!(new_grid, grid, new_center; boundary=boundary, taper_width=taper_width)
+    end
     return new_grid
 end
 
@@ -112,8 +116,12 @@ function relocate_grid!(grid::_RLZ_Grid_Reloc,
                         boundary::Symbol = :azimuthal_mean,
                         out_of_bounds = :nan,
                         taper_width::Int = 0)
-    _relocate_core!(grid, grid, new_center; boundary=boundary,
-                    out_of_bounds=out_of_bounds, taper_width=taper_width)
+    if boundary == :bc_respecting
+        _relocate_core!(grid, grid, new_center; boundary=boundary,
+                        out_of_bounds=out_of_bounds, taper_width=taper_width)
+    else
+        _relocate_rlz_fast!(grid, grid, new_center; boundary=boundary, taper_width=taper_width)
+    end
     _update_grid_center!(grid, new_center)
     return grid
 end
@@ -255,6 +263,165 @@ function _relocate_rl_fast!(target::_RL_Grid, source::_RL_Grid,
             end
 
             flat += lpoints
+        end
+
+        for d in 2:size(target.physical, 3)
+            target.physical[:, sv, d] .= NaN
+        end
+    end
+
+    spectralTransform!(target)
+    gridTransform!(target)
+    return target
+end
+
+# ── Fast per-radius relocation for RLZ grids ──────────────────────────────
+
+function _relocate_rlz_fast!(target::_RLZ_Grid_Reloc, source::_RLZ_Grid_Reloc,
+                              new_center::NTuple{2, Float64};
+                              boundary::Symbol, taper_width::Int)
+    if boundary ∉ (:nan, :nearest, :azimuthal_mean)
+        throw(ArgumentError("Unknown boundary strategy: $boundary. " *
+            "Fast path supports :nan, :nearest, :azimuthal_mean."))
+    end
+    Δx, Δy = new_center
+    gp = source.params
+    b_iDim = gp.b_iDim
+    iDim = gp.iDim
+    kDim_wn = iDim + gp.patchOffsetL
+    b_kDim = gp.b_kDim
+    kDim_z = gp.kDim
+
+    spectral_copy = copy(source.spectral)
+    eval_grid = _make_eval_grid(source, spectral_copy)
+
+    n_kslots = 1 + 2 * kDim_wn
+    dr = (gp.iMax - gp.iMin) / gp.num_cells
+    taper_r_start = taper_width > 0 ? gp.iMax - taper_width * dr : gp.iMax
+
+    max_lpoints = 4 + 4 * (iDim + gp.patchOffsetL)
+    r_src = Vector{Float64}(undef, max_lpoints)
+    λ_src = Vector{Float64}(undef, max_lpoints)
+    oob   = falses(max_lpoints)
+    ak    = zeros(Float64, max_lpoints, b_kDim, n_kslots)
+    fourier_vals = zeros(Float64, max_lpoints, b_kDim)
+    cheb_out = zeros(Float64, kDim_z)
+
+    z_pts = target.kbasis.data[1].mishPoints
+    cheb_col = eval_grid.kbasis.data[1]
+
+    for vname in sort(collect(keys(gp.vars)))
+        sv = gp.vars[vname]
+        a_cache = _get_ahat_cache_rlz(eval_grid, sv)
+        sp0 = eval_grid.ibasis.data[1, sv]
+        cheb_col_v = eval_grid.kbasis.data[sv]
+
+        flat = 0
+        for r in 1:iDim
+            ri = r + gp.patchOffsetL
+            lpoints = 4 + 4 * ri
+            r_mish = target.ibasis.data[1, 1].mishPoints[r]
+
+            fill!(oob, false)
+            for l in 1:lpoints
+                λ_new = target.jbasis.data[r, 1].mishPoints[l]
+                x_old = r_mish * cos(λ_new) + Δx
+                y_old = r_mish * sin(λ_new) + Δy
+                r_old = sqrt(x_old^2 + y_old^2)
+                r_src[l] = r_old
+                λ_src[l] = atan(y_old, x_old)
+                if r_old > gp.iMax || r_old < gp.iMin
+                    oob[l] = true
+                    r_src[l] = clamp(r_old, gp.iMin + 1e-10, gp.iMax - 1e-10)
+                end
+            end
+
+            for z_b in 1:b_kDim
+                for slot in 1:n_kslots
+                    for l in 1:lpoints; ak[l, z_b, slot] = 0.0; end
+                end
+            end
+
+            n_ib = count(l -> !oob[l], 1:lpoints)
+            if n_ib == lpoints
+                r_view = view(r_src, 1:lpoints)
+                for z_b in 1:b_kDim
+                    stripe_offset = (z_b - 1) * n_kslots
+                    for slot in 1:n_kslots
+                        CubicBSpline.SItransform(sp0.params,
+                            view(a_cache, :, stripe_offset + slot),
+                            r_view, view(ak, 1:lpoints, z_b, slot))
+                    end
+                end
+            elseif n_ib > 0
+                for z_b in 1:b_kDim
+                    stripe_offset = (z_b - 1) * n_kslots
+                    for slot in 1:n_kslots
+                        for l in 1:lpoints
+                            if !oob[l]
+                                ak[l, z_b, slot] = CubicBSpline.SItransform(
+                                    sp0.params, view(a_cache, :, stripe_offset + slot),
+                                    r_src[l], 0)
+                            end
+                        end
+                    end
+                end
+            end
+
+            for l in 1:lpoints
+                for z_b in 1:b_kDim
+                    fourier_vals[l, z_b] = 0.0
+                end
+            end
+
+            for l in 1:lpoints
+                if oob[l] && boundary == :nan
+                    for z in 1:kDim_z
+                        target.physical[flat + (l-1)*kDim_z + z, sv, 1] = NaN
+                    end
+                    continue
+                end
+
+                λ = λ_src[l]
+                for z_b in 1:b_kDim
+                    if oob[l] && boundary == :azimuthal_mean
+                        fourier_vals[l, z_b] = ak[l, z_b, 1]
+                    else
+                        val = ak[l, z_b, 1]
+                        for k in 1:kDim_wn
+                            val += 2.0 * (ak[l, z_b, 2k] * cos(k * λ) +
+                                          ak[l, z_b, 2k + 1] * sin(k * λ))
+                        end
+                        fourier_vals[l, z_b] = val
+                    end
+                end
+
+                for z_b in 1:b_kDim
+                    cheb_col_v.b[z_b] = fourier_vals[l, z_b]
+                end
+                CAtransform!(cheb_col_v)
+
+                for z in 1:kDim_z
+                    target.physical[flat + (l-1)*kDim_z + z, sv, 1] =
+                        _cheb_eval_single(cheb_col_v, z_pts[z])
+                end
+
+                if taper_width > 0 && !oob[l] && r_src[l] > taper_r_start
+                    w = 0.5 * (1.0 + cos(π * (r_src[l] - taper_r_start) / (gp.iMax - taper_r_start)))
+                    for z_b in 1:b_kDim
+                        cheb_col_v.b[z_b] = ak[l, z_b, 1]
+                    end
+                    CAtransform!(cheb_col_v)
+                    for z in 1:kDim_z
+                        azm_val = _cheb_eval_single(cheb_col_v, z_pts[z])
+                        idx = flat + (l-1)*kDim_z + z
+                        target.physical[idx, sv, 1] =
+                            w * target.physical[idx, sv, 1] + (1.0 - w) * azm_val
+                    end
+                end
+            end
+
+            flat += lpoints * kDim_z
         end
 
         for d in 2:size(target.physical, 3)
