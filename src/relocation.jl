@@ -11,6 +11,28 @@
 const _RL_Grid  = SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:NoBasisArray}
 const _RLZ_Grid_Reloc = SpringsteelGrid{CylindricalGeometry, <:SplineBasisArray, <:FourierBasisArray, <:ChebyshevBasisArray}
 
+const _GRID_CENTER_REGISTRY = Dict{UInt64, Tuple{Float64, Float64}}()
+
+"""
+    grid_center(grid) -> Tuple{Float64, Float64}
+
+Return the current center `(x, y)` of a cylindrical grid in Cartesian
+coordinates, relative to its construction origin.
+
+Defaults to `(0.0, 0.0)` for grids that have never been relocated.
+Updated automatically by `relocate_grid!`.
+"""
+function grid_center(grid::Union{_RL_Grid, _RLZ_Grid_Reloc})
+    return get(_GRID_CENTER_REGISTRY, objectid(grid), (0.0, 0.0))
+end
+
+"""
+    grid_center(mg::SpringsteelMultiGrid) -> Tuple{Float64, Float64}
+
+Return the cumulative center shift of the multigrid's first patch.
+"""
+function grid_center end
+
 """
     relocate_grid(grid, new_center; boundary=:azimuthal_mean, out_of_bounds=:nan)
 
@@ -81,6 +103,7 @@ function relocate_grid!(grid::_RL_Grid,
     else
         _relocate_rl_fast!(grid, grid, new_center; boundary=boundary, taper_width=taper_width)
     end
+    _update_grid_center!(grid, new_center)
     return grid
 end
 
@@ -91,7 +114,13 @@ function relocate_grid!(grid::_RLZ_Grid_Reloc,
                         taper_width::Int = 0)
     _relocate_core!(grid, grid, new_center; boundary=boundary,
                     out_of_bounds=out_of_bounds, taper_width=taper_width)
+    _update_grid_center!(grid, new_center)
     return grid
+end
+
+function _update_grid_center!(grid::SpringsteelGrid, shift::NTuple{2, Float64})
+    old = get(_GRID_CENTER_REGISTRY, objectid(grid), (0.0, 0.0))
+    _GRID_CENTER_REGISTRY[objectid(grid)] = (old[1] + shift[1], old[2] + shift[2])
 end
 
 function relocate_grid(grid::SpringsteelGrid, new_center::NTuple{2, Float64}; kwargs...)

@@ -133,6 +133,27 @@
         @test !any(isnan, g2.physical[:, 1, 1])
     end
 
+    # ── grid_center diagnostic ──────────────────────────────────────────
+
+    @testset "grid_center default" begin
+        g = make_rl_vortex()
+        @test grid_center(g) == (0.0, 0.0)
+    end
+
+    @testset "grid_center after relocation" begin
+        g = make_rl_vortex()
+        relocate_grid!(g, (1.0, 2.0))
+        @test grid_center(g) == (1.0, 2.0)
+        relocate_grid!(g, (0.5, -0.5))
+        @test grid_center(g) == (1.5, 1.5)
+    end
+
+    @testset "grid_center RLZ" begin
+        g = make_rlz_vortex()
+        relocate_grid!(g, (1.0, 0.0))
+        @test grid_center(g) == (1.0, 0.0)
+    end
+
     # ── Error paths ───────────────────────────────────────────────────────
 
     @testset "relocate_grid on unsupported geometry" begin

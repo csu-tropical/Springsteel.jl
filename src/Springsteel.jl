@@ -527,7 +527,7 @@ include("interpolation.jl")
 # ── Grid relocation ────────────────────────────────────────────────────────────────
 # Must be included after interpolation.jl (uses evaluate_unstructured)
 include("relocation.jl")
-export relocate_grid, relocate_grid!
+export relocate_grid, relocate_grid!, grid_center
 
 # ── Filtering framework ─────────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses grid type aliases)

@@ -68,6 +68,10 @@ function relocate_grid!(mg::SpringsteelMultiGrid,
     return mg
 end
 
+function grid_center(mg::SpringsteelMultiGrid)
+    return grid_center(mg.mpg.patches[1])
+end
+
 function relocate_grid(mg::SpringsteelMultiGrid,
                        new_center::NTuple{2, Float64}; kwargs...)
     throw(ArgumentError(
