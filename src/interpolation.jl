@@ -1453,25 +1453,41 @@ RL/SL spectral layout: wavenumber-interleaved (flat), p = k*2 (see TRAP-1).
 - k≥1 cos: spectral[(2k-1)*b_iDim+1 : 2k*b_iDim]
 - k≥1 sin: spectral[2k*b_iDim+1 : (2k+1)*b_iDim]
 """
-function _eval_unstructured_rl(source::SpringsteelGrid, pts::AbstractMatrix{Float64}, sv::Int)
+# ── Cached ahat (γ-folded coefficients) for RL/RLZ unstructured eval ────────
+# Avoids repeating the SAtransform! (γ-fold + banded solve) on every
+# evaluate_unstructured call when the source spectral data is unchanged.
+# The cache stores the post-SAtransform `a` coefficients per (grid, variable)
+# and uses a hash of the spectral column to detect staleness.
+
+struct _AhatCacheEntry
+    spectral_hash::UInt64
+    a_coeffs::Matrix{Float64}   # (bDim, n_stripes)
+end
+
+const _AHAT_CACHE = Dict{Tuple{UInt64, Int}, _AhatCacheEntry}()
+const _AHAT_CACHE_LOCK = ReentrantLock()
+
+function _get_ahat_cache_rl(source::SpringsteelGrid, sv::Int)
     gp = source.params
     b_iDim = gp.b_iDim
     kDim = gp.iDim + gp.patchOffsetL
-    npts = size(pts, 1)
-    r_pts = pts[:, 1]
-    λ_pts = pts[:, 2]
-
-    # Batch radial spline evaluation: ak[npts, 1+2*kDim]
     n_kslots = 1 + 2 * kDim
-    ak = zeros(Float64, npts, n_kslots)
+    key = (objectid(source), sv)
+    spec_hash = hash(view(source.spectral, :, sv))
 
-    # k=0
+    entry = lock(_AHAT_CACHE_LOCK) do
+        get(_AHAT_CACHE, key, nothing)
+    end
+    if entry !== nothing && entry.spectral_hash == spec_hash
+        return entry.a_coeffs
+    end
+
+    a_cache = zeros(Float64, b_iDim, n_kslots)
     sp0 = source.ibasis.data[1, sv]
     sp0.b .= view(source.spectral, 1:b_iDim, sv)
     SAtransform!(sp0)
-    CubicBSpline.SItransform(sp0, r_pts, view(ak, :, 1))
+    a_cache[:, 1] .= sp0.a
 
-    # k=1..kDim (RL layout: p = k*2)
     for k in 1:kDim
         p = k * 2
         p1c = (p - 1) * b_iDim + 1;  p2c = p * b_iDim
@@ -1480,15 +1496,95 @@ function _eval_unstructured_rl(source::SpringsteelGrid, pts::AbstractMatrix{Floa
         spc = source.ibasis.data[2, sv]
         spc.b .= view(source.spectral, p1c:p2c, sv)
         SAtransform!(spc)
-        CubicBSpline.SItransform(spc, r_pts, view(ak, :, 2k))
+        a_cache[:, 2k] .= spc.a
 
         sps = source.ibasis.data[3, sv]
         sps.b .= view(source.spectral, p1s:p2s, sv)
         SAtransform!(sps)
-        CubicBSpline.SItransform(sps, r_pts, view(ak, :, 2k + 1))
+        a_cache[:, 2k + 1] .= sps.a
     end
 
-    # Per-point Fourier sum (FFTW R2HC: k≥1 amplitudes × 2)
+    lock(_AHAT_CACHE_LOCK) do
+        _AHAT_CACHE[key] = _AhatCacheEntry(spec_hash, a_cache)
+    end
+    return a_cache
+end
+
+function _get_ahat_cache_rlz(source::SpringsteelGrid, sv::Int)
+    gp = source.params
+    b_iDim = gp.b_iDim
+    b_kDim = gp.b_kDim
+    kDim_wn = gp.iDim + gp.patchOffsetL
+    n_kslots = 1 + 2 * kDim_wn
+    total_stripes = b_kDim * n_kslots
+    key = (objectid(source), sv)
+    spec_hash = hash(view(source.spectral, :, sv))
+
+    entry = lock(_AHAT_CACHE_LOCK) do
+        get(_AHAT_CACHE, key, nothing)
+    end
+    if entry !== nothing && entry.spectral_hash == spec_hash
+        return entry.a_coeffs
+    end
+
+    a_cache = zeros(Float64, b_iDim, total_stripes)
+
+    for z_b in 1:b_kDim
+        r1_base = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+        r2_base = r1_base + b_iDim - 1
+        stripe_offset = (z_b - 1) * n_kslots
+
+        sp0 = source.ibasis.data[1, sv]
+        sp0.b .= view(source.spectral, r1_base:r2_base, sv)
+        SAtransform!(sp0)
+        a_cache[:, stripe_offset + 1] .= sp0.a
+
+        for k in 1:kDim_wn
+            p = (k - 1) * 2
+            p1 = r2_base + 1 + p * b_iDim;  p2 = p1 + b_iDim - 1
+
+            spc = source.ibasis.data[2, sv]
+            spc.b .= view(source.spectral, p1:p2, sv)
+            SAtransform!(spc)
+            a_cache[:, stripe_offset + 2k] .= spc.a
+
+            p1 = p2 + 1;  p2 = p1 + b_iDim - 1
+            sps = source.ibasis.data[3, sv]
+            sps.b .= view(source.spectral, p1:p2, sv)
+            SAtransform!(sps)
+            a_cache[:, stripe_offset + 2k + 1] .= sps.a
+        end
+    end
+
+    lock(_AHAT_CACHE_LOCK) do
+        _AHAT_CACHE[key] = _AhatCacheEntry(spec_hash, a_cache)
+    end
+    return a_cache
+end
+
+function _clear_ahat_cache!()
+    lock(_AHAT_CACHE_LOCK) do
+        empty!(_AHAT_CACHE)
+    end
+end
+
+function _eval_unstructured_rl(source::SpringsteelGrid, pts::AbstractMatrix{Float64}, sv::Int)
+    gp = source.params
+    b_iDim = gp.b_iDim
+    kDim = gp.iDim + gp.patchOffsetL
+    npts = size(pts, 1)
+    r_pts = pts[:, 1]
+    λ_pts = pts[:, 2]
+
+    a_cache = _get_ahat_cache_rl(source, sv)
+    n_kslots = 1 + 2 * kDim
+    ak = zeros(Float64, npts, n_kslots)
+
+    sp0 = source.ibasis.data[1, sv]
+    for slot in 1:n_kslots
+        CubicBSpline.SItransform(sp0.params, a_cache[:, slot], r_pts, view(ak, :, slot))
+    end
+
     result = zeros(Float64, npts)
     for n in 1:npts
         f = ak[n, 1]
@@ -1525,39 +1621,19 @@ function _eval_unstructured_rlz(source::SpringsteelGrid, pts::AbstractMatrix{Flo
     λ_pts = pts[:, 2]
     z_pts = pts[:, 3]
 
-    # Step 1: Batch radial spline evaluation for all z-modes and wavenumbers
-    # spline_vals[npts, b_kDim, 1+2*kDim_wn]
+    a_cache = _get_ahat_cache_rlz(source, sv)
+    sp0 = source.ibasis.data[1, sv]
+
     spline_vals = zeros(Float64, npts, b_kDim, n_kslots)
 
     for z_b in 1:b_kDim
-        r1_base = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
-        r2_base = r1_base + b_iDim - 1
-
-        # k=0
-        sp0 = source.ibasis.data[1, sv]
-        sp0.b .= view(source.spectral, r1_base:r2_base, sv)
-        SAtransform!(sp0)
-        CubicBSpline.SItransform(sp0, r_pts, view(spline_vals, :, z_b, 1))
-
-        # k=1..kDim_wn (RLZ convention: p = (k-1)*2)
-        for k in 1:kDim_wn
-            p = (k - 1) * 2
-            p1 = r2_base + 1 + p * b_iDim;  p2 = p1 + b_iDim - 1
-
-            spc = source.ibasis.data[2, sv]
-            spc.b .= view(source.spectral, p1:p2, sv)
-            SAtransform!(spc)
-            CubicBSpline.SItransform(spc, r_pts, view(spline_vals, :, z_b, 2k))
-
-            p1 = p2 + 1;  p2 = p1 + b_iDim - 1
-            sps = source.ibasis.data[3, sv]
-            sps.b .= view(source.spectral, p1:p2, sv)
-            SAtransform!(sps)
-            CubicBSpline.SItransform(sps, r_pts, view(spline_vals, :, z_b, 2k + 1))
+        stripe_offset = (z_b - 1) * n_kslots
+        for slot in 1:n_kslots
+            CubicBSpline.SItransform(sp0.params, a_cache[:, stripe_offset + slot],
+                                     r_pts, view(spline_vals, :, z_b, slot))
         end
     end
 
-    # Steps 2+3: Per-point Fourier sum → Chebyshev evaluation
     result = zeros(Float64, npts)
     cheb_col = source.kbasis.data[sv]
 
@@ -1565,7 +1641,6 @@ function _eval_unstructured_rlz(source::SpringsteelGrid, pts::AbstractMatrix{Flo
         λ = λ_pts[n]
         z = z_pts[n]
 
-        # Fourier sum for each z-mode → Chebyshev coefficients
         for z_b in 1:b_kDim
             val = spline_vals[n, z_b, 1]
             for k in 1:kDim_wn
@@ -1575,7 +1650,6 @@ function _eval_unstructured_rlz(source::SpringsteelGrid, pts::AbstractMatrix{Flo
             cheb_col.b[z_b] = val
         end
 
-        # Chebyshev evaluation at z
         CAtransform!(cheb_col)
         result[n] = _cheb_eval_single(cheb_col, z)
     end
