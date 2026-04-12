@@ -80,9 +80,9 @@ secondary.
 See also: [`MultiPatchGrid`](@ref), [`update_interface!`](@ref),
 [`PatchChain`](@ref), [`PatchEmbedded`](@ref)
 """
-struct PatchInterface
-    primary::SpringsteelGrid
-    secondary::SpringsteelGrid
+struct PatchInterface{P<:SpringsteelGrid, S<:SpringsteelGrid}
+    primary::P
+    secondary::S
     primary_side::Symbol
     secondary_side::Symbol
     dimension::Symbol
@@ -632,7 +632,7 @@ See also: [`PatchInterface`](@ref), [`multiGridTransform!`](@ref),
 """
 struct MultiPatchGrid
     patches::Vector{<:SpringsteelGrid}
-    interfaces::Vector{PatchInterface}
+    interfaces::Vector{<:PatchInterface}
     transform_order::Vector{Vector{Int}}
     # Precomputed objectid → patch index for use by multiGridTransform!.
     # Built once at construction; avoids per-call Dict allocation.
@@ -664,7 +664,7 @@ Throws an error if a cycle is detected (a patch cannot be both primary and
 secondary in a way that creates circular dependencies).
 """
 function _topological_sort(patches::Vector{<:SpringsteelGrid},
-                           interfaces::Vector{PatchInterface})
+                           interfaces::Vector{<:PatchInterface})
     n = length(patches)
 
     # Build index lookup
@@ -732,7 +732,7 @@ All patches referenced by interfaces must be in the `patches` vector.
 Throws an error if circular dependencies are detected.
 """
 function MultiPatchGrid(patches::Vector{<:SpringsteelGrid},
-                        interfaces::Vector{PatchInterface})
+                        interfaces::Vector{<:PatchInterface})
     transform_order = _topological_sort(patches, interfaces)
     idx_map = Dict{UInt, Int}()
     for (i, p) in enumerate(patches)
@@ -851,8 +851,10 @@ function PatchChain(grids::Vector{<:SpringsteelGrid}; dimension::Symbol=:i)
                                          primary_side, secondary_side, dimension))
     end
 
-    return MultiPatchGrid(grids, interfaces)
+    return MultiPatchGrid(grids, _narrow(interfaces))
 end
+
+_narrow(v::Vector{T}) where {T} = identity.(v)
 
 """
     PatchEmbedded(grids; dimension=:i)
@@ -915,7 +917,7 @@ function PatchEmbedded(grids::Vector{<:SpringsteelGrid}; dimension::Symbol=:i)
                                          is_stacked=true))
     end
 
-    return MultiPatchGrid(grids, interfaces)
+    return MultiPatchGrid(grids, _narrow(interfaces))
 end
 
 # ────────────────────────────────────────────────────────────────────────────
