@@ -236,4 +236,147 @@
         g_azm = relocate_grid(g, (8.0, 0.0); boundary=:azimuthal_mean)
         @test !any(isnan, g_azm.physical[:, 1, 1])
     end
+
+    # ── R3: Multigrid embedding and relocation ─────────────────────────────
+
+    @testset "RL chain relocation" begin
+        config = Dict{Symbol, Any}(
+            :topology   => :chain,
+            :geometry   => "RL",
+            :boundaries => [0.0, 5.0, 10.0],
+            :cells      => 5,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()),
+        )
+        mg = createMultiGrid(config)
+
+        for patch in mg.mpg.patches
+            pts = getGridpoints(patch)
+            for i in 1:size(pts, 1)
+                patch.physical[i, 1, 1] = exp(-pts[i, 1]^2 / 4.0)
+            end
+            spectralTransform!(patch)
+            gridTransform!(patch)
+        end
+
+        relocate_grid!(mg, (0.5, 0.0); boundary=:azimuthal_mean)
+
+        for patch in mg.mpg.patches
+            @test !any(isnan, patch.physical[:, 1, 1])
+            @test maximum(patch.physical[:, 1, 1]) > 0.0
+        end
+    end
+
+    @testset "RL chain embedded in RR with outer lookup" begin
+        outer_gp = SpringsteelGridParameters(geometry="RR",
+            iMin=-20.0, iMax=20.0, jMin=-20.0, jMax=20.0,
+            num_cells=20, vars=Dict("u"=>1),
+            BCL=Dict("u"=>CubicBSpline.R0), BCR=Dict("u"=>CubicBSpline.R0),
+            BCD=Dict("u"=>CubicBSpline.R0), BCU=Dict("u"=>CubicBSpline.R0),
+            max_wavenumber=Dict("default"=>0))
+        outer = createGrid(outer_gp)
+        pts_outer = getGridpoints(outer)
+        for i in 1:size(pts_outer, 1)
+            x, y = pts_outer[i, 1], pts_outer[i, 2]
+            outer.physical[i, 1, 1] = exp(-(x^2 + y^2) / 16.0)
+        end
+        spectralTransform!(outer)
+        gridTransform!(outer)
+
+        config = Dict{Symbol, Any}(
+            :topology   => :chain,
+            :geometry   => "RL",
+            :boundaries => [0.0, 5.0, 10.0],
+            :cells      => 5,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()),
+        )
+        mg = createMultiGrid(config)
+
+        Springsteel._setup_embedding!(mg, outer)
+        @test haskey(mg.config, :embedded_in)
+        @test haskey(mg.config, :snap_quantum)
+
+        for patch in mg.mpg.patches
+            pts = getGridpoints(patch)
+            for i in 1:size(pts, 1)
+                patch.physical[i, 1, 1] = exp(-pts[i, 1]^2 / 4.0)
+            end
+            spectralTransform!(patch)
+            gridTransform!(patch)
+        end
+
+        relocate_grid!(mg, (8.0, 0.0); boundary=:azimuthal_mean)
+
+        outermost = mg.mpg.patches[end]
+        @test !any(isnan, outermost.physical[:, 1, 1])
+    end
+
+    @testset "Snap quantization" begin
+        outer_gp = SpringsteelGridParameters(geometry="RR",
+            iMin=-20.0, iMax=20.0, jMin=-20.0, jMax=20.0,
+            num_cells=10, vars=Dict("u"=>1),
+            BCL=Dict("u"=>CubicBSpline.R0), BCR=Dict("u"=>CubicBSpline.R0),
+            BCD=Dict("u"=>CubicBSpline.R0), BCU=Dict("u"=>CubicBSpline.R0),
+            max_wavenumber=Dict("default"=>0))
+        outer = createGrid(outer_gp)
+
+        config = Dict{Symbol, Any}(
+            :topology   => :chain,
+            :geometry   => "RL",
+            :boundaries => [0.0, 5.0, 10.0],
+            :cells      => 5,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()),
+        )
+        mg = createMultiGrid(config)
+        Springsteel._setup_embedding!(mg, outer)
+
+        dx, dy = mg.config[:snap_quantum]
+        @test dx ≈ 4.0
+        @test dy ≈ 4.0
+
+        for patch in mg.mpg.patches
+            pts = getGridpoints(patch)
+            for i in 1:size(pts, 1)
+                patch.physical[i, 1, 1] = exp(-pts[i, 1]^2 / 4.0)
+            end
+            spectralTransform!(patch)
+            gridTransform!(patch)
+        end
+
+        relocate_grid!(mg, (1.5, 0.7); snap=:auto)
+        @test !any(isnan, mg.mpg.patches[1].physical[:, 1, 1])
+    end
+
+    @testset "snap=:outer_nodes error without embedding" begin
+        config = Dict{Symbol, Any}(
+            :topology   => :chain,
+            :geometry   => "RL",
+            :boundaries => [0.0, 5.0, 10.0],
+            :cells      => 5,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()),
+        )
+        mg = createMultiGrid(config)
+        @test_throws ArgumentError relocate_grid!(mg, (1.0, 0.0); snap=:outer_nodes)
+    end
+
+    @testset "relocate_grid (non-mutating) error on multigrid" begin
+        config = Dict{Symbol, Any}(
+            :topology   => :chain,
+            :geometry   => "RL",
+            :boundaries => [0.0, 5.0, 10.0],
+            :cells      => 5,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()),
+        )
+        mg = createMultiGrid(config)
+        @test_throws ArgumentError relocate_grid(mg, (1.0, 0.0))
+    end
 end

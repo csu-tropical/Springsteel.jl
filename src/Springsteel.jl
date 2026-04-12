@@ -537,6 +537,9 @@ include("filtering.jl")
 # Must be included after transforms_*.jl and types.jl (uses grid types and gridTransform!)
 include("multipatch.jl")
 
+# ── Multigrid relocation (must be after both relocation.jl and multipatch.jl) ────
+include("relocation_multigrid.jl")
+
 
 # I/O routines
 include("io.jl")
