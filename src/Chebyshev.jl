@@ -116,6 +116,19 @@ Base.@kwdef struct ChebyshevParameters
     BCT::Dict = R0     # Top boundary condition
 end
 
+function Base.:(==)(a::ChebyshevParameters, b::ChebyshevParameters)
+    a.zmin == b.zmin && a.zmax == b.zmax && a.zDim == b.zDim && a.bDim == b.bDim &&
+    a.BCB == b.BCB && a.BCT == b.BCT
+end
+
+function Base.hash(cp::ChebyshevParameters, h::UInt)
+    h = hash(:ChebyshevParameters, h)
+    for f in (cp.zmin, cp.zmax, cp.zDim, cp.bDim, cp.BCB, cp.BCT)
+        h = hash(f, h)
+    end
+    return h
+end
+
 """
     Chebyshev1D
 
@@ -213,34 +226,56 @@ col = Chebyshev.Chebyshev1D(cp)
 
 See also: [`CBtransform`](@ref), [`CAtransform`](@ref), [`CItransform`](@ref)
 """
-function Chebyshev1D(cp::ChebyshevParameters)
+struct _ChebyshevTemplate
+    params::ChebyshevParameters
+    mishPoints::Vector{real}
+    gammaBC::Union{Vector{Float64}, Matrix{Float64}}
+    fftPlan::FFTW.r2rFFTWPlan
+    filter::Matrix{real}
+end
 
-    # Constructor for 1D Chebsyshev structure
+const _CHEBYSHEV_TEMPLATE_CACHE = Dict{ChebyshevParameters, _ChebyshevTemplate}()
+const _CHEBYSHEV_CACHE_LOCK = ReentrantLock()
+
+function _build_chebyshev_template(cp::ChebyshevParameters)
     mishPoints = calcMishPoints(cp)
     gammaBC = calcGammaBC(cp)
-
-    # Initialize the arrays
-    uMish = zeros(real,cp.zDim)
-    b = zeros(real,cp.bDim)
-    a = zeros(real,cp.zDim)
-    ax = zeros(real,cp.zDim)
-
-    # Plan the FFT
-    # From the FFTW documentation: FFTW_REDFT00 (DCT-I): even around j=0 and even around j=n-1.
-    # If you specify a size-5 REDFT00 (DCT-I) of the data abcde, it corresponds to the DFT of the logical even array abcdedcb of size 8
-    fftPlan = FFTW.plan_r2r(a, FFTW.REDFT00, flags=FFTW.PATIENT)
-
-    # Pre-calculate the filter matrix
+    scratch = zeros(real, cp.zDim)
+    fftPlan = FFTW.plan_r2r(scratch, FFTW.REDFT00, flags=FFTW.PATIENT)
     filter = calcFilterMatrix(cp)
+    return _ChebyshevTemplate(cp, mishPoints, gammaBC, fftPlan, filter)
+end
 
-    # Scratch buffers for in-place transforms
-    scratch_dct = zeros(real, cp.zDim)
-    scratch_bfill = zeros(real, cp.zDim)
-    scratch_ax = zeros(real, cp.zDim)
+function _get_chebyshev_template(cp::ChebyshevParameters)
+    lock(_CHEBYSHEV_CACHE_LOCK) do
+        get!(_CHEBYSHEV_TEMPLATE_CACHE, cp) do
+            _build_chebyshev_template(cp)
+        end
+    end
+end
 
-    # Construct a 1D Chebyshev column
-    column = Chebyshev1D(cp,mishPoints,gammaBC,fftPlan,filter,uMish,b,a,ax,
-                         scratch_dct,scratch_bfill,scratch_ax)
+function _clear_chebyshev_cache!()
+    lock(_CHEBYSHEV_CACHE_LOCK) do
+        empty!(_CHEBYSHEV_TEMPLATE_CACHE)
+    end
+end
+
+function _chebyshev_cache_size()
+    lock(_CHEBYSHEV_CACHE_LOCK) do
+        length(_CHEBYSHEV_TEMPLATE_CACHE)
+    end
+end
+
+function Chebyshev1D(cp::ChebyshevParameters)
+    t = _get_chebyshev_template(cp)
+    column = Chebyshev1D(t.params, t.mishPoints, t.gammaBC, t.fftPlan, t.filter,
+                         zeros(real, cp.zDim),
+                         zeros(real, cp.bDim),
+                         zeros(real, cp.zDim),
+                         zeros(real, cp.zDim),
+                         zeros(real, cp.zDim),
+                         zeros(real, cp.zDim),
+                         zeros(real, cp.zDim))
     return column
 end
 

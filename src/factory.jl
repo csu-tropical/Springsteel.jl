@@ -600,47 +600,13 @@ function _create_cartesian_3d_rrr(gp::SpringsteelGridParameters)
     return grid
 end
 
-# Per-createGrid caches that allow identical Fourier rings (same FourierParameters)
-# to share a single FFTW plan pair and a single PhaseFilter instance.
-#
-# - plan_cache key: yDim. Any two rings with the same yDim use the same plans.
-# - pf_cache key: the full FourierParameters tuple that determines PhaseFilter
-#   content (yDim, kmax, bDim, ymin). Two rings matching all four share one
-#   PhaseFilter. In the common case (single var, no max_wavenumber cap), this
-#   means all b_kDim Chebyshev-mode rings at a given θ-index share one
-#   PhaseFilter — the primary win behind the SLZ/RLZ cliff fix.
-const _FourierPlanCache = Dict{Int, Tuple{Fourier.FFTW.r2rFFTWPlan, Fourier.FFTW.r2rFFTWPlan}}
-const _PhaseFilterCache = Dict{Tuple{Int,Int,Int,Float64}, Fourier.PhaseFilter}
-
-_new_fourier_caches() = (_FourierPlanCache(), _PhaseFilterCache())
-
-function _get_or_build_ring_shared(fp::FourierParameters,
-                                   plan_cache::_FourierPlanCache,
-                                   pf_cache::_PhaseFilterCache)
-    plans = get(plan_cache, fp.yDim, nothing)
-    if plans === nothing
-        scratch = zeros(Float64, fp.yDim)
-        fftPlan  = Fourier.FFTW.plan_r2r(scratch, Fourier.FFTW.FFTW.R2HC, flags=Fourier.FFTW.PATIENT)
-        ifftPlan = Fourier.FFTW.plan_r2r(scratch, Fourier.FFTW.FFTW.HC2R, flags=Fourier.FFTW.PATIENT)
-        plans = (fftPlan, ifftPlan)
-        plan_cache[fp.yDim] = plans
-    end
-
-    pf_key = (fp.yDim, fp.kmax, fp.bDim, fp.ymin)
-    pf = get(pf_cache, pf_key, nothing)
-    if pf === nothing
-        pf = Fourier.PhaseFilter(fp)
-        pf_cache[pf_key] = pf
-    end
-
-    return Fourier1D(fp, plans[1], plans[2], pf)
+function _get_or_build_ring_shared(fp::FourierParameters)
+    return Fourier.Fourier1D(fp)
 end
 
 # Internal helper: build cylindrical or spherical Fourier rings into pre-allocated array
 function _fill_fourier_rings_cyl!(rings_arr, gp::SpringsteelGridParameters,
-                                  var_kmax::Int, idx2::Int,
-                                  plan_cache::_FourierPlanCache,
-                                  pf_cache::_PhaseFilterCache)
+                                  var_kmax::Int, idx2::Int)
     iDim = gp.iDim
     for r in 1:iDim
         ri = r + gp.patchOffsetL
@@ -653,14 +619,12 @@ function _fill_fourier_rings_cyl!(rings_arr, gp::SpringsteelGridParameters,
             yDim  = lpoints,
             kmax  = kmax_ring,
             bDim  = ri * 2 + 1)
-        rings_arr[r, idx2] = _get_or_build_ring_shared(fp, plan_cache, pf_cache)
+        rings_arr[r, idx2] = _get_or_build_ring_shared(fp)
     end
 end
 
 function _fill_fourier_rings_sph!(rings_arr, gp::SpringsteelGridParameters, mishpts,
-                                  var_kmax::Int, idx2::Int,
-                                  plan_cache::_FourierPlanCache,
-                                  pf_cache::_PhaseFilterCache)
+                                  var_kmax::Int, idx2::Int)
     iDim   = gp.iDim
     max_ri = iDim + gp.patchOffsetL
     for r in 1:iDim
@@ -674,7 +638,7 @@ function _fill_fourier_rings_sph!(rings_arr, gp::SpringsteelGridParameters, mish
             yDim  = lpoints,
             kmax  = kmax_ring,
             bDim  = 1 + 2 * kmax_ring)
-        rings_arr[r, idx2] = _get_or_build_ring_shared(fp, plan_cache, pf_cache)
+        rings_arr[r, idx2] = _get_or_build_ring_shared(fp)
     end
 end
 
@@ -699,7 +663,7 @@ function _create_cylindrical_2d_rl(gp::SpringsteelGridParameters)
     grid = SpringsteelGrid{CylindricalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
-    plan_cache, pf_cache = _new_fourier_caches()
+
     for key in keys(gp.vars)
         v = gp.vars[key]
         var_l_q = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
@@ -715,7 +679,7 @@ function _create_cylindrical_2d_rl(gp::SpringsteelGridParameters)
                 BCR       = _get_spline_bc(gp.BCR, key)))
         end
         var_kmax = get(gp.max_wavenumber, key, get(gp.max_wavenumber, "default", -1))
-        _fill_fourier_rings_cyl!(grid.jbasis.data, gp, var_kmax, v, plan_cache, pf_cache)
+        _fill_fourier_rings_cyl!(grid.jbasis.data, gp, var_kmax, v)
     end
     return grid
 end
@@ -768,9 +732,9 @@ function _create_cylindrical_3d_rlz(gp::SpringsteelGridParameters)
     for key in keys(gp.vars)
         var_kmax = get(gp.max_wavenumber, key, var_kmax)
     end
-    plan_cache, pf_cache = _new_fourier_caches()
+
     for b in 1:gp.b_kDim
-        _fill_fourier_rings_cyl!(grid.jbasis.data, gp, var_kmax, b, plan_cache, pf_cache)
+        _fill_fourier_rings_cyl!(grid.jbasis.data, gp, var_kmax, b)
     end
     return grid
 end
@@ -797,7 +761,7 @@ function _create_spherical_2d_sl(gp::SpringsteelGridParameters)
     grid = SpringsteelGrid{SphericalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
-    plan_cache, pf_cache = _new_fourier_caches()
+
     for key in keys(gp.vars)
         v = gp.vars[key]
         var_l_q = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
@@ -813,7 +777,7 @@ function _create_spherical_2d_sl(gp::SpringsteelGridParameters)
                 BCR       = _get_spline_bc(gp.BCR, key)))
         end
         var_kmax = get(gp.max_wavenumber, key, get(gp.max_wavenumber, "default", -1))
-        _fill_fourier_rings_sph!(grid.jbasis.data, gp, mishpts, var_kmax, v, plan_cache, pf_cache)
+        _fill_fourier_rings_sph!(grid.jbasis.data, gp, mishpts, var_kmax, v)
     end
     return grid
 end
@@ -865,9 +829,9 @@ function _create_spherical_3d_slz(gp::SpringsteelGridParameters)
     for key in keys(gp.vars)
         var_kmax = get(gp.max_wavenumber, key, var_kmax)
     end
-    plan_cache, pf_cache = _new_fourier_caches()
+
     for b in 1:gp.b_kDim
-        _fill_fourier_rings_sph!(grid.jbasis.data, gp, mishpts, var_kmax, b, plan_cache, pf_cache)
+        _fill_fourier_rings_sph!(grid.jbasis.data, gp, mishpts, var_kmax, b)
     end
     return grid
 end

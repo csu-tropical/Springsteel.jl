@@ -258,6 +258,20 @@ Base.@kwdef struct SplineParameters
     mishDim::int = num_cells * mubar
 end
 
+function Base.:(==)(a::SplineParameters, b::SplineParameters)
+    a.xmin == b.xmin && a.xmax == b.xmax && a.num_cells == b.num_cells &&
+    a.mubar == b.mubar && a.quadrature == b.quadrature && a.l_q == b.l_q &&
+    a.BCL == b.BCL && a.BCR == b.BCR
+end
+
+function Base.hash(sp::SplineParameters, h::UInt)
+    h = hash(:SplineParameters, h)
+    for f in (sp.xmin, sp.xmax, sp.num_cells, sp.mubar, sp.quadrature, sp.l_q, sp.BCL, sp.BCR)
+        h = hash(f, h)
+    end
+    return h
+end
+
 function _validate_spline_params(sp::SplineParameters)
     if sp.mubar < 1
         throw(ArgumentError("mubar must be ≥ 1, got $(sp.mubar)"))
@@ -914,33 +928,68 @@ spline = CubicBSpline.Spline1D(sp)
 
 See also: [`SBtransform`](@ref), [`SAtransform`](@ref), [`SItransform`](@ref)
 """
-function Spline1D(sp::SplineParameters)
+struct _SplineTemplate
+    params::SplineParameters
+    quadpoints::Vector{real}
+    quadweights::Vector{real}
+    gammaBC::GammaBC
+    pq::Symmetric{Float64, Matrix{Float64}}
+    pqFactor::Union{BandedCholesky3, DenseSplineFactor}
+    p1::Symmetric{Float64, Matrix{Float64}}
+    p1Factor::Union{BandedCholesky3, DenseSplineFactor}
+    mishPoints::Vector{real}
+    _sb_matrix::SparseMatrixCSC{real, int}
+end
+
+const _SPLINE_TEMPLATE_CACHE = Dict{SplineParameters, _SplineTemplate}()
+const _SPLINE_CACHE_LOCK = ReentrantLock()
+
+function _build_spline_template(sp::SplineParameters)
     _validate_spline_params(sp)
     qpts, qwts = _quadrature_rule(sp.mubar, sp.quadrature)
-
     gammaBC = GammaBC(sp)
     pq, pqFactor = calcPQfactor(sp, gammaBC)
     p1, p1Factor = calcP1factor(sp, gammaBC)
-
     mishPoints = calcMishPoints(sp)
-    uMish = zeros(real,sp.mishDim)
-
-    b = zeros(real,sp.bDim)
-    a = zeros(real,sp.bDim)
-    ahat = zeros(real,sp.bDim)
-
-    # Scratch buffers for in-place transforms.
-    Minterior = size(gammaBC, 1)
-    scratch_btilde = zeros(real, sp.bDim)       # bDim-length: holds b - pq·ahat
-    scratch_Min    = zeros(real, Minterior)     # γ * (b or btilde)
-    scratch_Mout   = zeros(real, Minterior)     # pqFactor \ scratch_Min
-    scratch_bx     = zeros(real, sp.bDim)       # bDim-length: SBxtransform output for SIInt
-
     sb_matrix = _build_sb_matrix(sp, qpts, qwts)
+    return _SplineTemplate(sp, qpts, qwts, gammaBC, pq, pqFactor, p1, p1Factor,
+                           mishPoints, sb_matrix)
+end
 
-    spline = Spline1D(sp,qpts,qwts,gammaBC,pq,pqFactor,p1,p1Factor,mishPoints,
-                      uMish,b,a,ahat,scratch_btilde,scratch_Min,scratch_Mout,scratch_bx,
-                      sb_matrix)
+function _get_spline_template(sp::SplineParameters)
+    lock(_SPLINE_CACHE_LOCK) do
+        get!(_SPLINE_TEMPLATE_CACHE, sp) do
+            _build_spline_template(sp)
+        end
+    end
+end
+
+function _clear_spline_cache!()
+    lock(_SPLINE_CACHE_LOCK) do
+        empty!(_SPLINE_TEMPLATE_CACHE)
+    end
+end
+
+function _spline_cache_size()
+    lock(_SPLINE_CACHE_LOCK) do
+        length(_SPLINE_TEMPLATE_CACHE)
+    end
+end
+
+function Spline1D(sp::SplineParameters)
+    t = _get_spline_template(sp)
+    Minterior = size(t.gammaBC, 1)
+    spline = Spline1D(t.params, t.quadpoints, t.quadweights, t.gammaBC,
+                      t.pq, t.pqFactor, t.p1, t.p1Factor, t.mishPoints,
+                      zeros(real, sp.mishDim),
+                      zeros(real, sp.bDim),
+                      zeros(real, sp.bDim),
+                      zeros(real, sp.bDim),
+                      zeros(real, sp.bDim),
+                      zeros(real, Minterior),
+                      zeros(real, Minterior),
+                      zeros(real, sp.bDim),
+                      t._sb_matrix)
     return spline
 end
 

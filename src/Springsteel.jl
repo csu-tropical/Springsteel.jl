@@ -167,6 +167,9 @@ include("Fourier.jl")
 include("Chebyshev.jl")
 using .CubicBSpline, .Fourier, .Chebyshev
 
+include("basis_cache.jl")
+export clear_basis_caches!, basis_cache_sizes
+
 # Define unified generic transform functions at the Springsteel module level.
 # Each submodule defines its own version (e.g., CubicBSpline.Btransform!,
 # Chebyshev.Btransform!) but those are separate function objects. These

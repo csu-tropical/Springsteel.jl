@@ -64,6 +64,18 @@ Base.@kwdef struct FourierParameters
     bDim::int = 0    # Number of Fourier coefficients after filtering to kmax
 end
 
+function Base.:(==)(a::FourierParameters, b::FourierParameters)
+    a.ymin == b.ymin && a.kmax == b.kmax && a.yDim == b.yDim && a.bDim == b.bDim
+end
+
+function Base.hash(fp::FourierParameters, h::UInt)
+    h = hash(:FourierParameters, h)
+    for f in (fp.ymin, fp.kmax, fp.yDim, fp.bDim)
+        h = hash(f, h)
+    end
+    return h
+end
+
 # PhaseFilter: shared reusable azimuthal phase + spectral cutoff.
 # Replaces per-ring dense phasefilter matrices with an O(kmax) representation.
 include("phase_filter.jl")
@@ -163,25 +175,55 @@ ring = Fourier.Fourier1D(fp)
 
 See also: [`FBtransform`](@ref), [`FAtransform`](@ref), [`FItransform`](@ref)
 """
-function Fourier1D(fp::FourierParameters)
-    # Standalone construction — builds fresh FFTW plans and a fresh PhaseFilter.
-    # For shared construction across many rings (factory / tiling / multipatch),
-    # use Fourier1D(fp, fftPlan, ifftPlan, phasefilter) directly with objects
-    # pulled from a cache.
+struct _FourierTemplate
+    params::FourierParameters
+    mishPoints::Vector{real}
+    fftPlan::FFTW.r2rFFTWPlan
+    ifftPlan::FFTW.r2rFFTWPlan
+    phasefilter::PhaseFilter
+end
+
+const _FOURIER_TEMPLATE_CACHE = Dict{FourierParameters, _FourierTemplate}()
+const _FOURIER_CACHE_LOCK = ReentrantLock()
+
+function _build_fourier_template(fp::FourierParameters)
     mishPoints = calcMishPoints(fp)
-    uMish = zeros(real, fp.yDim)
-    b     = zeros(real, fp.bDim)
-    a     = zeros(real, fp.yDim)
-    ax    = zeros(real, fp.yDim)
-    scratch_fft = zeros(real, fp.yDim)
-    scratch_ax  = zeros(real, fp.yDim)
-
-    fftPlan  = FFTW.plan_r2r(a, FFTW.FFTW.R2HC, flags=FFTW.PATIENT)
-    ifftPlan = FFTW.plan_r2r(a, FFTW.FFTW.HC2R, flags=FFTW.PATIENT)
+    scratch = zeros(real, fp.yDim)
+    fftPlan  = FFTW.plan_r2r(scratch, FFTW.FFTW.R2HC, flags=FFTW.PATIENT)
+    ifftPlan = FFTW.plan_r2r(scratch, FFTW.FFTW.HC2R, flags=FFTW.PATIENT)
     phasefilter = PhaseFilter(fp)
+    return _FourierTemplate(fp, mishPoints, fftPlan, ifftPlan, phasefilter)
+end
 
-    return Fourier1D(fp, mishPoints, fftPlan, ifftPlan, phasefilter,
-                     uMish, b, a, ax, scratch_fft, scratch_ax)
+function _get_fourier_template(fp::FourierParameters)
+    lock(_FOURIER_CACHE_LOCK) do
+        get!(_FOURIER_TEMPLATE_CACHE, fp) do
+            _build_fourier_template(fp)
+        end
+    end
+end
+
+function _clear_fourier_cache!()
+    lock(_FOURIER_CACHE_LOCK) do
+        empty!(_FOURIER_TEMPLATE_CACHE)
+    end
+end
+
+function _fourier_cache_size()
+    lock(_FOURIER_CACHE_LOCK) do
+        length(_FOURIER_TEMPLATE_CACHE)
+    end
+end
+
+function Fourier1D(fp::FourierParameters)
+    t = _get_fourier_template(fp)
+    return Fourier1D(fp, t.mishPoints, t.fftPlan, t.ifftPlan, t.phasefilter,
+                     zeros(real, fp.yDim),
+                     zeros(real, fp.bDim),
+                     zeros(real, fp.yDim),
+                     zeros(real, fp.yDim),
+                     zeros(real, fp.yDim),
+                     zeros(real, fp.yDim))
 end
 
 """
