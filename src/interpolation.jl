@@ -1568,33 +1568,91 @@ function _clear_ahat_cache!()
     end
 end
 
+# ── Scratch buffers for RL/RLZ unstructured eval ────────────────────────────
+
+mutable struct _ScratchInterpRL
+    ak::Matrix{Float64}
+    r_pts::Vector{Float64}
+    λ_pts::Vector{Float64}
+    result::Vector{Float64}
+    npts::Int
+    n_kslots::Int
+end
+
+mutable struct _ScratchInterpRLZ
+    spline_vals::Array{Float64, 3}
+    r_pts::Vector{Float64}
+    λ_pts::Vector{Float64}
+    z_pts::Vector{Float64}
+    result::Vector{Float64}
+    npts::Int
+    b_kDim::Int
+    n_kslots::Int
+end
+
+const _INTERP_SCRATCH_RL  = Dict{UInt64, _ScratchInterpRL}()
+const _INTERP_SCRATCH_RLZ = Dict{UInt64, _ScratchInterpRLZ}()
+
+function _get_scratch_rl(grid_id::UInt64, npts::Int, n_kslots::Int)
+    s = get(_INTERP_SCRATCH_RL, grid_id, nothing)
+    if s !== nothing && s.npts >= npts && s.n_kslots >= n_kslots
+        fill!(s.ak, 0.0)
+        fill!(s.result, 0.0)
+        return s
+    end
+    np = s === nothing ? npts : max(s.npts, npts)
+    nk = s === nothing ? n_kslots : max(s.n_kslots, n_kslots)
+    s = _ScratchInterpRL(zeros(Float64, np, nk), zeros(Float64, np),
+                         zeros(Float64, np), zeros(Float64, np), np, nk)
+    _INTERP_SCRATCH_RL[grid_id] = s
+    return s
+end
+
+function _get_scratch_rlz(grid_id::UInt64, npts::Int, b_kDim::Int, n_kslots::Int)
+    s = get(_INTERP_SCRATCH_RLZ, grid_id, nothing)
+    if s !== nothing && s.npts >= npts && s.b_kDim >= b_kDim && s.n_kslots >= n_kslots
+        fill!(s.spline_vals, 0.0)
+        fill!(s.result, 0.0)
+        return s
+    end
+    np = s === nothing ? npts : max(s.npts, npts)
+    bk = s === nothing ? b_kDim : max(s.b_kDim, b_kDim)
+    nk = s === nothing ? n_kslots : max(s.n_kslots, n_kslots)
+    s = _ScratchInterpRLZ(zeros(Float64, np, bk, nk), zeros(Float64, np),
+                          zeros(Float64, np), zeros(Float64, np),
+                          zeros(Float64, np), np, bk, nk)
+    _INTERP_SCRATCH_RLZ[grid_id] = s
+    return s
+end
+
 function _eval_unstructured_rl(source::SpringsteelGrid, pts::AbstractMatrix{Float64}, sv::Int)
     gp = source.params
     b_iDim = gp.b_iDim
     kDim = gp.iDim + gp.patchOffsetL
     npts = size(pts, 1)
-    r_pts = pts[:, 1]
-    λ_pts = pts[:, 2]
+    n_kslots = 1 + 2 * kDim
+
+    sc = _get_scratch_rl(objectid(source), npts, n_kslots)
+    r_view = view(pts, :, 1)
+    λ_view = view(pts, :, 2)
 
     a_cache = _get_ahat_cache_rl(source, sv)
-    n_kslots = 1 + 2 * kDim
-    ak = zeros(Float64, npts, n_kslots)
-
     sp0 = source.ibasis.data[1, sv]
     for slot in 1:n_kslots
-        CubicBSpline.SItransform(sp0.params, a_cache[:, slot], r_pts, view(ak, :, slot))
+        CubicBSpline.SItransform(sp0.params, view(a_cache, :, slot),
+                                 r_view, view(sc.ak, 1:npts, slot))
     end
 
-    result = zeros(Float64, npts)
+    result = sc.result
     for n in 1:npts
-        f = ak[n, 1]
-        λ = λ_pts[n]
+        f = sc.ak[n, 1]
+        λ = pts[n, 2]
         for k in 1:kDim
-            f += 2.0 * (ak[n, 2k] * cos(k * λ) + ak[n, 2k + 1] * sin(k * λ))
+            f += 2.0 * (sc.ak[n, 2k] * cos(k * λ) + sc.ak[n, 2k + 1] * sin(k * λ))
         end
         result[n] = f
     end
-    return result
+    return view(result, 1:npts)
 end
 
 # ── Unstructured evaluation: Spline+Fourier+Chebyshev (RLZ, SLZ) ─────────
@@ -1617,35 +1675,32 @@ function _eval_unstructured_rlz(source::SpringsteelGrid, pts::AbstractMatrix{Flo
     npts = size(pts, 1)
     n_kslots = 1 + 2 * kDim_wn
 
-    r_pts = pts[:, 1]
-    λ_pts = pts[:, 2]
-    z_pts = pts[:, 3]
+    sc = _get_scratch_rlz(objectid(source), npts, b_kDim, n_kslots)
+    r_view = view(pts, :, 1)
 
     a_cache = _get_ahat_cache_rlz(source, sv)
     sp0 = source.ibasis.data[1, sv]
 
-    spline_vals = zeros(Float64, npts, b_kDim, n_kslots)
-
     for z_b in 1:b_kDim
         stripe_offset = (z_b - 1) * n_kslots
         for slot in 1:n_kslots
-            CubicBSpline.SItransform(sp0.params, a_cache[:, stripe_offset + slot],
-                                     r_pts, view(spline_vals, :, z_b, slot))
+            CubicBSpline.SItransform(sp0.params, view(a_cache, :, stripe_offset + slot),
+                                     r_view, view(sc.spline_vals, 1:npts, z_b, slot))
         end
     end
 
-    result = zeros(Float64, npts)
+    result = sc.result
     cheb_col = source.kbasis.data[sv]
 
     for n in 1:npts
-        λ = λ_pts[n]
-        z = z_pts[n]
+        λ = pts[n, 2]
+        z = pts[n, 3]
 
         for z_b in 1:b_kDim
-            val = spline_vals[n, z_b, 1]
+            val = sc.spline_vals[n, z_b, 1]
             for k in 1:kDim_wn
-                val += 2.0 * (spline_vals[n, z_b, 2k] * cos(k * λ) +
-                              spline_vals[n, z_b, 2k + 1] * sin(k * λ))
+                val += 2.0 * (sc.spline_vals[n, z_b, 2k] * cos(k * λ) +
+                              sc.spline_vals[n, z_b, 2k + 1] * sin(k * λ))
             end
             cheb_col.b[z_b] = val
         end
@@ -1653,7 +1708,7 @@ function _eval_unstructured_rlz(source::SpringsteelGrid, pts::AbstractMatrix{Flo
         CAtransform!(cheb_col)
         result[n] = _cheb_eval_single(cheb_col, z)
     end
-    return result
+    return view(result, 1:npts)
 end
 
 # ── Unified unstructured evaluation dispatch ──────────────────────────────

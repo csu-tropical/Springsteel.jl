@@ -1536,7 +1536,7 @@ function SItransform(sp::SplineParameters, a::Vector{real}, derivative::int = 0)
     return u
 end
 
-function SItransform(sp::SplineParameters, a::Vector{real}, points::Vector{real}, derivative::int = 0)
+function SItransform(sp::SplineParameters, a::AbstractVector{<:Real}, points::AbstractVector{<:Real}, derivative::int = 0)
 
     u = zeros(real,length(points))
     for i in eachindex(points)
@@ -1551,7 +1551,7 @@ function SItransform(sp::SplineParameters, a::Vector{real}, points::Vector{real}
     return u
 end
 
-function SItransform(sp::SplineParameters, a::Vector{real}, points::Vector{real}, u::AbstractVector, derivative::int = 0)
+function SItransform(sp::SplineParameters, a::AbstractVector{<:Real}, points::AbstractVector{<:Real}, u::AbstractVector, derivative::int = 0)
 
     for i in eachindex(points)
         u[i] = 0.0
@@ -1579,7 +1579,7 @@ function SItransform(spline::Spline1D, u::AbstractVector)
     return u
 end
 
-function SItransform(spline::Spline1D, points::Vector{real}, u::AbstractVector)
+function SItransform(spline::Spline1D, points::AbstractVector{<:Real}, u::AbstractVector)
 
     u = SItransform(spline.params,spline.a,points,u)
     return u
