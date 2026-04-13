@@ -68,6 +68,15 @@ function relocate_grid!(mg::SpringsteelMultiGrid,
     return mg
 end
 
+"""
+    grid_center(mg::SpringsteelMultiGrid) -> NTuple{2,Float64}
+
+Return the accumulated center shift of `mg` by delegating to its first
+patch. Multi-patch relocation keeps every patch aligned to the same
+center, so inspecting any one is sufficient; `mg.mpg.patches[1]` is
+conventionally the innermost patch and carries the authoritative value.
+See [`grid_center`](@ref) for the single-grid definition.
+"""
 function grid_center(mg::SpringsteelMultiGrid)
     return grid_center(mg.mpg.patches[1])
 end

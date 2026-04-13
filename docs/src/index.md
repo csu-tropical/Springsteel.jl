@@ -4,7 +4,13 @@ CurrentModule = Springsteel
 
 # Springsteel.jl
 
-Documentation for [Springsteel](https://github.com/mmbell/Springsteel.jl).
+```@raw html
+<p align="center">
+  <img src="assets/logo.png" alt="Springsteel.jl" width="320"/>
+</p>
+```
+
+Documentation for [Springsteel](https://github.com/csu-tropical/Springsteel.jl).
 
 ## Overview
 

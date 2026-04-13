@@ -23,15 +23,23 @@ import Krylov
     SpringsteelField(var_name::AbstractString, var_idx::Int)
 
 Handle for a grid variable that can stand in as the unknown in operator
-algebra (`L * u => rhs`). `Field` is an exported alias.
+algebra (`L * u => rhs`).
 
 Holds only the variable's name and its integer slot index — no grid
 reference. The primary constructor takes a grid to resolve the slot from
-`grid.params.vars`, but the resulting `Field` is independent of that grid
-and can be reused across grids with the same variable schema.
+`grid.params.vars`, but the resulting `SpringsteelField` is independent of
+that grid and can be reused across grids with the same variable schema.
 
 Boundary conditions come from the grid's per-variable BC spec at problem
-construction time, not from the `Field` itself.
+construction time, not from the `SpringsteelField` itself.
+
+!!! note "Field alias"
+    `Field` is exported as a convenience alias for `SpringsteelField` and
+    appears throughout the examples (`u = Field(grid, "u")`). Because
+    `Field` is a short, generic name it can collide with definitions from
+    other packages loaded in the same session. If you hit an ambiguity
+    warning or method error, use the qualified `SpringsteelField` directly
+    — it behaves identically.
 """
 struct SpringsteelField
     var_name::String

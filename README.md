@@ -1,5 +1,9 @@
 # Springsteel.jl
 
+<p align="center">
+  <img src="images/springsteel.png" alt="Springsteel.jl" width="320"/>
+</p>
+
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Stable: [![Stable Build Status](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/csu-tropical/Springsteel.jl/actions/workflows/CI.yml?query=branch%3Amain) [![Stable Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://csu-tropical.github.io/Springsteel.jl/stable/)

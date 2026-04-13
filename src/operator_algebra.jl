@@ -76,7 +76,48 @@ _as_expr(e::OperatorExpr) = e
 # Derivative atoms — generic and physical aliases
 # ────────────────────────────────────────────────────────────────────────────
 
-# Generic axes (what the low-level OperatorTerm uses directly)
+"""
+# Derivative atoms
+
+These constants are the building blocks of the operator algebra DSL. Each
+is a one-order `DerivMono` that can be multiplied by a `Field`, combined
+with `+`/`-`/`*`, and raised to integer powers to build `OperatorExpr`s:
+
+```julia
+L = ∂_x^2 + ∂_y^2         # 2D Laplacian on a Cartesian grid
+L = ∂_r^2 + (1/r)*∂_r     # cylindrical radial Laplacian
+prob = SpringsteelProblem(grid, L * u => :f)
+```
+
+## Generic (axis-indexed) atoms
+
+Act directly on the grid's `i`/`j`/`k` axes regardless of geometry. Use
+these when your code is geometry-agnostic or when you want to avoid the
+geometry-mapping layer.
+
+| Symbol | ASCII alias | Axis |
+|:------:|:-----------:|:----:|
+| `∂ᵢ`  | `d_i`       | `:i` |
+| `∂ⱼ`  | `d_j`       | `:j` |
+| `∂ₖ`  | `d_k`       | `:k` |
+
+## Physical (named) atoms
+
+Resolved against `grid.params.geometry` at lowering time. Using a physical
+alias on a geometry that doesn't define it raises an error.
+
+| Symbol | ASCII alias | Cartesian | Cylindrical | Spherical |
+|:------:|:-----------:|:---------:|:-----------:|:---------:|
+| `∂_x`  | `d_x`       | `:i` (x)  | —           | —         |
+| `∂_y`  | `d_y`       | `:j` (y)  | —           | —         |
+| `∂_z`  | `d_z`       | `:k` (z)  | `:k` (z)    | `:k` (radial) |
+| `∂_r`  | `d_r`       | —         | `:i` (r)    | —         |
+| `∂_θ`  | `d_theta`   | —         | `:j` (θ=λ)  | `:i` (colatitude) |
+| `∂_λ`  | `d_lambda`  | —         | `:j` (λ)    | `:j` (azimuth) |
+
+Second derivatives are built with `^`: `∂_x^2`, `∂_r^2`, etc. Mixed
+partials multiply: `∂_x * ∂_y` is `∂²/∂x∂y`.
+"""
 const ∂ᵢ = DerivMono(:i => 1)
 const ∂ⱼ = DerivMono(:j => 1)
 const ∂ₖ = DerivMono(:k => 1)
@@ -84,12 +125,6 @@ const d_i = ∂ᵢ
 const d_j = ∂ⱼ
 const d_k = ∂ₖ
 
-# Physical names — resolved against grid.params.geometry at lowering time.
-# The mapping is:
-#   Cartesian   : x → i, y → j, z → k
-#   Cylindrical : r → i, λ → j, z → k     (θ is an alias for λ)
-#   Spherical   : θ → i, λ → j, z → k     (z is the radial coordinate here)
-# Any physical alias used on a geometry that doesn't define it raises an error.
 const ∂_x = DerivMono(:x => 1)
 const ∂_y = DerivMono(:y => 1)
 const ∂_z = DerivMono(:z => 1)
