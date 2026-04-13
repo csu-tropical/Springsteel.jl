@@ -417,6 +417,17 @@ function save_grid(filename::String, grid::SpringsteelGrid; compress::Bool=true)
     return nothing
 end
 
+"""
+    load_grid(filename::String) -> SpringsteelGrid
+
+Reload a grid previously written by [`save_grid`](@ref). Reads the
+serialised `params`, `spectral`, and `physical` arrays from `filename`,
+calls [`createGrid`](@ref) to reconstruct basis objects and FFTW plans,
+then copies the archived arrays into the fresh grid.
+
+The returned grid is fully functional — transforms, interpolation, and
+the solver can all be applied to it immediately.
+"""
 function load_grid(filename::String)
     params, spectral, physical = jldopen(filename, "r") do f
         f["params"], f["spectral"], f["physical"]

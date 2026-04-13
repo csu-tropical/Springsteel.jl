@@ -260,7 +260,7 @@ export Z_Grid, ZZ_Grid, ZZZ_Grid
 export Column1D_Grid, Column2D_Grid, Column3D_Grid
 
 # Factory exports
-export parse_geometry, compute_derived_params, convert_to_springsteel_params
+export parse_geometry, compute_derived_params
 export num_deriv_slots
 
 # Basis interface exports

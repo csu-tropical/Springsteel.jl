@@ -1942,7 +1942,7 @@ Set inhomogeneous R3X boundary conditions on a 1D R grid.
 - `var`: Variable name
 - `u0, u1, u2`: Desired value, first derivative, and second derivative at the boundary
 
-See also: [`CubicBSpline.R3X`](@ref), [`CubicBSpline.set_ahat_r3x!`](@ref)
+See also: `CubicBSpline.R3X`, `CubicBSpline.set_ahat_r3x!`
 """
 function set_boundary_values!(grid::R_Grid, side::Symbol, var::String,
                               u0::Real, u1::Real, u2::Real)
@@ -1965,7 +1965,7 @@ space, and sets per-mode ahat on each i-spline.
 - `var`: Variable name
 - `u0, u1, u2`: Vectors of length `jDim` with boundary values along the j-direction
 
-See also: [`CubicBSpline.R3X`](@ref)
+See also: `CubicBSpline.R3X`
 """
 function set_boundary_values!(grid::RR_Grid, side::Symbol, var::String,
                               u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)
@@ -2005,7 +2005,7 @@ spectral space, and sets per-mode ahat on each i-spline.
 - `var`: Variable name
 - `u0, u1, u2`: Vectors of length `kDim` with boundary values along the k-direction
 
-See also: [`CubicBSpline.R3X`](@ref)
+See also: `CubicBSpline.R3X`
 """
 function set_boundary_values!(grid::RZ_Grid, side::Symbol, var::String,
                               u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)

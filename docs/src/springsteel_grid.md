@@ -26,6 +26,24 @@ ChebyshevBasisArray
 NoBasisArray
 ```
 
+### Basis type sentinels
+
+```@docs
+AbstractBasisType
+SplineBasisType
+FourierBasisType
+ChebyshevBasisType
+NoBasisType
+```
+
+### Basis interface methods
+
+```@docs
+gridpoints
+spectral_dim
+physical_dim
+```
+
 ## Grid Parameters
 
 ```@docs
@@ -44,13 +62,16 @@ SpringsteelGrid
 createGrid
 parse_geometry
 compute_derived_params
+num_deriv_slots
 ```
 
 ## Transforms
 
 ```@docs
 spectralTransform!
+spectralTransform
 gridTransform!
+gridTransform
 ```
 
 ## Tiling
@@ -58,15 +79,31 @@ gridTransform!
 ```@docs
 calcTileSizes
 calcPatchMap
+calcPatchMap_multidim
 calcHaloMap
+calcHaloMap_multidim
 allocateSplineBuffer
 num_columns
 sumSpectralTile!
 setSpectralTile!
+sumSpectralTile
+setSpectralTile
 getBorderSpectral
 sumSharedSpectral
 splineTransform!
 tileTransform!
+```
+
+## Basis template cache
+
+Every `SpringsteelGrid` construction shares immutable basis state (parameters,
+quadrature points, `gammaBC` matrices, FFT plans, etc.) through per-basis
+global template caches. Construction is sub-millisecond warm for typical
+grid sizes.
+
+```@docs
+basis_cache_sizes
+clear_basis_caches!
 ```
 
 ## I/O
@@ -78,6 +115,10 @@ regularGridTransform
 write_grid
 read_physical_grid
 check_grid_dims
+save_grid
+load_grid
+read_netcdf
+write_netcdf
 ```
 
 ## Grid Type Reference
@@ -128,6 +169,22 @@ always the canonical target.*  For example, `"Ring1D"` → `"L"`,
 `"DoublyPeriodic"` → `"LLZ"`, `"Polar"` → `"RL"`.
 
 ```@docs
+R_Grid
+RR_Grid
+RZ_Grid
+RL_Grid
+RLZ_Grid
+RRR_Grid
+SL_Grid
+SLZ_Grid
+Spline1D_Grid
+Spline2D_Grid
+Spline3D_Grid
+Polar_Grid
+Cylindrical_Grid
+Samurai_Grid
+SphericalShell_Grid
+Sphere_Grid
 L_Grid
 LL_Grid
 LLZ_Grid

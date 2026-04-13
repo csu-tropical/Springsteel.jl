@@ -18,9 +18,9 @@ Springsteel is a semi-spectral grid engine for numerical modelling in Julia. It 
 a unified `SpringsteelGrid{G, I, J, K}` parametric type that supports **any combination**
 of three basis function families in up to three dimensions:
 
-- **Cubic B-splines** ([`CubicBSpline`](@ref CubicBSpline_module)) — compact support, ideal for the radial/Cartesian direction
-- **Fourier series** ([`Fourier`](@ref Fourier_module)) — periodic domains such as azimuthal coordinates
-- **Chebyshev polynomials** ([`Chebyshev`](@ref Chebyshev_module)) — non-periodic bounded domains such as vertical coordinates
+- **Cubic B-splines** ([CubicBSpline](cubicbspline.md)) — compact support, ideal for the radial/Cartesian direction
+- **Fourier series** ([Fourier](fourier.md)) — periodic domains such as azimuthal coordinates
+- **Chebyshev polynomials** ([Chebyshev](chebyshev.md)) — non-periodic bounded domains such as vertical coordinates
 
 Springsteel serves as the computational foundation for
 [Scythe.jl](https://github.com/mmbell/Scythe.jl) (numerical model) and

@@ -57,8 +57,11 @@ No-prefix wrappers that delegate to the `C`-prefixed functions above, enabling
 basis-type-agnostic code.
 
 ```@docs
+Chebyshev.Btransform
 Chebyshev.Btransform!
+Chebyshev.Atransform
 Chebyshev.Atransform!
+Chebyshev.Itransform
 Chebyshev.Itransform!
 Chebyshev.Ixtransform
 Chebyshev.Ixxtransform

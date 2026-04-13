@@ -85,6 +85,10 @@ L = α * ∂_x^2 + β * ∂_x + γ            # varying coefficients
 
 ```@docs
 Springsteel.∂ᵢ
+DerivMono
+ScaledMono
+OperatorExpr
+TypedOperator
 ```
 
 The derivative atoms come in two flavours — **generic** (axis-indexed)
@@ -288,6 +292,7 @@ of the assembled operator), or an explicit left-inverse.
 ### `AbstractLinearBackend`
 
 ```@docs
+AbstractSolverBackend
 AbstractLinearBackend
 ```
 

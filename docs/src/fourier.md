@@ -20,6 +20,7 @@ Fourier.PERIODIC
 ```@docs
 Fourier.FourierParameters
 Fourier.Fourier1D
+Fourier.PhaseFilter
 ```
 
 ## Internal Setup Functions
@@ -28,6 +29,8 @@ Fourier.Fourier1D
 Fourier.calcMishPoints
 Fourier.calcPhaseFilter
 Fourier.calcInvPhaseFilter
+Fourier.apply_phasefilter_forward!
+Fourier.apply_phasefilter_inverse!
 ```
 
 ## Transform Functions
@@ -57,8 +60,11 @@ No-prefix wrappers that delegate to the `F`-prefixed functions above, enabling
 basis-type-agnostic code.
 
 ```@docs
+Fourier.Btransform
 Fourier.Btransform!
+Fourier.Atransform
 Fourier.Atransform!
+Fourier.Itransform
 Fourier.Itransform!
 Fourier.Ixtransform
 Fourier.Ixxtransform

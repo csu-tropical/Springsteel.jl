@@ -141,13 +141,17 @@ CubicBSpline.setMishValues
 ```@docs
 CubicBSpline.SBtransform
 CubicBSpline.SBxtransform
+CubicBSpline.SBxtransform!
 CubicBSpline.SAtransform
 CubicBSpline.SItransform
 CubicBSpline.SItransform_matrix
 CubicBSpline.SIxtransform
 CubicBSpline.SIxxtransform
 CubicBSpline.SIIntcoefficients
+CubicBSpline.SIIntcoefficients!
 CubicBSpline.SIInttransform
+CubicBSpline.SIInttransform!
+CubicBSpline.set_ahat_r3x!
 ```
 
 ## Matrix Representations

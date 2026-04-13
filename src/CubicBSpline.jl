@@ -113,7 +113,7 @@ Periodic boundary condition (Ooyama 2002, section 3e): couples the left and
 right domain boundaries to simulate a cyclically continuous space. The border
 basis functions are folded onto the interior so that the domain has exactly
 `num_cells` independent coefficients. This is the only BC option for the
-[`Fourier`](@ref Fourier_module) module and is also available for B-splines.
+[Fourier](https://csu-tropical.github.io/Springsteel.jl/dev/fourier/) module and is also available for B-splines.
 """
 const PERIODIC = Dict("PERIODIC" => 0)
 
@@ -241,7 +241,7 @@ sp_reg = CubicBSpline.SplineParameters(
 )
 ```
 
-See also: [`Spline1D`](@ref), [`_quadrature_rule`](@ref)
+See also: [`Spline1D`](@ref), `_quadrature_rule` (internal)
 """
 Base.@kwdef struct SplineParameters
     xmin::real = 0.0
@@ -510,7 +510,7 @@ One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParame
 - `quadweights::Vector{Float64}`: Quadrature weights normalised to sum to 1 (length `mubar`)
 - `gammaBC::Matrix{Float64}`: Boundary-condition projection matrix (maps interior to full coefficient space)
 - `pq`: Full `(P + Q)` matrix used in the least-squares / variational solve
-- `pqFactor::AbstractSplineFactor`: Banded LLᵀ Cholesky factorisation of the open-form `(P + Q)` matrix for fast solves. A [`BandedCholesky3`](@ref) for non-periodic BCs (cubic B-splines have fixed half-bandwidth 3); a [`DenseSplineFactor`](@ref) for the periodic-BC fallback where Γ wraparound breaks the band structure.
+- `pqFactor::AbstractSplineFactor`: Banded LLᵀ Cholesky factorisation of the open-form `(P + Q)` matrix for fast solves. A `BandedCholesky3` for non-periodic BCs (cubic B-splines have fixed half-bandwidth 3); a `DenseSplineFactor` for the periodic-BC fallback where Γ wraparound breaks the band structure.
 - `p1`: Full `(P⁽¹⁾ + Q)` matrix for the integral variational solve (same Q as `pq`, but P uses first-derivative basis ``\\varphi'_m``; see [`calcP1factor`](@ref))
 - `p1Factor::AbstractSplineFactor`: Banded (or dense, for periodic BCs) LLᵀ Cholesky factorisation of the open-form `(P⁽¹⁾ + Q)` matrix, used by [`SIIntcoefficients`](@ref) for fast integration solves
 - `mishPoints::Vector{Float64}`: Physical locations of the mish points (length `num_cells * mubar`)
@@ -1248,7 +1248,7 @@ In-place form of [`SIIntcoefficients`](@ref). Writes the integral A-coefficients
 into `spline.a` (clobbering any prior contents) using `_scratch_bx`,
 `_scratch_Min`, and `_scratch_Mout`. Allocation-free.
 
-Like [`SAtransform!`](@ref), this overwrites `spline.a`.
+Like `SAtransform!`, this overwrites `spline.a`.
 """
 function SIIntcoefficients!(spline::Spline1D, uMish_input::AbstractVector)
     # RHS = ∫ φ'_m f dx = -SBxtransform(f, 0, 0); negate in place.
@@ -1455,7 +1455,7 @@ set_ahat_r3x!(spline, 1.0, 0.0, 0.0, :left)   # u(0) = 1
 set_ahat_r3x!(spline, 2.0, 0.0, 0.0, :right)  # u(1) = 2
 ```
 
-See also: [`R3X`](@ref), [`_border_matrix`](@ref)
+See also: `R3X` (interface BC constant), `_border_matrix` (internal)
 """
 function set_ahat_r3x!(spline::Spline1D, u0::Real, u1::Real, u2::Real, side::Symbol)
     M = _border_matrix(spline.params, side)

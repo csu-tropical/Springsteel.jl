@@ -46,6 +46,7 @@ interface, only the inherent basis truncation of each patch.
 
 ```@docs
 PatchInterface
+MultiPatchGrid
 COUPLING_MATRIX_1X
 COUPLING_MATRIX_2X
 ```
