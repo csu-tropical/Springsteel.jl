@@ -15,7 +15,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  parity-check:
+    name: Test group parity (runtests.jl ↔ CI matrix)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - name: Check that test/runtests.jl and CI matrix list the same groups
+        run: julia .github/scripts/check_test_group_parity.jl
+
   test:
+    needs: parity-check
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ matrix.group }}
     runs-on: ${{ matrix.os }}
     permissions:
