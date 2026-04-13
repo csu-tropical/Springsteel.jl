@@ -174,11 +174,17 @@ required by the basis on that dimension:
   Rank *k* BCs reduce the system size by *k* spectral coefficients per
   boundary. See the [CubicBSpline](cubicbspline.md) page for the
   underlying representation.
-- **Chebyshev** — the operator row corresponding to each boundary
-  Gauss–Lobatto point is replaced with an evaluation row (Dirichlet),
-  first-derivative row (Neumann), or second-derivative row; the RHS at
-  that row is set to the BC value. Homogeneous and inhomogeneous BCs are
-  handled uniformly.
+- **Chebyshev** — BCs are applied as **coefficient corrections** during
+  the forward transform via a per-column `gammaBC` stripe (vector for
+  Dirichlet, full $N \times N$ matrix for Neumann using the Wang et al.
+  (1993) global coefficient method). When the solver framework
+  assembles an explicit operator, it additionally replaces the boundary
+  rows of $\mathbf{L}$ with evaluation or first-derivative constraint
+  rows at the boundary CGL nodes. Currently only homogeneous Dirichlet
+  (`R1T0` / `DirichletBC()`) and homogeneous Neumann (`R1T1` /
+  `NeumannBC()`) are supported on Chebyshev dimensions; higher-rank
+  and inhomogeneous BCs throw at grid construction. See the
+  [Chebyshev](chebyshev.md) page for the exact `gammaBC` formulation.
 - **Fourier** — `PeriodicBC` is automatic; any non-periodic
   `BoundaryConditions` on a Fourier dimension is a configuration error.
 

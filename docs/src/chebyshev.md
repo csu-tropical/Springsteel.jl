@@ -48,7 +48,7 @@ This is exactly a DCT-I (`FFTW.REDFT00`), so the forward and inverse
 transforms run at FFT speed. The inverse is the same transform with
 a factor-of-2 rescaling baked in.
 
-### Derivatives and boundary conditions
+### Derivatives
 
 Differentiating a Chebyshev expansion is exact and local in
 coefficient space: the recurrence
@@ -60,14 +60,65 @@ exposes matrix representations via [`Chebyshev.dct_matrix`](@ref),
 [`Chebyshev.dct_2nd_derivative`](@ref) for operator assembly in the
 [Solver Framework](solver.md).
 
-Boundary conditions are enforced by replacing the boundary-row
-equations in the assembled operator with evaluation or derivative rows
-for the two boundary CGL nodes $x_0 = 1$ and $x_N = -1$. This is
-simpler than the spline side because no basis coefficient is "lost"
-to a projection — only two rows of the spectral-to-physical
-evaluation matrix are rewritten. See the Ooyama paper's discussion of
-boundary-row replacement (§4) and the
-[Boundary Conditions](boundary_conditions.md) page for details.
+### Boundary conditions
+
+Springsteel currently implements three Chebyshev BC types at the
+transform level, all homogeneous:
+
+| Constant | Condition                | Method |
+|:---------|:-------------------------|:-------|
+| [`Chebyshev.R0`](@ref)   | natural (no constraint)  | zero `gammaBC` vector — no-op |
+| [`Chebyshev.R1T0`](@ref) | Dirichlet $u(z_0) = 0$   | rank-1 coefficient correction vector |
+| [`Chebyshev.R1T1`](@ref) | Neumann $u'(z_0) = 0$    | full $N \times N$ correction matrix via the Wang et al. (1993) global coefficient method |
+
+Each BC combination (`BCB`/`BCT` pair) produces a `gammaBC` correction
+stored on the [`Chebyshev.Chebyshev1D`](@ref) object at construction
+time. The correction is then applied during the forward transform by
+`CAtransform` as
+
+```math
+a \;=\; b_{\text{fill}} + \texttt{gammaBC}^{\top} b_{\text{fill}},
+```
+
+where $b_{\text{fill}}$ is the raw DCT output padded to the full mode
+count. For `R0/R0` the correction is the zero vector and no work is
+done; for single-ended Dirichlet or Neumann the correction is rank-1;
+for Neumann at one or both ends Springsteel falls back to the full
+matrix form. This is a **coefficient-modification** scheme — the
+boundary rows of the spectral-to-physical evaluation are not
+rewritten, unlike the solver-framework row-replacement path described
+below.
+
+The Wang et al. (1993) reference:
+
+> Wang, H., Lacroix, S., & Labrosse, G. (1993). *A Chebyshev
+> collocation method for the Stokes problem with application to the
+> driven cavity.* Journal of Computational Physics, 106(1), 7–24.
+> [doi:10.1006/jcph.1993.1133](https://doi.org/10.1006/jcph.1993.1133)
+
+!!! note "Supported BCs only"
+    Only `R0`, `R1T0`, and `R1T1` currently work at the transform
+    level. The Ooyama higher-rank constants
+    [`Chebyshev.R1T2`](@ref), [`Chebyshev.R2T10`](@ref),
+    [`Chebyshev.R2T20`](@ref), and [`Chebyshev.R3`](@ref) are exported
+    for naming symmetry with `CubicBSpline` but throw `DomainError` at
+    grid construction. Inhomogeneous (non-zero) Dirichlet / Neumann
+    values are also not yet implemented. See the
+    [Contributing](contributing.md) roadmap.
+
+#### Solver-level BC enforcement (separate path)
+
+When the [Solver Framework](solver.md) assembles an explicit operator
+matrix $\mathbf{L}$ for a `SpringsteelProblem`, it layers a *second*
+BC mechanism on top of the transform-level `gammaBC`: the boundary
+rows of $\mathbf{L}$ are replaced with evaluation rows (for Dirichlet)
+or first-derivative rows (for Neumann) at the two boundary CGL nodes
+$x_0$ and $x_N$, and the RHS at those rows is set to the BC value.
+This row-replacement path handles the same R1T0 / R1T1 conditions as
+the transform path — it does not add support for R1T2 or the higher
+ranks. Both paths run for any problem built through the solver
+framework; for base transforms (`spectralTransform!` /
+`gridTransform!`) only the transform-level path applies.
 
 ### References
 

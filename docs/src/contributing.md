@@ -399,6 +399,17 @@ implications in v1.0.
   reference implementation — once that parity test is solid, the
   `Chebyshev.bvp` / `bvp_modified_basis` / `bvp_basis` reference
   functions become candidates for deprecation in v1.2+.
+- **Implement the missing Chebyshev BC types**: the constants
+  `Chebyshev.R1T2`, `Chebyshev.R2T10`, `Chebyshev.R2T20`, and
+  `Chebyshev.R3` are exported for symmetry with `CubicBSpline` but
+  are not wired into `_bc_type` / `calcGammaBC`; using them throws
+  `DomainError` at grid construction. The transform-level path needs
+  either a coefficient-correction formulation (following the Wang et
+  al. 1993 / Ooyama 2002 style) or a row-replacement approach in the
+  solver framework. Inhomogeneous Dirichlet / Neumann values (non-zero
+  `DirichletBC(v)` / `NeumannBC(v)`) on Chebyshev dimensions are a
+  related missing piece — the current Wang et al. path assumes
+  homogeneous conditions.
 
 ## See also
 

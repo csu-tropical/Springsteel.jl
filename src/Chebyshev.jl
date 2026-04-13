@@ -19,8 +19,13 @@ const uint = UInt64
 # The *rank* r is the number of constraints imposed at the boundary.
 # The *type* t identifies which derivative is constrained
 # (T0 = value, T1 = first derivative, T2 = second derivative).
-# Not all B-spline BCs are available for Chebyshev; only R0 through R2 variants
-# and R3 are supported. Inhomogeneous conditions are not yet implemented.
+#
+# Only R0, R1T0, and R1T1 are currently implemented. R1T2, R2T10, R2T20,
+# and R3 are exported as Dict aliases for symmetry with the CubicBSpline
+# naming but hit the `else` branch of `_bc_type` and throw `DomainError`
+# at grid construction if used. Implementing them is a v1.1+ task —
+# see the Contributing page in the documentation.
+# Inhomogeneous conditions are not yet implemented.
 
 """
 Rank-0 boundary condition (Ooyama 2002, Eq. 3.2a): **no constraint** at the
@@ -46,6 +51,13 @@ const R1T1 = Dict("α1" =>  0.0)
 """
 Rank-1, type-2 boundary condition (Ooyama 2002, Eq. 3.2d): **zero second
 derivative** at the boundary, ``u''(z_0) = 0``.
+
+!!! warning "Not yet implemented"
+    Exported for symmetry with the `CubicBSpline` BC naming, but the
+    Chebyshev transform does not currently handle this case — using it
+    as `BCB` or `BCT` throws a `DomainError` at grid construction.
+    Tracked in the v1.1+ roadmap. Use [`R0`](@ref), [`R1T0`](@ref), or
+    [`R1T1`](@ref) instead.
 """
 const R1T2 = Dict("α2" =>  0.0)
 
@@ -53,6 +65,10 @@ const R1T2 = Dict("α2" =>  0.0)
 Rank-2, type-1-0 boundary condition (Ooyama 2002, Eq. 3.2f): **zero value and
 zero first derivative** at the boundary, ``u(z_0) = u'(z_0) = 0``.
 Appropriate for a symmetrically reflecting boundary.
+
+!!! warning "Not yet implemented"
+    Exported for naming symmetry only — throws `DomainError` at grid
+    construction. See [`R1T2`](@ref) for the full story.
 """
 const R2T10 = Dict("β1" => 0.0, "β2" => 0.0)
 
@@ -60,6 +76,10 @@ const R2T10 = Dict("β1" => 0.0, "β2" => 0.0)
 Rank-2, type-2-0 boundary condition (Ooyama 2002, Eq. 3.2g): **zero value and
 zero second derivative** at the boundary, ``u(z_0) = u''(z_0) = 0``.
 Forces the field to be **antisymmetric** with respect to the boundary.
+
+!!! warning "Not yet implemented"
+    Exported for naming symmetry only — throws `DomainError` at grid
+    construction. See [`R1T2`](@ref) for the full story.
 """
 const R2T20 = Dict("β1" => 0.0, "β2" => 0.0)
 
@@ -67,7 +87,12 @@ const R2T20 = Dict("β1" => 0.0, "β2" => 0.0)
 Rank-3 boundary condition (Ooyama 2002, Eq. 3.2h): **zero value, zero first
 derivative, and zero second derivative** at the boundary,
 ``u(z_0) = u'(z_0) = u''(z_0) = 0``. Eliminates all three border
-coefficients. Relevant for domain-nesting inhomogeneous BCs (future work)."""
+coefficients. Relevant for domain-nesting inhomogeneous BCs (future work).
+
+!!! warning "Not yet implemented"
+    Exported for naming symmetry only — throws `DomainError` at grid
+    construction. See [`R1T2`](@ref) for the full story.
+"""
 const R3 = Dict("R3" => 0)
 
 """
@@ -87,8 +112,13 @@ mapped to the physical range. This gives spectral accuracy for smooth functions.
 - `bDim::Int64`: Number of retained Chebyshev modes. When `bDim < zDim` a sharp truncation
   matrix is applied; when `bDim == zDim` an exponential Eresman damping filter
   `exp(−36*(k/N)^36)` is used instead.
-- `BCB::Dict`: Bottom boundary condition. One of [`R0`](@ref), [`R1T0`](@ref),
-  [`R1T1`](@ref), [`R1T2`](@ref), [`R2T10`](@ref), [`R2T20`](@ref), [`R3`](@ref).
+- `BCB::Dict`: Bottom boundary condition. Currently supported values are
+  [`R0`](@ref) (natural), [`R1T0`](@ref) (homogeneous Dirichlet), and
+  [`R1T1`](@ref) (homogeneous Neumann via the Wang et al. 1993 global
+  coefficient method). The higher-rank constants [`R1T2`](@ref),
+  [`R2T10`](@ref), [`R2T20`](@ref), and [`R3`](@ref) are exported for
+  naming symmetry with `CubicBSpline` but are not yet implemented and
+  throw `DomainError` at grid construction.
 - `BCT::Dict`: Top boundary condition dict (same options as `BCB`).
 
 # Notes
