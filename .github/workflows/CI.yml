@@ -32,11 +32,14 @@ jobs:
           - x64
         group:
           - basis
+          - banded_cholesky
           - grids
           - transforms
           - tiling
           - io
           - solver
+          - solver_problem
+          - operator_algebra
           - mubar
           - interpolation
           - filtering
@@ -44,6 +47,8 @@ jobs:
           - bc
           - multipatch
           - tile_multipatch
+          - basis_cache
+          - relocation
     steps:
       - uses: actions/checkout@v4
 
