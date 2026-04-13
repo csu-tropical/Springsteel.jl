@@ -106,11 +106,23 @@ gridTransform!(grid)
 
 ## Documentation Contents
 
+### User guides
+
 - **[Tutorial](tutorial.md)** — step-by-step examples with 1D, 2D, and 3D grids
-- **[API Reference](springsteel_grid.md)** — complete API for `SpringsteelGrid`, transforms, tiling, and I/O
+- **[SpringsteelGrid](springsteel_grid.md)** — core grid type, `createGrid`, transforms, tiling, and I/O
+- **[Boundary Conditions](boundary_conditions.md)** — `BoundaryConditions` type system and convenience constructors
+- **[Solver Framework](solver.md)** — operator algebra DSL, `solve` / `solve!`, backends, block systems
+- **[Multi-Patch Grids](multipatch.md)** — chained and embedded B-spline patches with R3X coupling
+- **[Interpolation](interpolation.md)** — data import, same-geometry and cross-geometry interpolation
+- **[Grid Relocation](relocation.md)** — RL/RLZ coordinate-shift for vortex-tracking workflows
+- **[Spectral Filtering](filtering.md)** — wavenumber-domain filters for Fourier and Chebyshev bases
+
+### Basis modules
+
 - **[CubicBSpline](cubicbspline.md)** — cubic B-spline basis module
 - **[Fourier](fourier.md)** — Fourier basis module
 - **[Chebyshev](chebyshev.md)** — Chebyshev polynomial basis module
-- **[Testing Guide](testing_guide.md)** — test patterns and conventions
-- **[Documentation Guide](documentation_guide.md)** — docstring standards
-- **[Developer Notes](developer_notes.md)** — architecture invariants, known traps, race-condition rules, spectral array layouts
+
+### For contributors
+
+- **[Contributing](contributing.md)** — development workflow, test conventions, architecture invariants, and v1.1+ roadmap
