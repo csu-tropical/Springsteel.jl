@@ -162,8 +162,7 @@ using LinearAlgebra
             M = operator_matrix(grid, :i, 0, "u")
             f = ones(gp.iDim)
             prob = SpringsteelProblem(grid; operator=M, rhs=f)
-            @test prob.operator === M
-            @test prob.rhs === f
+            @test prob.workspace !== nothing
             @test prob.backend isa LocalLinearBackend
             @test prob.cost === nothing
         end
@@ -298,21 +297,22 @@ using LinearAlgebra
 
             L = assemble_from_equation(grid, "u"; d_ii=1.0)
 
-            # Solve with first RHS
+            # Two legacy kwarg problems sharing the same operator: each
+            # builds its own workspace with a cached factorisation under
+            # the v1.0 unified API. (Pre-v1.0 shared factorisation through
+            # a parameters dict; that path is obsolete — use the Pair-based
+            # constructor + repeated solve! for cross-RHS reuse.)
             f1 = -π^2 .* sin.(π .* pts)
-            params = Dict{String, Any}()
-            prob1 = SpringsteelProblem(grid; operator=L, rhs=f1, parameters=params)
+            prob1 = SpringsteelProblem(grid; operator=L, rhs=f1)
             sol1 = solve(prob1)
             @test sol1.converged == true
+            @test prob1.workspace.factorization !== nothing
 
-            # Solve again with different RHS (reuses factorisation)
             f2 = -(2π)^2 .* sin.(2π .* pts)
-            prob2 = SpringsteelProblem(grid; operator=L, rhs=f2, parameters=params)
+            prob2 = SpringsteelProblem(grid; operator=L, rhs=f2)
             sol2 = solve(prob2)
             @test sol2.converged == true
-
-            # Verify factorisation was cached
-            @test haskey(params, "_factorisation")
+            @test prob2.workspace.factorization !== nothing
         end
 
     end  # Linear Solver

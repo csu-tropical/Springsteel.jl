@@ -11,7 +11,6 @@ function Springsteel.solve(prob::SpringsteelProblem{OptimizationBackend})
     grid = prob.grid
     backend = prob.backend
     cost_fn = prob.cost
-    info = Dict{String, Any}()
 
     # Initial guess: current spectral coefficients (flattened)
     u0 = copy(grid.spectral[:, 1])
@@ -38,19 +37,27 @@ function Springsteel.solve(prob::SpringsteelProblem{OptimizationBackend})
 
     # Extract solution
     a = opt_sol.u
-    grid.spectral[:, 1] .= a
 
     # Compute physical values
     var = get(prob.parameters, "var", "")
+    var_name = isempty(var) ? first(keys(grid.params.vars)) : var
     M_eval = Springsteel.assemble_operator(
         grid, [Springsteel.OperatorTerm(0, 0, 0, nothing)], var)
     phys = M_eval * a
 
     converged = (opt_sol.retcode == Optimization.SciMLBase.ReturnCode.Success)
-    info["retcode"] = string(opt_sol.retcode)
-    info["minimum"] = opt_sol.objective
 
-    return Springsteel.SpringsteelSolution(grid, a, phys, converged, info)
+    # Narrow the source grid to the solved variable and write results into
+    # the copy (leaves `grid` untouched — non-mutating contract of `solve`).
+    sol_grid = Springsteel._subgrid_for_solution(grid, [var_name])
+    @inbounds for r in 1:length(phys)
+        sol_grid.physical[r, 1, 1] = phys[r]
+    end
+    @inbounds for r in 1:length(a)
+        sol_grid.spectral[r, 1] = a[r]
+    end
+
+    return Springsteel.SpringsteelSolution(sol_grid, 1, converged)
 end
 
 end # module

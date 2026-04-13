@@ -1141,3 +1141,88 @@ function createGrid(gp::SpringsteelGridParameters)
             "Unknown geometry for SpringsteelGrid: $(gp.geometry)"))
     end
 end
+
+# ────────────────────────────────────────────────────────────────────────────
+# _subgrid_for_solution — narrow a grid's params to a subset of variables
+# ────────────────────────────────────────────────────────────────────────────
+
+# Narrow a per-variable Dict (keyed by variable name, with optional "default"
+# fallback) to just the entries for `var_names`. Missing keys fall back to
+# the "default" value if present. The "default" key itself is preserved so
+# downstream lookups still work for any variables added later.
+function _narrow_var_dict(d::Dict, var_names::Vector{String})
+    out = empty(d)
+    for name in var_names
+        if haskey(d, name)
+            out[name] = d[name]
+        elseif haskey(d, "default")
+            out[name] = d["default"]
+        end
+    end
+    haskey(d, "default") && (out["default"] = d["default"])
+    return out
+end
+
+"""
+    _subgrid_for_solution(grid, var_names::Vector{String}) -> SpringsteelGrid
+
+Construct a new `SpringsteelGrid` that shares geometry and basis parameters
+with `grid` but whose `physical` / `spectral` arrays hold only the variables
+named in `var_names`. Each name is renumbered to a 1-based slot in the
+returned grid.
+
+Used by `solve` to package non-mutating solution results: the returned grid
+is independent of `grid` (its `physical` / `spectral` arrays are fresh
+allocations), so writing solution values into it never touches the input
+grid. Basis template caching means construction is sub-millisecond for
+typical grid sizes.
+"""
+function _subgrid_for_solution(grid::SpringsteelGrid, var_names::Vector{String})
+    isempty(var_names) && throw(ArgumentError("var_names must not be empty"))
+    p = grid.params
+    for name in var_names
+        haskey(p.vars, name) || throw(ArgumentError(
+            "Variable `$name` not found in grid.params.vars"))
+    end
+    new_vars = Dict{String, Int}(name => i for (i, name) in enumerate(var_names))
+
+    new_p = SpringsteelGridParameters(
+        geometry       = p.geometry,
+        iMin           = p.iMin,
+        iMax           = p.iMax,
+        num_cells      = p.num_cells,
+        mubar          = p.mubar,
+        quadrature     = p.quadrature,
+        iDim           = p.iDim,
+        b_iDim         = p.b_iDim,
+        l_q            = _narrow_var_dict(p.l_q, var_names),
+        BCL            = _narrow_var_dict(p.BCL, var_names),
+        BCR            = _narrow_var_dict(p.BCR, var_names),
+        jMin           = p.jMin,
+        jMax           = p.jMax,
+        max_wavenumber = _narrow_var_dict(p.max_wavenumber, var_names),
+        jDim           = p.jDim,
+        b_jDim         = p.b_jDim,
+        BCU            = _narrow_var_dict(p.BCU, var_names),
+        BCD            = _narrow_var_dict(p.BCD, var_names),
+        kMin           = p.kMin,
+        kMax           = p.kMax,
+        kDim           = p.kDim,
+        b_kDim         = p.b_kDim,
+        BCB            = _narrow_var_dict(p.BCB, var_names),
+        BCT            = _narrow_var_dict(p.BCT, var_names),
+        vars           = new_vars,
+        fourier_filter = _narrow_var_dict(p.fourier_filter, var_names),
+        chebyshev_filter = _narrow_var_dict(p.chebyshev_filter, var_names),
+        spectralIndexL = p.spectralIndexL,
+        spectralIndexR = p.spectralIndexR,
+        patchOffsetL   = p.patchOffsetL,
+        patchOffsetR   = p.patchOffsetR,
+        tile_num       = p.tile_num,
+        i_regular_out  = p.i_regular_out,
+        j_regular_out  = p.j_regular_out,
+        k_regular_out  = p.k_regular_out,
+    )
+
+    return createGrid(new_p)
+end

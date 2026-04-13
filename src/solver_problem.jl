@@ -20,16 +20,20 @@ import Krylov
 
 """
     SpringsteelField(grid, var_name::AbstractString)
+    SpringsteelField(var_name::AbstractString, var_idx::Int)
 
-Bind a grid variable to a handle that can be used as the unknown in operator
+Handle for a grid variable that can stand in as the unknown in operator
 algebra (`L * u => rhs`). `Field` is an exported alias.
 
-Holds a reference to `grid`, the variable name, and its integer slot index in
-`grid.params.vars`. Boundary conditions come from the grid's per-variable BC
-spec — there is no separate BC argument.
+Holds only the variable's name and its integer slot index — no grid
+reference. The primary constructor takes a grid to resolve the slot from
+`grid.params.vars`, but the resulting `Field` is independent of that grid
+and can be reused across grids with the same variable schema.
+
+Boundary conditions come from the grid's per-variable BC spec at problem
+construction time, not from the `Field` itself.
 """
 struct SpringsteelField
-    grid::AbstractGrid
     var_name::String
     var_idx::Int
 end
@@ -38,7 +42,7 @@ function SpringsteelField(grid::AbstractGrid, var_name::AbstractString)
     vname = String(var_name)
     haskey(grid.params.vars, vname) ||
         throw(ArgumentError("Variable `$(vname)` not found in grid.params.vars"))
-    return SpringsteelField(grid, vname, grid.params.vars[vname])
+    return SpringsteelField(vname, grid.params.vars[vname])
 end
 
 const Field = SpringsteelField
@@ -310,8 +314,8 @@ function SpringsteelProblem(grid::AbstractGrid,
         "same field — got $(length(fields)). For block systems pass a " *
         "Vector{Pair} instead."))
     field = fields[1]
-    field.grid === grid ||
-        throw(ArgumentError("SpringsteelField.grid does not match problem grid"))
+    haskey(grid.params.vars, field.var_name) || throw(ArgumentError(
+        "Field variable `$(field.var_name)` not present in grid.params.vars"))
 
     backend_inst = _resolve_backend(backend, grid)
     backend_inst = _attach_preconditioner(backend_inst, preconditioner)
@@ -323,8 +327,7 @@ function SpringsteelProblem(grid::AbstractGrid,
     lowered = _lower(combined, grid)
     ws = _build_local_linear_workspace(grid, field, lowered, rhs0, backend_inst)
 
-    return SpringsteelProblem(grid, nothing, nothing, nothing,
-                               Dict{String, Any}(), backend_inst, ws)
+    return SpringsteelProblem(grid, backend_inst, ws, nothing, Dict{String, Any}())
 end
 
 """
@@ -352,8 +355,8 @@ function SpringsteelProblem(grid::AbstractGrid,
     # Collect unique fields across all equations, in first-appearance order.
     fields = SpringsteelField[]
     for eq in eqs, t in eq.first.terms
-        t.field.grid === grid ||
-            throw(ArgumentError("SpringsteelField.grid does not match problem grid"))
+        haskey(grid.params.vars, t.field.var_name) || throw(ArgumentError(
+            "Field variable `$(t.field.var_name)` not present in grid.params.vars"))
         if !any(f -> f.var_idx == t.field.var_idx, fields)
             push!(fields, t.field)
         end
@@ -365,8 +368,7 @@ function SpringsteelProblem(grid::AbstractGrid,
 
     ws = _build_block_linear_workspace(grid, fields, eqs, backend_inst)
 
-    return SpringsteelProblem(grid, nothing, nothing, nothing,
-                               Dict{String, Any}(), backend_inst, ws)
+    return SpringsteelProblem(grid, backend_inst, ws, nothing, Dict{String, Any}())
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -378,10 +380,23 @@ function _build_local_linear_workspace(grid::AbstractGrid,
                                         terms::Vector{OperatorTerm},
                                         rhs_source,
                                         backend::AbstractSolverBackend)
+    L_base = assemble_operator(grid, terms, field.var_name)
+    return _build_local_linear_workspace(grid, field, L_base, rhs_source, backend)
+end
+
+# Variant that accepts a pre-assembled operator matrix. Used by the legacy
+# kwarg-form `SpringsteelProblem(grid; operator=L, rhs=f)` constructor, which
+# hands in a user-built matrix rather than an operator-algebra expression.
+# Post-assembly steps (ahat, gammaBC fold, BC row detection, factorisation,
+# scratch allocation) are identical to the terms-based path.
+function _build_local_linear_workspace(grid::AbstractGrid,
+                                        field::SpringsteelField,
+                                        L_base::Matrix{Float64},
+                                        rhs_source,
+                                        backend::AbstractSolverBackend)
     var = field.var_name
     var_idx = field.var_idx
 
-    L_base = assemble_operator(grid, terms, var)
     n_phys = size(L_base, 1)
 
     # R3X ahat background
@@ -405,14 +420,16 @@ function _build_local_linear_workspace(grid::AbstractGrid,
     L_tmp = copy(L_base)
     L_bc, f_bc0, _ = _apply_all_bcs(grid, L_tmp, f_tmp, var_idx, var)
 
-    # Recover BC row indices + values by diffing f_bc0 against the pre-BC
-    # baseline (which was just -ahat_correction, i.e. zeros or the R3X
-    # correction). Any row whose value was replaced sits in bc_rows.
-    baseline = ahat_correction === nothing ? zeros(n_phys) : (-ahat_correction)
+    # Recover BC row indices + values by comparing the operator row before
+    # and after `_apply_all_bcs`. Operator-side detection catches homogeneous
+    # Dirichlet / Neumann BCs that an f-diff baseline misses (the f-value at
+    # a homogeneous BC row equals the baseline, so f-diff returns zero rows).
+    # BC values themselves come from f_bc0[r], which _apply_all_bcs writes as
+    # `bc_val - ahat_correction[r]` when ahat is present.
     bc_rows  = Int[]
     bc_values = Float64[]
     @inbounds for r in 1:n_phys
-        if f_bc0[r] != baseline[r]
+        if _row_is_bc(L_bc, L_base, r, gammaBC_T)
             push!(bc_rows, r)
             push!(bc_values, f_bc0[r])
         end
@@ -463,6 +480,15 @@ end
 
 # The hot path: stateful solve using cached workspace.
 function _solve_local_linear!(prob::SpringsteelProblem, ws::LocalLinearWorkspace)
+    _compute_local_linear!(prob, ws)
+    _writeback_local_linear!(prob.grid, ws)
+    return prob
+end
+
+# Steps 1-5: compute into `ws.a_raw` and `ws.phys_out`. No writeback.
+# Shared by both `solve!` (mutating) and `solve` (non-mutating, writes the
+# result into a narrowed solution grid instead of the source grid).
+function _compute_local_linear!(prob::SpringsteelProblem, ws::LocalLinearWorkspace)
     grid = prob.grid
     n_phys = ws.n_phys
 
@@ -491,15 +517,23 @@ function _solve_local_linear!(prob::SpringsteelProblem, ws::LocalLinearWorkspace
             ws.phys_out[r] += ws.phys_ahat[r]
         end
     end
+    return nothing
+end
 
-    # 6) Writeback into grid.physical[:, var_idx, 1]
-    var_idx = ws.field.var_idx
-    phys = grid.physical
+# Step 6: write `ws.phys_out` into `target_grid.physical[:, var_idx, 1]`.
+# `target_grid` may be the source grid (mutating solve!) or a narrowed copy.
+# `var_idx` defaults to the workspace's original field index, which is valid
+# for the source grid; callers writing into a narrowed copy should pass the
+# variable's slot in that copy explicitly.
+function _writeback_local_linear!(target_grid::AbstractGrid,
+                                   ws::LocalLinearWorkspace,
+                                   var_idx::Int = ws.field.var_idx)
+    n_phys = ws.n_phys
+    phys = target_grid.physical
     @inbounds for r in 1:n_phys
         phys[r, var_idx, 1] = ws.phys_out[r]
     end
-
-    return prob
+    return nothing
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -707,6 +741,13 @@ function _row_is_bc(L_bc::Matrix{Float64}, L_raw::Matrix{Float64}, r::Int,
 end
 
 function _solve_block_linear!(prob::SpringsteelProblem, ws::BlockLinearWorkspace)
+    _compute_block_linear!(prob, ws)
+    _writeback_block_linear!(prob.grid, ws)
+    return prob
+end
+
+# Steps 1-3 + per-unknown physical recovery into `ws.phys_out`. No writeback.
+function _compute_block_linear!(prob::SpringsteelProblem, ws::BlockLinearWorkspace)
     grid   = prob.grid
     n_phys = ws.n_phys
     n_eq   = ws.n_eq
@@ -725,17 +766,87 @@ function _solve_block_linear!(prob::SpringsteelProblem, ws::BlockLinearWorkspace
     # 3) Backsolve
     _backsolve!(ws.a_raw, ws.factorization, ws.f_work)
 
-    # 4) Per-unknown physical recovery + writeback
-    phys_mat = grid.physical
+    # 4) Per-unknown physical recovery into phys_out (no writeback)
     @inbounds for j in 1:n_eq
         cols = (ws.col_offsets[j] + 1):ws.col_offsets[j + 1]
         @views a_j = ws.a_raw[cols]
         @views phys_j = ws.phys_out[:, j]
         mul!(phys_j, ws.M_evals[j], a_j)
-        var_idx = ws.fields[j].var_idx
+    end
+    return nothing
+end
+
+# Writeback each unknown's phys_out column into its variable slot on the
+# target grid. The caller chooses whether to pass the source grid (mutating
+# solve!) or a narrowed copy (non-mutating solve).
+# `var_idx_map` may be supplied when writing into a narrowed grid whose var
+# slots differ from the workspace's original field indices; its length must
+# equal the number of equations.
+function _writeback_block_linear!(target_grid::AbstractGrid,
+                                   ws::BlockLinearWorkspace,
+                                   var_idx_map::Union{Nothing, Vector{Int}} = nothing)
+    n_phys = ws.n_phys
+    n_eq   = ws.n_eq
+    phys_mat = target_grid.physical
+    @inbounds for j in 1:n_eq
+        var_idx = var_idx_map === nothing ? ws.fields[j].var_idx : var_idx_map[j]
+        @views phys_j = ws.phys_out[:, j]
         for r in 1:n_phys
             phys_mat[r, var_idx, 1] = phys_j[r]
         end
     end
-    return prob
+    return nothing
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# _solve_to_snapshot — non-mutating solve path used by `solve(prob)`
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Compute into the cached workspace scratch, narrow-copy the source grid to a
+# fresh solution grid holding only the solved field(s), and write results
+# into that copy. Returns a SpringsteelSolution whose `grid` is independent
+# of `prob.grid` — non-mutating contract for users who prefer the returned
+# Solution object over the in-place solve! idiom.
+
+function _solve_to_snapshot(prob::SpringsteelProblem, ws::LocalLinearWorkspace)
+    _compute_local_linear!(prob, ws)
+
+    var_name = ws.field.var_name
+    sol_grid = _subgrid_for_solution(prob.grid, [var_name])
+    _writeback_local_linear!(sol_grid, ws, 1)
+
+    # Reconstruct full-spectral coefficients (unfold gammaBC + ahat) and
+    # write them into the solution grid's spectral slot so `sol.coefficients`
+    # views match what legacy `solve` used to return.
+    a = ws.gammaBC_T === nothing ? copy(ws.a_raw) : ws.gammaBC_T * ws.a_raw
+    if ws.ahat_total !== nothing
+        a .+= ws.ahat_total
+    end
+    @inbounds for r in 1:size(sol_grid.spectral, 1)
+        sol_grid.spectral[r, 1] = a[r]
+    end
+
+    return SpringsteelSolution(sol_grid, 1, true)
+end
+
+function _solve_to_snapshot(prob::SpringsteelProblem, ws::BlockLinearWorkspace)
+    _compute_block_linear!(prob, ws)
+
+    var_names = [f.var_name for f in ws.fields]
+    sol_grid = _subgrid_for_solution(prob.grid, var_names)
+    _writeback_block_linear!(sol_grid, ws, collect(1:length(var_names)))
+
+    # Per-unknown spectral reconstruction. Block systems don't currently
+    # support R3X ahat, and gammaBC is per-unknown.
+    for j in 1:ws.n_eq
+        cols = (ws.col_offsets[j] + 1):ws.col_offsets[j+1]
+        @views a_j_reduced = ws.a_raw[cols]
+        gT = ws.gammaBC_Ts[j]
+        a_j_full = gT === nothing ? Vector{Float64}(a_j_reduced) : gT * a_j_reduced
+        @inbounds for r in 1:length(a_j_full)
+            sol_grid.spectral[r, j] = a_j_full[r]
+        end
+    end
+
+    return SpringsteelSolution(sol_grid, 1, true)
 end

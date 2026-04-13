@@ -59,51 +59,58 @@ end
     AbstractSolverBackend
 
 Abstract supertype for solver backend sentinel types. Concrete subtypes select the
-algorithm used by [`solve`](@ref).
+algorithm used by [`solve`](@ref) / [`solve!`](@ref).
 
-See also: [`LocalLinearBackend`](@ref), [`OptimizationBackend`](@ref)
+See also: [`AbstractLinearBackend`](@ref), [`OptimizationBackend`](@ref)
 """
 abstract type AbstractSolverBackend end
 
 """
-    LocalLinearBackend <: AbstractSolverBackend
+    AbstractLinearBackend <: AbstractSolverBackend
 
-Backend sentinel for the built-in local linear solver. Uses LU factorisation
-via `\\` to solve ``\\mathbf{L} \\mathbf{a} = \\mathbf{f}``.
+Supertype for backends that solve linear systems ``\\mathbf{L}\\mathbf{a}=\\mathbf{f}``
+through the cached workspace path. Current concrete subtypes:
+[`LocalLinearBackend`](@ref), [`SparseLinearBackend`](@ref), [`KrylovLinearBackend`](@ref).
 
-See also: [`solve`](@ref), [`SpringsteelProblem`](@ref)
+`solve` and `solve!` share a single implementation across all
+`AbstractLinearBackend`s — they differ only in the factorisation strategy
+and (for Krylov) the preconditioner plumbing.
 """
-struct LocalLinearBackend <: AbstractSolverBackend end
-
-"""
-    SparseLinearBackend <: AbstractSolverBackend
-
-Backend sentinel for the sparse LU solver path used by the Pair-based
-`SpringsteelProblem` constructor (S4a of the solver refactor). The assembled
-operator is converted to a `SparseMatrixCSC` and factorised via
-`SparseArrays.lu`, so the cached factor stays small for the structurally
-sparse operators that come out of B-spline / Fourier / Chebyshev tensor
-products. The `solve!` hot path is identical to the dense backend — only
-the factorisation type differs.
-"""
-struct SparseLinearBackend <: AbstractSolverBackend end
+abstract type AbstractLinearBackend <: AbstractSolverBackend end
 
 """
-    KrylovLinearBackend(; preconditioner=nothing) <: AbstractSolverBackend
+    LocalLinearBackend <: AbstractLinearBackend
 
-Backend sentinel for the Krylov-iterative solver path (S4b of the solver
-refactor). Uses `Krylov.gmres` for square systems and `Krylov.lsmr` for
-rectangular (overdetermined) ones. The optional `preconditioner` is passed
-through as the `M` (left) kwarg to Krylov; S4c extends this with a default
-diagonal preconditioner helper.
-
-Note for v1.0: this backend still builds the assembled sparse operator
-(same as `SparseLinearBackend`) — the truly-matrix-free path that avoids
-the `kron` materialisation is deferred to a future phase. The immediate
-win here is adding the iterative-solver option and the preconditioner
-plumbing for ill-conditioned problems.
+Dense LU factorisation backend. Best for small, dense systems — typically
+pure-Chebyshev grids where structural sparsity is limited.
 """
-struct KrylovLinearBackend <: AbstractSolverBackend
+struct LocalLinearBackend <: AbstractLinearBackend end
+
+"""
+    SparseLinearBackend <: AbstractLinearBackend
+
+Sparse LU factorisation backend. The assembled operator is converted to a
+`SparseMatrixCSC` and factorised via `SparseArrays.lu`, so the cached factor
+stays small for the structurally sparse operators that come out of
+B-spline / Fourier / Chebyshev tensor products. The `solve!` hot path is
+identical to the dense backend — only the factorisation type differs.
+"""
+struct SparseLinearBackend <: AbstractLinearBackend end
+
+"""
+    KrylovLinearBackend(; preconditioner=nothing) <: AbstractLinearBackend
+
+Krylov iterative backend. Uses `Krylov.gmres` for square systems and
+`Krylov.lsmr` for rectangular ones. The optional `preconditioner` is passed
+through as the `M` (left) kwarg to Krylov.
+
+v1.0 note: this backend still builds the assembled sparse operator (same
+as `SparseLinearBackend`) — the truly-matrix-free path that avoids the
+`kron` materialisation is deferred to a future phase. The immediate win
+here is the iterative-solver option and preconditioner plumbing for
+ill-conditioned problems.
+"""
+struct KrylovLinearBackend <: AbstractLinearBackend
     preconditioner::Any
 end
 
@@ -136,35 +143,40 @@ OptimizationBackend(alg::Symbol) = OptimizationBackend(alg, Dict{String, Any}())
 """
     SpringsteelProblem{B <: AbstractSolverBackend}
 
-Composite type bundling a grid, linear operator or cost functional, and solver
-backend specification.
+Bundled grid + cached solver state for a linear or optimisation problem.
+
+For linear-backend problems (the common path), `workspace` holds the
+compiled operator, gammaBC fold, BC row indices, factorisation, and solve
+scratch buffers — built once at construction time and reused by every
+subsequent `solve` / `solve!`. For `OptimizationBackend`, `workspace` is
+`nothing` and `cost` / `parameters` carry the problem description.
 
 # Fields
-- `grid::AbstractGrid`: The discretised domain
-- `operator::Union{Matrix{Float64}, Nothing}`: Assembled linear operator (linear problems)
-- `rhs::Union{Vector{Float64}, Nothing}`: Right-hand side vector (linear problems)
-- `cost::Union{Function, Nothing}`: Cost functional ``J(u, p)`` (optimisation problems)
-- `parameters::Dict{String, Any}`: Problem parameters passed to the solver
-- `backend::B`: Solver backend sentinel
+- `grid`: the discretised domain
+- `backend`: solver backend sentinel
+- `workspace`: cached linear-solve state (`nothing` for Optimization)
+- `cost`: cost functional ``J(u, p)`` (Optimization only)
+- `parameters`: kwargs bag passed through to Optimization cost callbacks
 
-# Example
+# Constructors
 ```julia
+# v1.0 operator-algebra form (preferred)
+u = Field(grid, "u")
+prob = SpringsteelProblem(grid, (∂_x^2 + ∂_y^2) * u => :rhs_var)
+
+# Legacy kwarg form — user-assembled operator and RHS
 prob = SpringsteelProblem(grid; operator=L, rhs=f)
-sol = solve(prob)
 ```
 
-See also: [`solve`](@ref), [`SpringsteelSolution`](@ref), [`assemble_operator`](@ref)
+See also: [`solve`](@ref), [`solve!`](@ref), [`SpringsteelSolution`](@ref),
+[`assemble_operator`](@ref)
 """
 mutable struct SpringsteelProblem{B <: AbstractSolverBackend}
     grid::AbstractGrid
-    operator::Union{Matrix{Float64}, Nothing}
-    rhs::Union{Vector{Float64}, Nothing}
-    cost::Union{Function, Nothing}
-    parameters::Dict{String, Any}
     backend::B
-    # S2 stateful workspace — `nothing` for legacy kwarg-constructed problems,
-    # populated for Pair-constructed problems via solver_problem.jl.
-    workspace::Any
+    workspace::Any       # populated for linear-backend problems; `nothing` for Optimization
+    cost::Union{Function, Nothing}     # Optimization-only
+    parameters::Dict{String, Any}      # Optimization kwargs bag
 end
 
 """
@@ -172,26 +184,30 @@ end
                        parameters=Dict{String,Any}(),
                        backend=LocalLinearBackend()) -> SpringsteelProblem
 
-Legacy keyword-form constructor for [`SpringsteelProblem`](@ref). Kept for
-backward compatibility with code predating the v1.0 solver refactor.
+Keyword-form constructor. Use this when you have a pre-assembled operator
+matrix `L` and an RHS vector `f`, or when you're configuring an
+`OptimizationBackend` with a cost functional.
 
-!!! note "Prefer the Pair-based constructor"
-    New code should build problems with the operator algebra DSL:
+For linear backends, the workspace (operator fold, BC detection, cached
+factorisation) is built at construction time so repeated `solve` / `solve!`
+calls on the same problem are fast. If you only need one solve, this form
+is as cheap as the Pair-based form. If you're iterating in a time-stepping
+loop with a changing RHS, prefer the Pair-based form — it lets you update
+`grid.physical[:, rhs_idx, 1]` in place and call `solve!` without
+rebuilding anything:
 
-    ```julia
-    u = Field(grid, "u")
-    prob = SpringsteelProblem(grid, (∂ᵢ^2 + ∂ⱼ^2) * u => :f_rhs)
-    solve!(prob)   # stateful, reuses cached factorisation
-    ```
+```julia
+u = Field(grid, "u")
+prob = SpringsteelProblem(grid, (∂_x^2 + ∂_y^2) * u => :rhs_var)
+while stepping
+    grid.physical[:, rhs_idx, 1] .= new_rhs
+    solve!(prob)
+end
+```
 
-    That constructor caches a per-problem workspace (factorisation, eval
-    matrix, BC rows, scratch buffers) so repeated `solve!` calls are
-    allocation-free, and supports block multi-variable systems, backend
-    selection (`:dense` / `:sparse` / `:krylov`), `preconditioner=`, and
-    `Function`/`Symbol` coefficient resolution.
-
-    The legacy form rebuilds everything each call — it's fine for one-shot
-    solves but leaves performance on the table for iterated solves.
+Block multi-variable systems, backend selection (`:dense` / `:sparse` /
+`:krylov`), preconditioners, and `Function` / `Symbol` coefficient
+resolution are only supported through the Pair-based constructor.
 """
 function SpringsteelProblem(grid::AbstractGrid;
     operator::Union{Matrix{Float64}, Nothing} = nothing,
@@ -200,7 +216,26 @@ function SpringsteelProblem(grid::AbstractGrid;
     parameters::Dict{String, Any} = Dict{String, Any}(),
     backend::AbstractSolverBackend = LocalLinearBackend())
 
-    return SpringsteelProblem(grid, operator, rhs, cost, parameters, backend, nothing)
+    # For linear backends with both operator and rhs supplied, build a
+    # workspace on construction so `solve` and `solve!` share the v1.0
+    # workspace path. OptimizationBackend keeps `workspace = nothing` and
+    # takes the minimisation path in the Optimization extension.
+    workspace = nothing
+    if backend isa LocalLinearBackend
+        if operator === nothing || rhs === nothing
+            throw(ArgumentError(
+                "LocalLinearBackend kwarg constructor requires both " *
+                "`operator` and `rhs` — or use the Pair-based constructor"))
+        end
+        var_name = get(parameters, "var", "")
+        if isempty(var_name)
+            var_name = first(keys(grid.params.vars))
+        end
+        field = SpringsteelField(grid, var_name)
+        workspace = _build_local_linear_workspace(grid, field, operator, rhs, backend)
+    end
+
+    return SpringsteelProblem(grid, backend, workspace, cost, parameters)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -210,23 +245,55 @@ end
 """
     SpringsteelSolution
 
-Container for the result of [`solve`](@ref).
+Result of a non-mutating [`solve`](@ref).
+
+A `SpringsteelSolution` owns an independent [`SpringsteelGrid`](@ref) that is
+narrowed to just the solved field(s). The solver writes its output into this
+grid, leaving the grid that was passed to `solve` untouched.
 
 # Fields
-- `grid::AbstractGrid`: The grid (with updated spectral/physical arrays)
-- `coefficients::Vector{Float64}`: Spectral coefficients of the solution
-- `physical::Vector{Float64}`: Physical-space solution values
-- `converged::Bool`: Whether the solver converged
-- `info::Dict{String, Any}`: Solver diagnostics (iterations, residual, etc.)
+- `grid`: narrowed solution grid — an independent copy that only holds the
+  solved variable(s). Can be passed directly to `gridTransform!`,
+  `evaluate_unstructured`, `write_grid`, etc.
+- `var_idx`: slot of the primary solved variable in `grid.physical`
+  (always `1` for single-field problems; for block systems, points at the
+  first field — use `grid.physical[:, idx, 1]` with the block's own var dict
+  to read other unknowns).
+- `converged`: whether the solver converged.
+
+# Property forwards
+
+For backward compatibility and ergonomic access:
+
+- `sol.physical` → `@view grid.physical[:, var_idx, 1]`
+- `sol.coefficients` → `@view grid.spectral[:, var_idx]`
+
+These are views into the owned solution grid, so no data is duplicated.
 
 See also: [`solve`](@ref), [`SpringsteelProblem`](@ref)
 """
-struct SpringsteelSolution
-    grid::AbstractGrid
-    coefficients::Vector{Float64}
-    physical::Vector{Float64}
+struct SpringsteelSolution{G <: AbstractGrid}
+    grid::G
+    var_idx::Int
     converged::Bool
-    info::Dict{String, Any}
+end
+
+function Base.getproperty(sol::SpringsteelSolution, name::Symbol)
+    if name === :physical
+        g = getfield(sol, :grid)
+        vi = getfield(sol, :var_idx)
+        return @view g.physical[:, vi, 1]
+    elseif name === :coefficients
+        g = getfield(sol, :grid)
+        vi = getfield(sol, :var_idx)
+        return @view g.spectral[:, vi]
+    else
+        return getfield(sol, name)
+    end
+end
+
+function Base.propertynames(::SpringsteelSolution, private::Bool=false)
+    return (:grid, :var_idx, :converged, :physical, :coefficients)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -903,103 +970,43 @@ function _replace_boundary_rows!(L::Matrix{Float64}, f::Vector{Float64},
 end
 
 # ────────────────────────────────────────────────────────────────────────────
-# solve — local linear backend
+# solve — non-mutating entry point for any linear backend
 # ────────────────────────────────────────────────────────────────────────────
 
 """
-    solve(prob::SpringsteelProblem{LocalLinearBackend}) -> SpringsteelSolution
-    solve(prob::SpringsteelProblem{OptimizationBackend}) -> SpringsteelSolution
+    solve(prob::SpringsteelProblem) -> SpringsteelSolution
 
-Solve the problem defined by `prob` using the specified backend.
+Non-mutating twin of [`solve!`](@ref). Runs the cached workspace compute
+path, writes the result into a fresh [`SpringsteelGrid`](@ref) narrowed to
+just the solved field(s), and returns a [`SpringsteelSolution`](@ref) that
+owns that grid. The grid originally passed to `SpringsteelProblem` is left
+untouched.
 
-For `LocalLinearBackend`: factorises the operator matrix and solves
-``\\mathbf{L} \\mathbf{a} = \\mathbf{f}`` via LU decomposition. Boundary
-conditions are automatically applied based on the grid's basis types:
+Works on any linear backend that `solve!` supports (`LocalLinearBackend`,
+`SparseLinearBackend`, `KrylovLinearBackend`). For `OptimizationBackend` a
+separate method in the `Optimization.jl` package extension applies.
 
-- **Chebyshev**: boundary rows are replaced with evaluation/derivative
-  constraint rows (Dirichlet or Neumann).
-- **CubicBSpline**: the ``\\boldsymbol{\\Gamma}_{\\mathrm{BC}}`` projection
-  matrix folds boundary constraints into the operator.
-- **Fourier**: periodic BCs are natural; no modification needed.
-
-Supports 1D, 2D, and 3D grids with mixed basis types.
-
-For `OptimizationBackend`: minimises the cost functional ``J(u, p)``
-using the algorithm specified in the backend (requires `Optimization.jl`).
+Use `solve` when you want the solution as a return value bundled with its
+own grid — for single-shot solves, for piping into downstream operations
+like `gridTransform!` / `evaluate_unstructured` / `write_grid`, or when
+preserving the original grid state matters. Use `solve!` when you're
+iterating in a time-stepping loop and want the fastest path with in-place
+updates to `grid.physical`.
 
 # Returns
-- [`SpringsteelSolution`](@ref) containing the spectral coefficients,
-  physical-space solution, convergence flag, and solver diagnostics.
+A [`SpringsteelSolution`](@ref) whose `physical` and `coefficients` are
+views into the owned solution grid.
 
-See also: [`SpringsteelProblem`](@ref), [`assemble_operator`](@ref)
+See also: [`solve!`](@ref), [`SpringsteelProblem`](@ref), [`SpringsteelSolution`](@ref)
 """
-function solve(prob::SpringsteelProblem{LocalLinearBackend})
-    if prob.operator === nothing || prob.rhs === nothing
-        throw(ArgumentError("LocalLinearBackend requires both operator and rhs"))
-    end
-
-    grid = prob.grid
-    L = copy(prob.operator)
-    f = copy(prob.rhs)
-    var = get(prob.parameters, "var", "")
-    var_idx = var == "" ? 1 : grid.params.vars[var]
-    info = Dict{String, Any}()
-
-    try
-        # Build R3X ahat total (before gammaBC folding, since it lives in full space)
-        ahat_total = _build_ahat_total(grid, var_idx)
-
-        # Adjust RHS for inhomogeneous R3X BCs: f -= L * ahat_total
-        if ahat_total !== nothing
-            f .= f .- L * ahat_total
-        end
-
-        # Apply all boundary conditions (Chebyshev rows + Spline gammaBC folding)
-        L, f, gammaBC_T = _apply_all_bcs(grid, L, f, var_idx, var)
-
-        # Check for cached factorisation
-        if haskey(prob.parameters, "_factorisation")
-            F = prob.parameters["_factorisation"]
-        else
-            if size(L, 1) == size(L, 2)
-                F = factorize(L)
-            else
-                # Rectangular system (e.g., after gammaBC folding) — use QR
-                F = qr(L)
-            end
-            prob.parameters["_factorisation"] = F
-        end
-
-        # Solve the system
-        a_raw = F \ f
-        info["factorisation"] = F
-
-        # Recover full spectral coefficients if gammaBC was applied
-        if gammaBC_T !== nothing
-            a = gammaBC_T * a_raw
-        else
-            a = a_raw
-        end
-
-        # Add back the ahat background for R3X
-        if ahat_total !== nothing
-            a = a .+ ahat_total
-        end
-
-        # Compute physical values using the raw (no-BC) evaluation matrix
-        M_eval = assemble_operator(grid, [OperatorTerm(0, 0, 0, nothing)], var)
-        phys = M_eval * a
-
-        return SpringsteelSolution(grid, a, phys, true, info)
-
-    catch e
-        if e isa SingularException || e isa LinearAlgebra.SingularException
-            info["error"] = string(e)
-            n_spec = size(prob.operator, 2)
-            n_phys = size(grid.physical, 1)
-            return SpringsteelSolution(grid, zeros(n_spec), zeros(n_phys), false, info)
-        else
-            rethrow(e)
-        end
-    end
+function solve(prob::SpringsteelProblem{<:AbstractLinearBackend})
+    ws = prob.workspace
+    ws === nothing && throw(ArgumentError(
+        "solve requires a linear-backend problem with a workspace (use " *
+        "SpringsteelProblem(grid, L*u => rhs) or the kwarg-form " *
+        "SpringsteelProblem(grid; operator=L, rhs=f))"))
+    return _solve_to_snapshot(prob, ws)
 end
+
+# `_solve_to_snapshot(prob, ws)` method bodies are defined in
+# solver_problem.jl, next to the workspace type definitions.

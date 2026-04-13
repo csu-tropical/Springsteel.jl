@@ -200,7 +200,7 @@ IInttransform(obj::CubicBSpline.Spline1D, u::Vector{Float64}, C0::Float64=0.0) =
 IInttransform(obj::Chebyshev.Chebyshev1D, C0::Float64=0.0) = Chebyshev.IInttransform(obj, C0)
 
 export AbstractGrid
-export SpringsteelGrid, SpringsteelGridParameters
+export SpringsteelGrid, SpringsteelGridParameters, GridParameters
 export CubicBSpline, SplineParameters, Spline1D
 export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
@@ -267,7 +267,8 @@ export num_deriv_slots
 export gridpoints, spectral_dim, physical_dim
 
 # Solver framework exports
-export OperatorTerm, AbstractSolverBackend, LocalLinearBackend, OptimizationBackend
+export OperatorTerm, AbstractSolverBackend, AbstractLinearBackend
+export LocalLinearBackend, OptimizationBackend
 export SpringsteelProblem, SpringsteelSolution
 export operator_matrix, assemble_operator, assemble_from_equation
 export solve, solver_gridpoints
@@ -462,6 +463,11 @@ Base.@kwdef struct SpringsteelGridParameters
     j_regular_out::int = (iDim*2) + 1
     k_regular_out::int = kDim + 1
 end
+
+# Deprecated alias for SpringsteelGridParameters. Kept for one release
+# cycle so downstream packages can migrate without a hard break — use
+# SpringsteelGridParameters in new code.
+Base.@deprecate_binding GridParameters SpringsteelGridParameters true
 
 # ── Unified type system ────────────────────────────────────────────────────────────
 # Must be included after SpringsteelGridParameters (used as field type in SpringsteelGrid)

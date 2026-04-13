@@ -543,9 +543,13 @@ using Springsteel.CubicBSpline, Springsteel.Chebyshev
 
         @test_throws ArgumentError Field(grid, "nonexistent")
 
-        # Legacy (workspace-less) problem → solve! errors
-        prob_legacy = SpringsteelProblem(grid; operator = rand(gp.iDim, gp.iDim),
-                                          rhs = ones(gp.iDim))
-        @test_throws ArgumentError solve!(prob_legacy)
+        # Legacy kwarg constructor now builds a workspace at construction,
+        # so missing operator or rhs errors at construction rather than at
+        # solve time. Both `solve` and `solve!` work on legacy-constructed
+        # problems under the unified API.
+        @test_throws ArgumentError SpringsteelProblem(grid;
+            operator = rand(gp.iDim, gp.iDim))
+        @test_throws ArgumentError SpringsteelProblem(grid;
+            rhs = ones(gp.iDim))
     end
 end
