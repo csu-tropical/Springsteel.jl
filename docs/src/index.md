@@ -39,26 +39,36 @@ Springsteel serves as the computational foundation for
 | `"SL"` | Spline × Fourier | [`SL_Grid`](@ref) | Spherical 2D |
 | `"SLZ"` | Spline × Fourier × Chebyshev | [`SLZ_Grid`](@ref) | Spherical 3D |
 
-## Installation
+### Installation
 
-Springsteel.jl is not yet registered in the Julia General registry. Install directly
-from GitHub:
+Springsteel is a registered Julia package. To install, open the Julia REPL, enter Package mode by pressing `]`, and run:
+
+```
+pkg> add Springsteel
+```
+
+Or equivalently from Julia code:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/mmbell/Springsteel.jl")
+Pkg.add("Springsteel")
 ```
 
-Or in development mode (for contributors):
+#### Development installation
 
-```bash
-cd /path/to/Springsteel.jl
-julia --project -e 'using Pkg; Pkg.instantiate()'
+If you are actively developing or modifying Springsteel, clone the repository and install in development mode:
+
+```
+git clone https://github.com/csu-tropical/Springsteel.jl.git
 ```
 
-### Dependencies
+Then in the Julia REPL Package mode:
 
-CSV, DataFrames, FFTW, LinearAlgebra, SharedArrays, SparseArrays, SuiteSparse.
+```
+pkg> dev /path/to/Springsteel.jl
+```
+
+This will track your local changes and recompile as needed.
 
 ## Quick Start
 

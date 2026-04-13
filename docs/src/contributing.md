@@ -381,12 +381,12 @@ implications in v1.0.
   supports `RL` and `RLZ` only. Cartesian and spherical relocations are
   feasible via the same `evaluate_unstructured` machinery but would
   need a coordinate mapping layer and new boundary strategies.
-- **Precompute `SAtransform` application matrix** (Tier 3 #9) — a
+- **Precompute `SAtransform` application matrix** — a
   per-wavenumber cache; only a win at `Mdim < 20`.
-- **Combined `SBtransform + SAtransform` matrix** (Tier 3 #10) — O(nc²)
+- **Combined `SBtransform + SAtransform` matrix** — O(nc²)
   memory growth, so only usable for small-to-moderate grids; big win
   when applicable.
-- **Cache-friendly physical / spectral layout** (Tier 3 #11) — high
+- **Cache-friendly physical / spectral layout** — high
   risk refactor that reorders the physical array for better cache
   locality on wide multi-var grids. Would need a clear downstream
   workload driving it.
@@ -394,7 +394,11 @@ implications in v1.0.
   `ZZZ`, `L`, `LL`, `LLZ`. They build and transform, but coverage is
   thin compared to the RR / RL / RLZ production paths. Filling in test
   suites for these is a good v1.1 contribution that won't break any
-  existing API.
+  existing API. Part of this work: cross-validate the unified solver
+  on Chebyshev (`Z`) grids against the legacy `Chebyshev.bvp`
+  reference implementation — once that parity test is solid, the
+  `Chebyshev.bvp` / `bvp_modified_basis` / `bvp_basis` reference
+  functions become candidates for deprecation in v1.2+.
 
 ## See also
 

@@ -4,9 +4,18 @@ CurrentModule = Springsteel
 
 # SpringsteelGrid
 
-The `SpringsteelGrid` type is the unified parametric grid struct that replaces the
-legacy per-geometry structs (`R_Grid`, `RL_Grid`, `RZ_Grid`, etc.) while remaining
-backward-compatible via type aliases.
+The `SpringsteelGrid` type is the unified parametric grid struct that supports multiple basis functions and geometries.
+
+## Grid Struct and Aliases
+
+```@docs
+SpringsteelGrid
+```
+## Grid Parameters
+
+```@docs
+SpringsteelGridParameters
+```
 
 ## Geometry Types
 
@@ -42,18 +51,6 @@ NoBasisType
 gridpoints
 spectral_dim
 physical_dim
-```
-
-## Grid Parameters
-
-```@docs
-SpringsteelGridParameters
-```
-
-## Grid Struct and Aliases
-
-```@docs
-SpringsteelGrid
 ```
 
 ## Grid Factory

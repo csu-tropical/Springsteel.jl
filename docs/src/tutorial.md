@@ -54,6 +54,8 @@ NoBasisArray, NoBasisArray}`, aliased as `R_Grid`. Its storage layout:
 For 1D grids there are 3 derivative slots per variable: `[f, ∂f/∂x,
 ∂²f/∂x²]`. A 2D grid has 5 slots; 3D has 7.
 
+The `num_cells` determines how many cells the domain is divided into. This is the _spectral mesh_ and determines the grid spacing between Cubic B-spline nodes. The actual physical grid, or _mish_ is finer than this, with a default split into 3 Gaussian quadrature points for each cell. With the default smoothing, the nominal _resolution_ of the grid is therefore close to the nodal spacing but the actual _grid spacing_ is 3 times finer.
+
 ## 2. Fill, transform, inspect
 
 Use [`getGridpoints`](@ref) to pull the gridpoint coordinates, fill
@@ -106,9 +108,9 @@ BCR = Dict("u" => NeumannBC())
 BCR = Dict("T" => RobinBC(1.0, 0.2, 293.15))
 ```
 
-The pre-v0.3 `Dict("u" => CubicBSpline.R0)` form still works and can
+An older specification that maps to Ooyama (2002) nomenclature `Dict("u" => CubicBSpline.R0)` form still works and can
 be mixed in the same spec, but new code should use the
-`BoundaryConditions` constructors — they validate eagerly and the
+`BoundaryConditions` constructors — they validate and the
 physical meaning is obvious at the call site.
 
 ## 4. 2D grid with Fourier and multiple variables
@@ -165,43 +167,58 @@ grid types and their type aliases.
 ## 5. Solving a boundary value problem
 
 The v1.0 solver framework speaks operator-algebra notation. Build an
-unknown [`Field`](@ref SpringsteelField), combine derivative atoms into
-an `OperatorExpr`, and pair it with an RHS:
+unknown [`SpringsteelField`](@ref SpringsteelField), combine derivative
+atoms into an `OperatorExpr`, and pair it with an RHS.
+
+For a 1D Poisson problem, configure the grid with two variables — one
+for the unknown `u` and one for the RHS `f`:
 
 ```julia
 gp = SpringsteelGridParameters(
     geometry  = "Z",
     iMin = 0.0, iMax = 1.0, iDim = 25, b_iDim = 25,
-    vars = Dict("u" => 1),
-    BCL  = Dict("u" => DirichletBC()),
-    BCR  = Dict("u" => DirichletBC()),
+    vars = Dict("u" => 1, "f" => 2),
+    BCL  = Dict("u" => DirichletBC(), "f" => NaturalBC()),
+    BCR  = Dict("u" => DirichletBC(), "f" => NaturalBC()),
 )
 grid = createGrid(gp)
 
-# 1D Poisson: u''(x) = -π² sin(πx)  →  u(x) = sin(πx)
+# 1D Poisson: u''(x) = f(x) with f(x) = -π² sin(πx)  →  u(x) = sin(πx)
 pts = solver_gridpoints(grid, "u")
-grid.physical[:, 1, 1] .= -π^2 .* sin.(π .* pts)
+grid.physical[:, 2, 1] .= -π^2 .* sin.(π .* pts)    # write f (slot 2)
 
-u    = Field(grid, "u")
-prob = SpringsteelProblem(grid, ∂ᵢ^2 * u => :u)
+u    = SpringsteelField(grid, "u")                   # unknown
+prob = SpringsteelProblem(grid, ∂ᵢ^2 * u => :f)      # pulls RHS from :f
 
 solve!(prob)
+# Solution is now in grid.physical[:, 1, 1]; the original RHS is still
+# in grid.physical[:, 2, 1].
 max_err = maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts)))
 @assert max_err < 1e-10
 ```
 
-The RHS `=> :u` reads "the current physical slot of `u`" — this is the
-pattern you want in time-stepping loops: update
-`grid.physical[:, rhs_idx, 1]` with the new RHS and call `solve!`
-again, reusing the cached factorisation:
+Why two variables? The RHS `=> :f` tells the solver to read
+`grid.physical[:, f_idx, 1]` at every `solve!` call, and the writeback
+puts the solution into `grid.physical[:, u_idx, 1]`. Separating the
+two means the solve is non-destructive with respect to the RHS and
+you can solve repeatedly with updated RHS values — the canonical
+time-stepping pattern:
 
 ```julia
 # For a time-stepping loop:
 # while stepping
-#     grid.physical[:, u_idx, 1] .= new_rhs
-#     solve!(prob)
+#     grid.physical[:, 2, 1] .= new_rhs     # refresh f
+#     solve!(prob)                           # writes u into slot 1
 # end
 ```
+
+It's technically legal to use a single grid variable as both the
+unknown and the RHS (`vars = Dict("u" => 1)` with `∂ᵢ^2 * u => :u`),
+and a one-shot solve will still return the correct answer. But the
+writeback then overwrites the RHS with the solution, so any second
+`solve!` on that problem would read the *previous solution* as the new
+RHS — rarely what you want. Use the two-variable pattern unless you
+have a specific reason not to.
 
 `solve` is the non-mutating twin — it writes the result into an
 independent narrowed grid and returns a [`SpringsteelSolution`](@ref)
@@ -352,7 +369,7 @@ multiGridTransform!(mg)
 `multiGridTransform!` handles interface synchronisation — the primary
 (outer) patch runs first, `update_interface!` pushes its border
 coefficients into the secondary (inner) patch's R3X `ahat` vector, and
-then the inner patch transforms. Zero allocations at steady state.
+then the inner patch transforms. Grid and spectral transforms have no temporary memory allocation overhead, just CPU time.
 
 See [Multi-Patch Grids](multipatch.md) for embedded topology, the 2:1
 half-gridpoint constraint, and the R3X coupling matrices.
@@ -426,6 +443,5 @@ gridTransform!(grid)
 # 6. (Optional) solve, interpolate, relocate, or write out
 ```
 
-From here, the feature-specific pages walk through the deeper corners
-of each subsystem. [Solver Framework](solver.md) is the biggest of
-those and the best next read if you're building PDE-based applications.
+From here, the feature-specific pages walk through more details
+of each subsystem.

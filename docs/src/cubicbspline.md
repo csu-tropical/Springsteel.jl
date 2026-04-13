@@ -5,8 +5,8 @@ CurrentModule = Springsteel
 # CubicBSpline
 
 The `CubicBSpline` submodule implements the Ooyama (2002) cubic B-spline spectral
-transform method, which provides compact-support basis functions with flexible boundary
-conditions and a built-in sixth-order low-pass filter.
+transform method, which provides compact-support basis functions with a built-in sixth-order low-pass filter. Cubic B-splines are a good general choice for an underlying basis function due to their computational efficiency and flexible boundary
+conditions. They are _semi-spectral_ since the basis functions are not orthogonal, and are a class of finite element bases. Another advantage of this basis is the ability to decompose the domain into _tiles_ for shared memory parallelization and/or multiple _patches_ for domain nesting or distributed memory parallelization.
 
 > **Reference**: Ooyama, K. V., 2002: The cubic-spline transform method: Basic
 > definitions and tests in a 1D single domain. *Mon. Wea. Rev.*, **130**, 2392–2415.

@@ -192,8 +192,11 @@ using LinearAlgebra
             @test maximum(abs.(sol.physical .- u_analytic)) < 1e-4
         end
 
-        @testset "solve() 1D Chebyshev BVP matches Chebyshev.bvp" begin
+        @testset "solve() 1D Chebyshev BVP: u'' + u' + u = f" begin
             # General 2nd-order ODE: u'' + u' + u = f
+            # TODO (v1.1 Z-grid coverage): add a companion test that
+            # calls Chebyshev.bvp on the same operator and cross-checks
+            # the two against each other.
             N = 25
             gp = SpringsteelGridParameters(
                 geometry = "Z",

@@ -5,7 +5,7 @@ CurrentModule = Springsteel
 # Multi-Patch Grids
 
 Springsteel supports grids composed of multiple B-spline patches linked
-by exact R3X coupling at their interfaces. A multi-patch grid lets you
+by exact basis conversion coupling at their interfaces. A multi-patch grid lets you
 
 - **chain** patches at different resolutions along a direction — useful
   for hurricanes, where a fine-resolution inner mesh handles the eyewall

@@ -27,23 +27,29 @@ using Springsteel
 gp = SpringsteelGridParameters(
     geometry = "Z",
     iMin = 0.0, iMax = 1.0, iDim = 25, b_iDim = 25,
-    BCL  = Dict("u" => DirichletBC()),
-    BCR  = Dict("u" => DirichletBC()),
-    vars = Dict("u" => 1),
+    vars = Dict("u" => 1, "f" => 2),
+    BCL  = Dict("u" => DirichletBC(), "f" => NaturalBC()),
+    BCR  = Dict("u" => DirichletBC(), "f" => NaturalBC()),
 )
 grid = createGrid(gp)
 
-# Fill the RHS into the grid's physical slot
+# Fill the RHS into its own grid slot
 pts = solver_gridpoints(grid, "u")
-grid.physical[:, 1, 1] .= -π^2 .* sin.(π .* pts)
+grid.physical[:, 2, 1] .= -π^2 .* sin.(π .* pts)
 
-# Build the problem and solve in place
-u = Field(grid, "u")
-prob = SpringsteelProblem(grid, ∂ᵢ^2 * u => :u)
+# Build the problem and solve in place; result goes into grid.physical[:, 1, 1]
+u = SpringsteelField(grid, "u")
+prob = SpringsteelProblem(grid, ∂ᵢ^2 * u => :f)
 solve!(prob)
 
 maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts)))   # ≈ machine ε
 ```
+
+The RHS is kept in its own grid variable (`f`, slot 2) so that the
+writeback of `u` into slot 1 doesn't destroy it. Reusing the same slot
+for both the unknown and the RHS is legal for a one-shot solve but
+breaks repeated `solve!` — see §5 of the [Tutorial](tutorial.md) for a
+full discussion.
 
 The Pair-based constructor is the preferred v1.0 style. It builds a
 workspace at construction (gammaBC fold, BC row detection, cached

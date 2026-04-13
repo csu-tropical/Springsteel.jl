@@ -1151,10 +1151,20 @@ end
 
 Modified Chebyshev boundary value problem solver (Boyd 2000).
 
-Solves a general second-order BVP ``d_2 u'' + d_1 u' + d_0 u = f`` on ``[-1,1]`` with
-Dirichlet boundary conditions `u(+1) = alpha`, `u(-1) = beta`. Uses the modified basis
-functions from [`bvp_modified_basis`](@ref) to enforce homogeneous BCs automatically.
-Primarily useful for testing the DCT matrix formulation against analytic solutions.
+Solves a general second-order BVP ``d_2 u'' + d_1 u' + d_0 u = f`` on
+``[-1,1]`` with Dirichlet boundary conditions `u(+1) = alpha`,
+`u(-1) = beta`. Uses the modified basis functions from
+[`bvp_modified_basis`](@ref) to enforce homogeneous BCs automatically.
+
+!!! note "Reference implementation"
+    This is a self-contained 1D Chebyshev BVP solver kept as a
+    reference for cross-validating the v1.0 solver framework on `Z`
+    grids. New code should use [`SpringsteelProblem`](@ref) with the
+    operator algebra DSL — see the [Solver Framework](@ref) page.
+    `Chebyshev.bvp` pre-dates that framework and is restricted to 1D
+    Dirichlet BVPs with the Boyd (2000) modified-basis trick; it does
+    not participate in workspace caching, multi-variable systems, or
+    any of the v1.0 solver features.
 
 See also: [`bvp_modified_basis`](@ref), [`bvp_basis`](@ref)
 """
@@ -1238,6 +1248,10 @@ Modified basis functions satisfy homogeneous Dirichlet BCs at `±1`. Handles the
 singularity at endpoints by using the limiting formulae. Returns in-place the arrays
 `phi` (values), `phix` (first derivatives), `phixx` (second derivatives).
 
+!!! note "Reference implementation"
+    Helper for [`bvp`](@ref); same caveats apply — reference code
+    only, not part of the v1.0 solver framework.
+
 See also: [`bvp`](@ref)
 """
 function bvp_modified_basis(x::Float64, nbasis::Int64, phi::Array{Float64}, phix::Array{Float64}, phixx::Array{Float64}, scale::Float64)
@@ -1289,6 +1303,10 @@ Evaluate the standard (unmodified) Chebyshev basis functions and their derivativ
 
 Used for debugging and verification; does not enforce BCs. See [`bvp_modified_basis`](@ref)
 for the BC-enforcing variant.
+
+!!! note "Reference implementation"
+    Debugging variant of [`bvp_modified_basis`](@ref); reference code
+    only, not part of the v1.0 solver framework.
 """
 function bvp_basis(x::Float64, nbasis::Int64, phi::Array{Float64}, phix::Array{Float64}, phixx::Array{Float64})
 
