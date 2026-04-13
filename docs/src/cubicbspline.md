@@ -123,7 +123,6 @@ CubicBSpline.PERIODIC
 ```@docs
 CubicBSpline.SplineParameters
 CubicBSpline.Spline1D
-CubicBSpline.Spline1D(::CubicBSpline.SplineParameters)
 ```
 
 ## Internal Basis and Setup Functions

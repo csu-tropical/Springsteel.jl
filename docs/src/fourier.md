@@ -20,7 +20,6 @@ Fourier.PERIODIC
 ```@docs
 Fourier.FourierParameters
 Fourier.Fourier1D
-Fourier.Fourier1D(::Fourier.FourierParameters)
 ```
 
 ## Internal Setup Functions

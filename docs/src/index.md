@@ -71,8 +71,8 @@ gp = SpringsteelGridParameters(
     iMin      = 0.0,
     iMax      = 100.0,
     num_cells = 30,
-    BCL       = Dict("u" => CubicBSpline.R0),
-    BCR       = Dict("u" => CubicBSpline.R0),
+    BCL       = Dict("u" => NaturalBC()),
+    BCR       = Dict("u" => NaturalBC()),
     vars      = Dict("u" => 1)
 )
 

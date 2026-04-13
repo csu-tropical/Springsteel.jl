@@ -27,7 +27,6 @@ Chebyshev.R3
 ```@docs
 Chebyshev.ChebyshevParameters
 Chebyshev.Chebyshev1D
-Chebyshev.Chebyshev1D(::Chebyshev.ChebyshevParameters)
 ```
 
 ## Internal Setup Functions

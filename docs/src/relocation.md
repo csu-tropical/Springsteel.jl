@@ -12,9 +12,7 @@ translates through its environment.
 
 Relocation is available for 2D cylindrical (`RL`) and 3D cylindrical
 (`RLZ`) grids. Cartesian and spherical grids are not currently
-supported. A companion notebook at
-`notebooks/Springsteel_relocation_tutorial.ipynb` walks through the
-full API with plots.
+supported.
 
 ## The idea
 
@@ -183,5 +181,3 @@ the snap. Inspect with `grid_center(mg)` after the call.
 - [Multi-Patch Grids](multipatch.md) — multigrid topology and
   construction
 - [Interpolation](interpolation.md) — related cross-grid tools
-- `notebooks/Springsteel_relocation_tutorial.ipynb` — worked examples
-  with plots
