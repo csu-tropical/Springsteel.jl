@@ -8,6 +8,9 @@ on:
     tags: '*'
   pull_request:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     # These permissions are needed to:
