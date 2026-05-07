@@ -113,6 +113,7 @@ Using offset formula `p = k*2` (SL/RL convention — distinct from `(k-1)*2` use
 See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_SLGrid)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral
@@ -123,6 +124,10 @@ function spectralTransform(grid::_SLGrid, physical::Array{real}, spectral::Array
     iDim   = grid.params.iDim
     b_iDim = grid.params.b_iDim
     kDim   = iDim + grid.params.patchOffsetL   # global max wavenumber
+
+    sf = grid.params.spline_filter
+    sf_active = !isempty(sf)
+    spline_scratch = sf_active ? Vector{Float64}(undef, iDim) : Float64[]
 
     for v in 1:size(spectral, 2)
 
@@ -137,12 +142,17 @@ function spectralTransform(grid::_SLGrid, physical::Array{real}, spectral::Array
             FBtransform!(grid.jbasis.data[r, v])
         end
 
+        ifilt = sf_active ?
+            _resolve_spline_filter(sf, _get_var_name(grid.params.vars, v), :i) :
+            nothing
+
         # ── Spline stage — wavenumber 0 ──────────────────────────────────────
         isp0 = grid.ibasis.data[1, v]
         isp0.uMish .= 0.0
         @inbounds for r in 1:iDim
             isp0.uMish[r] = grid.jbasis.data[r, v].b[1]
         end
+        ifilt === nothing || _filter_spline_uMish!(isp0, ifilt, spline_scratch)
         SBtransform!(isp0)
         @inbounds for k in 0:(b_iDim - 1)
             spectral[1 + k, v] = isp0.b[k + 1]
@@ -162,6 +172,10 @@ function spectralTransform(grid::_SLGrid, physical::Array{real}, spectral::Array
                     ispR.uMish[r] = grid.jbasis.data[r, v].b[rk]
                     ispI.uMish[r] = grid.jbasis.data[r, v].b[ik]
                 end
+            end
+            if ifilt !== nothing
+                _filter_spline_uMish!(ispR, ifilt, spline_scratch)
+                _filter_spline_uMish!(ispI, ifilt, spline_scratch)
             end
             SBtransform!(ispR)
             SBtransform!(ispI)
@@ -456,6 +470,7 @@ Uses `p = (k-1)*2` for k ≥ 1 (SLZ/RLZ convention — see Developer Notes §TRA
 See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_SLZGrid)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral
@@ -470,6 +485,9 @@ function spectralTransform(grid::_SLZGrid, physical::Array{real}, spectral::Arra
     b_iDim  = grid.params.b_iDim
 
     tempcb = _scratch(grid).tempcb   # cached: [b_kDim, max_lpoints]
+    sf = grid.params.spline_filter
+    sf_active = !isempty(sf)
+    spline_scratch = sf_active ? Vector{Float64}(undef, iDim) : Float64[]
 
     for v in 1:size(spectral, 2)
 
@@ -502,12 +520,16 @@ function spectralTransform(grid::_SLZGrid, physical::Array{real}, spectral::Arra
         isp0 = grid.ibasis.data[1, v]
         ispR = grid.ibasis.data[2, v]
         ispI = grid.ibasis.data[3, v]
+        ifilt = sf_active ?
+            _resolve_spline_filter(sf, _get_var_name(grid.params.vars, v), :i) :
+            nothing
         for z_b in 1:b_kDim
             # Wavenumber 0
             isp0.uMish .= 0.0
             @inbounds for r in 1:iDim
                 isp0.uMish[r] = grid.jbasis.data[r, z_b].b[1]
             end
+            ifilt === nothing || _filter_spline_uMish!(isp0, ifilt, spline_scratch)
             SBtransform!(isp0)
 
             r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
@@ -528,6 +550,10 @@ function spectralTransform(grid::_SLZGrid, physical::Array{real}, spectral::Arra
                         ispR.uMish[r] = grid.jbasis.data[r, z_b].b[rk]
                         ispI.uMish[r] = grid.jbasis.data[r, z_b].b[ik]
                     end
+                end
+                if ifilt !== nothing
+                    _filter_spline_uMish!(ispR, ifilt, spline_scratch)
+                    _filter_spline_uMish!(ispI, ifilt, spline_scratch)
                 end
                 SBtransform!(ispR)
                 SBtransform!(ispI)

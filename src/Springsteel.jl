@@ -230,7 +230,7 @@ export regularGridTransform, getRegularGridpoints
 export applyFilter!
 
 # Filter type exports
-export AbstractFilter, SpectralFilter, GaussianFilter
+export AbstractFilter, SpectralFilter, GaussianFilter, LanczosFilter
 
 # Multi-patch exports
 export PatchInterface, MultiPatchGrid
@@ -339,6 +339,11 @@ primary parameters (marked *auto* below).
 ## Spectral Filters
 - `fourier_filter::Dict = Dict()`: Fourier filter config (per variable, `"default"` fallback)
 - `chebyshev_filter::Dict = Dict()`: Chebyshev filter config (per variable, `"default"` fallback)
+- `spline_filter::Dict = Dict()`: Per-direction spline filter config of shape
+  `Dict{String, Dict{Symbol, AbstractFilter}}` (variable → direction → filter,
+  with `"default"` / `:default` fallbacks).  Applied as a physical-space
+  convolution on the mish before SB; supports `GaussianFilter` and
+  `LanczosFilter`.
 
 ## Tiling (distributed computing)
 - `spectralIndexL::Int64 = 1`: Left spectral index for tile
@@ -454,6 +459,9 @@ Base.@kwdef struct SpringsteelGridParameters
     # Spectral filters (per-variable, keyed by variable name or "default")
     fourier_filter::Dict = Dict()
     chebyshev_filter::Dict = Dict()
+    # Spline-direction filter: per-variable, per-direction (`:i`, `:j`, `:k`,
+    # `:default`).  Shape `Dict{String, Dict{Symbol, AbstractFilter}}`.
+    spline_filter::Dict = Dict()
     # Patch indices
     spectralIndexL::int = 1
     spectralIndexR::int = spectralIndexL + b_iDim - 1

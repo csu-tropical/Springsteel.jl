@@ -19,10 +19,13 @@ Filtering is useful for
   small-scale noise contaminating the derivatives;
 - **band-passing** in wavenumber space to isolate scales of interest.
 
-Filtering is a **no-op for pure B-spline grids** (`R`, `RR`, `RRR`) —
-B-spline smoothness is controlled at the basis level via `l_q` rather
-than at the spectral-coefficient level. Filter specs on pure-spline
-grids are accepted but silently ignored.
+For B-spline directions, the spectral-coefficient filters above are a
+no-op (splines are a local, non-orthogonal basis with BC structure baked
+into the coefficients). Use the `spline_filter` parameter — see
+[Spline filtering](#Spline-filtering) — to apply a smoothing filter
+on a CubicBSpline direction; it operates as a physical-space convolution
+on the mish before SB. B-spline interior smoothness can also be tuned at
+the basis level via `l_q`.
 
 ## Filter types
 
@@ -73,18 +76,46 @@ SpectralFilter(notch=[0])
 GaussianFilter
 ```
 
-`GaussianFilter` multiplies each spectral coefficient by
-`exp(-(k/σ)^(2p))`, where `σ` is a width parameter (modes at `k = σ`
-are attenuated to `e⁻¹` for `order = 1`) and `p` is the order. Higher
-orders approach a boxcar with a smooth transition — useful when you
-want aggressive smoothing without ringing:
+`GaussianFilter` has two modes of action:
+
+- On a Fourier or Chebyshev direction it multiplies each spectral
+  coefficient by `exp(-(k/σ)^(2p))`, where `σ` is a width parameter
+  (modes at `k = σ` are attenuated to `e⁻¹` for `order = 1`) and `p` is
+  the order.
+- On a CubicBSpline direction, when supplied via `spline_filter`, it
+  acts as a physical-space convolution with kernel
+  `exp(-x²/(2σ²))`. Here `σ` is in cell widths.
 
 ```julia
-# Standard Gaussian with width σ = 20
-GaussianFilter(sigma=20.0)
+# Spectral envelope on a Fourier/Chebyshev direction
+GaussianFilter(sigma=20.0)            # standard
+GaussianFilter(sigma=20.0, order=3)   # super-Gaussian, sharper cutoff
 
-# Super-Gaussian order 3 — sharper cutoff, still smooth
-GaussianFilter(sigma=20.0, order=3)
+# Physical-space smoothing on a spline direction (2-cell-wide Gaussian)
+GaussianFilter(sigma=2.0)
+```
+
+### `LanczosFilter` — windowed sinc
+
+```@docs
+LanczosFilter
+```
+
+`LanczosFilter` is a thin convenience wrapper around a Lanczos-windowed
+sinc:
+
+- On a CubicBSpline direction it convolves with the kernel
+  `K(x) = sinc(x/h) · sinc(x/(a·h))` for `|x| < a·h`, zero outside,
+  where `h` is the cell width and `a` is the lobe count.
+- On a Fourier or Chebyshev direction it delegates to a
+  `SpectralFilter(window=:lanczos, low_pass=low_pass, taper_width=a)`.
+
+```julia
+# Spline path: 3-lobe Lanczos kernel
+LanczosFilter(a=3)
+
+# Spectral path: low-pass at k=10 with Lanczos taper of 3 modes
+LanczosFilter(a=3, low_pass=10)
 ```
 
 ## Attaching filters to a grid
@@ -121,6 +152,63 @@ grid = createGrid(gp)
 
 Variables without an entry fall back to `"default"`, and variables
 with no filter at all are left unfiltered.
+
+## Spline filtering
+
+Spline directions live on a local, non-orthogonal basis with boundary
+conditions baked into the coefficients, so a wavenumber-domain envelope
+is not the right tool. `spline_filter` instead takes a per-(variable,
+direction) Dict mapping each spline axis to a `GaussianFilter` or
+`LanczosFilter`. It is applied as a physical-space convolution on the
+mish (quadrature points) immediately before the SB transform:
+
+```
+spectralTransform!(grid):
+    _filter_mish!(grid)            # spline filter convolves on physical[..., v, 1]
+    SB transforms (per direction)
+    SA transforms (per direction)
+    applyFilter!(grid)             # spectral filters on Fourier / Chebyshev
+```
+
+Boundary conditions are preserved by construction: filtering happens
+upstream of SB / SA, so γ-folding and `ahat` re-impose the configured BC
+after the convolution. Boundary handling for the kernel itself is
+zero-extend + renormalise (kernel weight outside the domain reweights
+the in-domain contributions, preserving the DC component).
+
+The dict shape is `Dict{String, Dict{Symbol, AbstractFilter}}`. Outer
+keys are variable names (or `"default"`); inner keys are `:i`, `:j`,
+`:k`, or `:default` (a var-wide override that applies to every spline
+direction the geometry has).
+
+```julia
+gp = SpringsteelGridParameters(
+    geometry = "RR",
+    iMin = 0.0, iMax = 100.0, num_cells = 30,
+    jMin = 0.0, jMax = 100.0,
+    vars = Dict("u" => 1, "v" => 2),
+    BCL = Dict("default" => NaturalBC()),
+    BCR = Dict("default" => NaturalBC()),
+    BCU = Dict("default" => NaturalBC()),
+    BCD = Dict("default" => NaturalBC()),
+
+    spline_filter = Dict(
+        # Per-direction Gaussian on u
+        "u" => Dict(
+            :i => GaussianFilter(sigma=2.0),
+            :j => GaussianFilter(sigma=4.0),
+        ),
+        # Same Lanczos kernel on every spline direction of v
+        "v" => Dict(:default => LanczosFilter(a=3)),
+    ),
+)
+grid = createGrid(gp)
+```
+
+`SpectralFilter` (boxcar / notch / hard-window cutoffs) is rejected on a
+spline direction — those require an FFT against a global orthogonal
+basis. Choose a Fourier or Chebyshev basis if you need a hard spectral
+cutoff.
 
 ## Application
 

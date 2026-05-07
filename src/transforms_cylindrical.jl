@@ -151,6 +151,7 @@ the end of the k=0 block within each z-level.  See Developer Notes §TRAP-1.
 See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_RLGrid)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral
@@ -160,6 +161,9 @@ function spectralTransform(grid::_RLGrid, physical::Array{real}, spectral::Array
 
     # Need to include patchOffset to get all available wavenumbers
     kDim = grid.params.iDim + grid.params.patchOffsetL
+    sf = grid.params.spline_filter
+    sf_active = !isempty(sf)
+    spline_scratch = sf_active ? Vector{Float64}(undef, grid.params.iDim) : Float64[]
 
     for v in 1:size(spectral, 2)
         # ── Fourier stage: transform each ring ──────────────────────────────
@@ -176,12 +180,18 @@ function spectralTransform(grid::_RLGrid, physical::Array{real}, spectral::Array
 
         b_iDim = grid.params.b_iDim
 
+        # Resolve radial (i-direction) spline filter for this variable, if any.
+        ifilt = sf_active ?
+            _resolve_spline_filter(sf, _get_var_name(grid.params.vars, v), :i) :
+            nothing
+
         # ── Spline stage — wavenumber 0 ──────────────────────────────────────
         isp0 = grid.ibasis.data[1, v]
         isp0.uMish .= 0.0
         @inbounds for r in 1:grid.params.iDim
             isp0.uMish[r] = grid.jbasis.data[r, v].b[1]
         end
+        ifilt === nothing || _filter_spline_uMish!(isp0, ifilt, spline_scratch)
         SBtransform!(isp0)
         @inbounds for k in 0:(b_iDim - 1)
             spectral[1 + k, v] = isp0.b[k + 1]
@@ -200,6 +210,10 @@ function spectralTransform(grid::_RLGrid, physical::Array{real}, spectral::Array
                     ispR.uMish[r] = grid.jbasis.data[r, v].b[rk]
                     ispI.uMish[r] = grid.jbasis.data[r, v].b[ik]
                 end
+            end
+            if ifilt !== nothing
+                _filter_spline_uMish!(ispR, ifilt, spline_scratch)
+                _filter_spline_uMish!(ispI, ifilt, spline_scratch)
             end
             SBtransform!(ispR)
             SBtransform!(ispI)
@@ -522,6 +536,7 @@ where `kDim_wn = iDim + patchOffsetL`.
 See also: [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_RLZGrid)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral
@@ -537,6 +552,9 @@ function spectralTransform(grid::_RLZGrid, physical::Array{real}, spectral::Arra
     b_iDim  = grid.params.b_iDim
 
     tempcb  = _scratch(grid).tempcb   # cached: [b_kDim, 4 + 4*kDim_wn]
+    sf = grid.params.spline_filter
+    sf_active = !isempty(sf)
+    spline_scratch = sf_active ? Vector{Float64}(undef, iDim) : Float64[]
 
     for v in 1:size(spectral, 2)
         # ── Chebyshev + Fourier stage ────────────────────────────────────────
@@ -569,12 +587,16 @@ function spectralTransform(grid::_RLZGrid, physical::Array{real}, spectral::Arra
         isp0 = grid.ibasis.data[1, v]
         ispR = grid.ibasis.data[2, v]
         ispI = grid.ibasis.data[3, v]
+        ifilt = sf_active ?
+            _resolve_spline_filter(sf, _get_var_name(grid.params.vars, v), :i) :
+            nothing
         for z_b in 1:b_kDim
             # k=0: wavenumber-0 spline
             isp0.uMish .= 0.0
             @inbounds for r in 1:iDim
                 isp0.uMish[r] = grid.jbasis.data[r, z_b].b[1]
             end
+            ifilt === nothing || _filter_spline_uMish!(isp0, ifilt, spline_scratch)
             SBtransform!(isp0)
 
             # Spectral index for k=0 at this z_b level
@@ -595,6 +617,10 @@ function spectralTransform(grid::_RLZGrid, physical::Array{real}, spectral::Arra
                         ispR.uMish[r] = grid.jbasis.data[r, z_b].b[rk]
                         ispI.uMish[r] = grid.jbasis.data[r, z_b].b[ik]
                     end
+                end
+                if ifilt !== nothing
+                    _filter_spline_uMish!(ispR, ifilt, spline_scratch)
+                    _filter_spline_uMish!(ispI, ifilt, spline_scratch)
                 end
                 SBtransform!(ispR)
                 SBtransform!(ispI)

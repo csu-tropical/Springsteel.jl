@@ -1314,6 +1314,7 @@ function _create_chain(config::Dict{Symbol, Any})
     quadrature = get(config, :quadrature, :gauss)
     fourier_filter = get(config, :fourier_filter, Dict{String,Any}())
     chebyshev_filter = get(config, :chebyshev_filter, Dict{String,Any}())
+    spline_filter = get(config, :spline_filter, Dict{String,Any}())
     max_wavenumber = get(config, :max_wavenumber, Dict("default" => -1))
 
     grids = SpringsteelGrid[]
@@ -1332,6 +1333,7 @@ function _create_chain(config::Dict{Symbol, Any})
             :max_wavenumber => max_wavenumber,
             :fourier_filter => fourier_filter,
             :chebyshev_filter => chebyshev_filter,
+            :spline_filter  => spline_filter,
         )
         if offsets[k] > 0
             gp_kwargs[:patchOffsetL] = offsets[k]
@@ -1410,6 +1412,7 @@ function _create_embedded(config::Dict{Symbol, Any})
     quadrature = get(config, :quadrature, :gauss)
     fourier_filter = get(config, :fourier_filter, Dict{String,Any}())
     chebyshev_filter = get(config, :chebyshev_filter, Dict{String,Any}())
+    spline_filter = get(config, :spline_filter, Dict{String,Any}())
     max_wavenumber = get(config, :max_wavenumber, Dict("default" => -1))
 
     grids = SpringsteelGrid[]
@@ -1428,6 +1431,7 @@ function _create_embedded(config::Dict{Symbol, Any})
             :max_wavenumber => max_wavenumber,
             :fourier_filter => fourier_filter,
             :chebyshev_filter => chebyshev_filter,
+            :spline_filter  => spline_filter,
         )
         if offsets[k] > 0
             gp_kwargs[:patchOffsetL] = offsets[k]

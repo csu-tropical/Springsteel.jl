@@ -224,6 +224,7 @@ spectralTransform!(grid)
 See also: [`gridTransform!`](@ref), [`spectralTransform`](@ref)
 """
 function spectralTransform!(grid::_1DCartesianGrid)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral
@@ -443,6 +444,7 @@ In-place forward transform for a 2-D Cartesian Spline×Spline grid.  Reads
 See also: [`spectralTransform`](@ref), [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_2DCartesianRR)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral
@@ -625,6 +627,7 @@ In-place forward transform for a 2-D Cartesian Spline×Chebyshev grid.  Reads
 See also: [`spectralTransform`](@ref), [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_2DCartesianRZ)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral
@@ -1155,6 +1158,7 @@ In-place forward transform for a 3-D Cartesian Spline×Spline×Spline grid.  Rea
 See also: [`spectralTransform`](@ref), [`gridTransform!`](@ref)
 """
 function spectralTransform!(grid::_3DCartesianRRR)
+    _filter_mish!(grid)
     spectralTransform(grid, grid.physical, grid.spectral)
     applyFilter!(grid)
     return grid.spectral

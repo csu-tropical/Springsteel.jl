@@ -258,6 +258,7 @@ function _update_gp(gp::SpringsteelGridParameters;
         vars           = gp.vars,
         fourier_filter = gp.fourier_filter,
         chebyshev_filter = gp.chebyshev_filter,
+        spline_filter  = gp.spline_filter,
         spectralIndexL = gp.spectralIndexL,
         spectralIndexR = gp.spectralIndexR,
         patchOffsetL   = gp.patchOffsetL,
@@ -1104,6 +1105,7 @@ See also: [`SpringsteelGridParameters`](@ref), [`parse_geometry`](@ref),
 function createGrid(gp::SpringsteelGridParameters)
     gp_final = compute_derived_params(gp)
     geom     = _normalize_geometry(gp_final.geometry)
+    _validate_spline_filter(gp_final.spline_filter, gp_final)
 
     # ── Spline-based ─────────────────────────────────────────────────────────────
     if geom in ("R", "Spline1D")
@@ -1214,6 +1216,7 @@ function _subgrid_for_solution(grid::SpringsteelGrid, var_names::Vector{String})
         vars           = new_vars,
         fourier_filter = _narrow_var_dict(p.fourier_filter, var_names),
         chebyshev_filter = _narrow_var_dict(p.chebyshev_filter, var_names),
+        spline_filter  = _narrow_var_dict(p.spline_filter, var_names),
         spectralIndexL = p.spectralIndexL,
         spectralIndexR = p.spectralIndexR,
         patchOffsetL   = p.patchOffsetL,
