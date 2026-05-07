@@ -1155,3 +1155,478 @@ function regularGridTransform(grid::_SLZGrid, gridpoints::AbstractMatrix{Float64
     z_pts = sort(unique(gridpoints[:, 3]))
     return regularGridTransform(grid, θ_pts, λ_pts, z_pts)
 end
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3D Spherical Transforms  (Spline×Fourier×Spline = SLR)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Same spectral layout as SLZ — z-major × wavenumber-interleaved (TRAP-1
+# convention p = (k-1)*2). The k direction uses CubicBSpline; physical
+# layout has kDim = nc_k * mubar mish points.
+
+const _SLRGrid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, SplineBasisArray{1}}
+
+function getGridpoints(grid::_SLRGrid)
+    iDim = grid.params.iDim
+    kDim = grid.params.kDim
+    jDim = grid.params.jDim
+    gridpts = zeros(Float64, kDim * jDim, 3)
+    g = 1
+    for r in 1:iDim
+        theta_r = grid.ibasis.data[1, 1].mishPoints[r]
+        lpoints = grid.jbasis.data[r, 1].params.yDim
+        for l in 1:lpoints
+            l_m = grid.jbasis.data[r, 1].mishPoints[l]
+            for z in 1:kDim
+                z_m = grid.kbasis.data[1].mishPoints[z]
+                gridpts[g, 1] = theta_r
+                gridpts[g, 2] = l_m
+                gridpts[g, 3] = z_m
+                g += 1
+            end
+        end
+    end
+    return gridpts
+end
+
+num_columns(grid::_SLRGrid) = grid.params.jDim
+
+function spectralTransform!(grid::_SLRGrid)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+function spectralTransform(grid::_SLRGrid, physical::Array{real}, spectral::Array{real})
+
+    kDim_wn = grid.params.iDim + grid.params.patchOffsetL
+    kDim    = grid.params.kDim
+    b_kDim  = grid.params.b_kDim
+    iDim    = grid.params.iDim
+    b_iDim  = grid.params.b_iDim
+
+    sf = grid.params.spline_filter
+    sf_active = !isempty(sf)
+    spline_scratch = sf_active ? Vector{Float64}(undef, iDim) : Float64[]
+
+    max_lpoints = 0
+    for r in 1:iDim
+        max_lpoints = max(max_lpoints, grid.jbasis.data[r, 1].params.yDim)
+    end
+    tempsb = zeros(Float64, b_kDim, max_lpoints)
+
+    for v in 1:size(spectral, 2)
+        kspl = grid.kbasis.data[v]
+
+        # ── k-direction Spline + Fourier stage ──────────────────────────────
+        i = 1
+        for r in 1:iDim
+            lpoints = grid.jbasis.data[r, 1].params.yDim
+            for l in 1:lpoints
+                @inbounds for z in 1:kDim
+                    kspl.uMish[z] = physical[i, v, 1]
+                    i += 1
+                end
+                SBtransform!(kspl)
+                @inbounds for k in 1:b_kDim
+                    tempsb[k, l] = kspl.b[k]
+                end
+            end
+            for z_b in 1:b_kDim
+                jring = grid.jbasis.data[r, z_b]
+                @inbounds for l in 1:lpoints
+                    jring.uMish[l] = tempsb[z_b, l]
+                end
+                FBtransform!(jring)
+            end
+        end
+
+        # ── i-direction Spline stage (per z_b k-spline coefficient) ─────────
+        isp0 = grid.ibasis.data[1, v]
+        ispR = grid.ibasis.data[2, v]
+        ispI = grid.ibasis.data[3, v]
+        ifilt = sf_active ?
+            _resolve_spline_filter(sf, _get_var_name(grid.params.vars, v), :i) :
+            nothing
+        for z_b in 1:b_kDim
+            isp0.uMish .= 0.0
+            @inbounds for r in 1:iDim
+                isp0.uMish[r] = grid.jbasis.data[r, z_b].b[1]
+            end
+            ifilt === nothing || _filter_spline_uMish!(isp0, ifilt, spline_scratch)
+            SBtransform!(isp0)
+
+            r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+            r2 = r1 + b_iDim - 1
+            @inbounds for k in 0:(b_iDim - 1)
+                spectral[r1 + k, v] = isp0.b[k + 1]
+            end
+
+            for k in 1:kDim_wn
+                ispR.uMish .= 0.0
+                ispI.uMish .= 0.0
+                @inbounds for r in 1:iDim
+                    if k <= grid.jbasis.data[r, z_b].params.kmax
+                        rk = k + 1
+                        ik = grid.jbasis.data[r, z_b].params.bDim - k + 1
+                        ispR.uMish[r] = grid.jbasis.data[r, z_b].b[rk]
+                        ispI.uMish[r] = grid.jbasis.data[r, z_b].b[ik]
+                    end
+                end
+                if ifilt !== nothing
+                    _filter_spline_uMish!(ispR, ifilt, spline_scratch)
+                    _filter_spline_uMish!(ispI, ifilt, spline_scratch)
+                end
+                SBtransform!(ispR)
+                SBtransform!(ispI)
+
+                p  = (k - 1) * 2
+                p1 = r2 + 1 + (p * b_iDim)
+                @inbounds for k2 in 0:(b_iDim - 1)
+                    spectral[p1 + k2, v] = ispR.b[k2 + 1]
+                end
+
+                p1 = p1 + b_iDim
+                @inbounds for k2 in 0:(b_iDim - 1)
+                    spectral[p1 + k2, v] = ispI.b[k2 + 1]
+                end
+            end
+        end
+    end
+
+    return spectral
+end
+
+function gridTransform!(grid::_SLRGrid)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
+function gridTransform(grid::_SLRGrid, physical::Array{real}, spectral::Array{real})
+
+    kDim_wn = grid.params.iDim + grid.params.patchOffsetL
+    kDim    = grid.params.kDim
+    b_kDim  = grid.params.b_kDim
+    iDim    = grid.params.iDim
+    b_iDim  = grid.params.b_iDim
+
+    max_lpoints = 0
+    for r in 1:iDim
+        max_lpoints = max(max_lpoints, grid.jbasis.data[r, 1].params.yDim)
+    end
+    splineBuffer    = zeros(Float64, iDim, 3)
+    ringBuffer      = zeros(Float64, max_lpoints, b_kDim)
+    spline_scratch  = Vector{Float64}(undef, iDim)
+    kspline_scratch = Vector{Float64}(undef, kDim)
+
+    has_wn_ahat = _has_wavenumber_ahat(grid)
+    slots_per_z = 1 + 2 * kDim_wn
+
+    for v in 1:size(spectral, 2)
+        kspl = grid.kbasis.data[v]
+        for dr in 0:2
+            for z_b in 1:b_kDim
+                r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+                r2 = r1 + b_iDim - 1
+                z_slot_base = (z_b - 1) * slots_per_z
+
+                isp0 = grid.ibasis.data[1, v]
+                copyto!(isp0.b, view(spectral, r1:r2, v))
+                if has_wn_ahat
+                    isp0.ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 0)
+                end
+                SAtransform!(isp0)
+                if dr == 0
+                    SItransform!(isp0)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, 1] = isp0.uMish[r]
+                    end
+                elseif dr == 1
+                    SIxtransform(isp0, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, 1] = spline_scratch[r]
+                    end
+                else
+                    SIxxtransform(isp0, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, 1] = spline_scratch[r]
+                    end
+                end
+                @inbounds for r in 1:iDim
+                    grid.jbasis.data[r, z_b].b[1] = splineBuffer[r, 1]
+                end
+
+                for k in 1:kDim_wn
+                    p  = (k - 1) * 2
+                    p1 = r2 + 1 + (p * b_iDim)
+                    p2 = p1 + b_iDim - 1
+
+                    ispR = grid.ibasis.data[2, v]
+                    copyto!(ispR.b, view(spectral, p1:p2, v))
+                    if has_wn_ahat
+                        ispR.ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p)
+                    end
+                    SAtransform!(ispR)
+                    if dr == 0
+                        SItransform!(ispR)
+                        @inbounds for r in 1:iDim
+                            splineBuffer[r, 2] = ispR.uMish[r]
+                        end
+                    elseif dr == 1
+                        SIxtransform(ispR, spline_scratch)
+                        @inbounds for r in 1:iDim
+                            splineBuffer[r, 2] = spline_scratch[r]
+                        end
+                    else
+                        SIxxtransform(ispR, spline_scratch)
+                        @inbounds for r in 1:iDim
+                            splineBuffer[r, 2] = spline_scratch[r]
+                        end
+                    end
+
+                    p1 = p2 + 1
+                    p2 = p1 + b_iDim - 1
+                    ispI = grid.ibasis.data[3, v]
+                    copyto!(ispI.b, view(spectral, p1:p2, v))
+                    if has_wn_ahat
+                        ispI.ahat .= _get_wavenumber_ahat(grid, v, z_slot_base + 1 + p + 1)
+                    end
+                    SAtransform!(ispI)
+                    if dr == 0
+                        SItransform!(ispI)
+                        @inbounds for r in 1:iDim
+                            splineBuffer[r, 3] = ispI.uMish[r]
+                        end
+                    elseif dr == 1
+                        SIxtransform(ispI, spline_scratch)
+                        @inbounds for r in 1:iDim
+                            splineBuffer[r, 3] = spline_scratch[r]
+                        end
+                    else
+                        SIxxtransform(ispI, spline_scratch)
+                        @inbounds for r in 1:iDim
+                            splineBuffer[r, 3] = spline_scratch[r]
+                        end
+                    end
+
+                    @inbounds for r in 1:iDim
+                        if k <= grid.jbasis.data[r, z_b].params.kmax
+                            rk = k + 1
+                            ik = grid.jbasis.data[r, z_b].params.bDim - k + 1
+                            grid.jbasis.data[r, z_b].b[rk] = splineBuffer[r, 2]
+                            grid.jbasis.data[r, z_b].b[ik] = splineBuffer[r, 3]
+                        end
+                    end
+                end
+
+                for r in 1:iDim
+                    FAtransform!(grid.jbasis.data[r, z_b])
+                end
+            end  # for z_b
+
+            zi = 1
+            for r in 1:iDim
+                lpoints = grid.jbasis.data[r, 1].params.yDim
+
+                for dl in 0:2
+                    if dr > 0 && dl > 0
+                        continue
+                    end
+
+                    for z_b in 1:b_kDim
+                        jring = grid.jbasis.data[r, z_b]
+                        if dr == 0
+                            if dl == 0
+                                FItransform!(jring)
+                            elseif dl == 1
+                                FIxtransform(jring, jring.uMish)
+                            else
+                                FIxxtransform(jring, jring.uMish)
+                            end
+                        else
+                            FItransform!(jring)
+                        end
+                        @inbounds for l in 1:lpoints
+                            ringBuffer[l, z_b] = jring.uMish[l]
+                        end
+                    end
+
+                    for l in 1:lpoints
+                        @inbounds for z_b in 1:b_kDim
+                            kspl.b[z_b] = ringBuffer[l, z_b]
+                        end
+                        SAtransform!(kspl)
+
+                        z1 = zi + (l - 1) * kDim
+                        z2 = z1 + kDim - 1
+                        if dr == 0 && dl == 0
+                            SItransform!(kspl)
+                            copyto!(view(physical, z1:z2, v, 1), kspl.uMish)
+                            SIxtransform(kspl, kspline_scratch)
+                            copyto!(view(physical, z1:z2, v, 6), kspline_scratch)
+                            SIxxtransform(kspl, kspline_scratch)
+                            copyto!(view(physical, z1:z2, v, 7), kspline_scratch)
+                        elseif dr == 0 && dl == 1
+                            SItransform!(kspl)
+                            copyto!(view(physical, z1:z2, v, 4), kspl.uMish)
+                        elseif dr == 0 && dl == 2
+                            SItransform!(kspl)
+                            copyto!(view(physical, z1:z2, v, 5), kspl.uMish)
+                        elseif dr == 1
+                            SItransform!(kspl)
+                            copyto!(view(physical, z1:z2, v, 2), kspl.uMish)
+                        elseif dr == 2
+                            SItransform!(kspl)
+                            copyto!(view(physical, z1:z2, v, 3), kspl.uMish)
+                        end
+                    end
+                end  # for dl
+
+                zi += lpoints * kDim
+            end  # for r
+        end  # for dr
+    end  # for v
+
+    return physical
+end
+
+# ── Regular-grid output — 3D Spherical (SLR) ──────────────────────────────
+
+function getRegularGridpoints(grid::_SLRGrid)
+    n_θ   = grid.params.i_regular_out
+    n_λ   = grid.params.j_regular_out
+    n_z   = grid.params.k_regular_out
+    θ_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_θ))
+    λ_pts = [2π * (j - 1) / n_λ for j in 1:n_λ]
+    z_pts = collect(LinRange(grid.params.kMin, grid.params.kMax, n_z))
+    pts   = zeros(Float64, n_θ * n_λ * n_z, 3)
+    idx   = 1
+    for i in 1:n_θ
+        for j in 1:n_λ
+            for k in 1:n_z
+                pts[idx, 1] = θ_pts[i]
+                pts[idx, 2] = λ_pts[j]
+                pts[idx, 3] = z_pts[k]
+                idx += 1
+            end
+        end
+    end
+    return pts
+end
+
+function regularGridTransform(grid::_SLRGrid, θ_pts::AbstractVector{Float64},
+                               λ_pts::AbstractVector{Float64}, z_pts::AbstractVector{Float64})
+    gp       = grid.params
+    kDim_wn  = gp.iDim + gp.patchOffsetL
+    b_iDim   = gp.b_iDim
+    b_kDim   = gp.b_kDim
+    nvars    = length(gp.vars)
+    n_θ      = length(θ_pts)
+    n_λ      = length(λ_pts)
+    n_z      = length(z_pts)
+    θ_vec    = collect(Float64, θ_pts)
+    λ_vec    = collect(Float64, λ_pts)
+    z_vec    = collect(Float64, z_pts)
+    n_kslots = 1 + 2 * kDim_wn
+
+    physical = zeros(Float64, n_θ * n_λ * n_z, nvars, 7)
+
+    for v in 1:length(gp.vars)
+        for dr in 0:2
+            spline_vals = zeros(Float64, n_θ, b_kDim, n_kslots)
+
+            for z_b in 1:b_kDim
+                r1 = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
+                r2 = r1 + b_iDim - 1
+
+                sp0 = grid.ibasis.data[1, v]
+                sp0.b .= view(grid.spectral, r1:r2, v)
+                SAtransform!(sp0)
+                if dr == 0; SItransform(sp0,   θ_vec, view(spline_vals, :, z_b, 1))
+                elseif dr == 1; SIxtransform(sp0,  θ_vec, view(spline_vals, :, z_b, 1))
+                else;           SIxxtransform(sp0, θ_vec, view(spline_vals, :, z_b, 1)); end
+
+                for k in 1:kDim_wn
+                    p  = (k - 1) * 2
+                    p1 = r2 + 1 + p * b_iDim;  p2 = p1 + b_iDim - 1
+                    spc = grid.ibasis.data[2, v]
+                    spc.b .= view(grid.spectral, p1:p2, v)
+                    SAtransform!(spc)
+                    if dr == 0; SItransform(spc,   θ_vec, view(spline_vals, :, z_b, 2k))
+                    elseif dr == 1; SIxtransform(spc,  θ_vec, view(spline_vals, :, z_b, 2k))
+                    else;           SIxxtransform(spc, θ_vec, view(spline_vals, :, z_b, 2k)); end
+
+                    p1 = p2 + 1;  p2 = p1 + b_iDim - 1
+                    sps = grid.ibasis.data[3, v]
+                    sps.b .= view(grid.spectral, p1:p2, v)
+                    SAtransform!(sps)
+                    if dr == 0; SItransform(sps,   θ_vec, view(spline_vals, :, z_b, 2k + 1))
+                    elseif dr == 1; SIxtransform(sps,  θ_vec, view(spline_vals, :, z_b, 2k + 1))
+                    else;           SIxxtransform(sps, θ_vec, view(spline_vals, :, z_b, 2k + 1)); end
+                end
+            end
+
+            for dl in 0:2
+                if dr > 0 && dl > 0; continue; end
+
+                fourier_b = zeros(Float64, n_θ, n_λ, b_kDim)
+                for ti in 1:n_θ
+                    for j in 1:n_λ
+                        λ = λ_vec[j]
+                        for z_b in 1:b_kDim
+                            val = (dl == 0) ? spline_vals[ti, z_b, 1] : 0.0
+                            for k in 1:kDim_wn
+                                rc = spline_vals[ti, z_b, 2k]
+                                rs = spline_vals[ti, z_b, 2k + 1]
+                                ck = cos(k * λ);  sk = sin(k * λ)
+                                if dl == 0
+                                    val += 2.0 * (rc * ck + rs * sk)
+                                elseif dl == 1
+                                    val += 2.0 * k * (-rc * sk + rs * ck)
+                                else
+                                    val -= 2.0 * k^2 * (rc * ck + rs * sk)
+                                end
+                            end
+                            fourier_b[ti, j, z_b] = val
+                        end
+                    end
+                end
+
+                kspl = grid.kbasis.data[v]
+                for ti in 1:n_θ
+                    for j in 1:n_λ
+                        for z_b in 1:b_kDim
+                            kspl.b[z_b] = fourier_b[ti, j, z_b]
+                        end
+                        SAtransform!(kspl)
+                        flat = (ti - 1) * n_λ * n_z + (j - 1) * n_z + 1
+                        out  = view(physical, flat:flat + n_z - 1, v, :)
+                        if dr == 0 && dl == 0
+                            SItransform(kspl, z_vec, view(out, :, 1))
+                            SIxtransform(kspl, z_vec, view(out, :, 6))
+                            SIxxtransform(kspl, z_vec, view(out, :, 7))
+                        elseif dr == 0 && dl == 1
+                            SItransform(kspl, z_vec, view(out, :, 4))
+                        elseif dr == 0 && dl == 2
+                            SItransform(kspl, z_vec, view(out, :, 5))
+                        elseif dr == 1
+                            SItransform(kspl, z_vec, view(out, :, 2))
+                        else
+                            SItransform(kspl, z_vec, view(out, :, 3))
+                        end
+                    end
+                end
+            end   # dl
+        end   # dr
+    end   # v
+
+    return physical
+end
+
+function regularGridTransform(grid::_SLRGrid, gridpoints::AbstractMatrix{Float64})
+    θ_pts = sort(unique(gridpoints[:, 1]))
+    λ_pts = sort(unique(gridpoints[:, 2]))
+    z_pts = sort(unique(gridpoints[:, 3]))
+    return regularGridTransform(grid, θ_pts, λ_pts, z_pts)
+end

@@ -252,6 +252,7 @@ export AbstractGeometry, CartesianGeometry, CylindricalGeometry, SphericalGeomet
 export AbstractBasisType, SplineBasisType, FourierBasisType, ChebyshevBasisType, NoBasisType
 export SplineBasisArray, FourierBasisArray, ChebyshevBasisArray, NoBasisArray
 export SL_Grid, SLZ_Grid
+export RLR_Grid, SLR_Grid
 export R_Grid, RL_Grid, RZ_Grid, RR_Grid, RLZ_Grid, RRR_Grid, Spline1D_Grid, Spline2D_Grid
 # Geometry-name aliases for spline grids
 export Polar_Grid, Cylindrical_Grid, Spline3D_Grid, Samurai_Grid, SphericalShell_Grid, Sphere_Grid
@@ -535,7 +536,7 @@ export d_x, d_y, d_z, d_r, d_theta, d_lambda
 # eliminate the per-call rebuild cost of the legacy solve path.
 include("solver_problem.jl")
 export SpringsteelField, Field, TypedOperator, solve!
-export SparseLinearBackend, KrylovLinearBackend
+export SparseLinearBackend, KrylovLinearBackend, SVDLinearBackend
 
 # ── Interpolation framework ──────────────────────────────────────────────────────────
 # Must be included after transforms_*.jl (uses _cheb_eval_pts!) and factory.jl

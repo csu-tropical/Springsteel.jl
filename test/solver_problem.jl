@@ -552,4 +552,87 @@ using Springsteel.CubicBSpline, Springsteel.Chebyshev
         @test_throws ArgumentError SpringsteelProblem(grid;
             rhs = ones(gp.iDim))
     end
+
+    @testset "SVDLinearBackend: equivalence on well-conditioned 1D Poisson" begin
+        # u''(x) = -π² sin(πx), Dirichlet 0 at both ends → u = sin(πx).
+        N  = 25
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0, "f" => Chebyshev.R0),
+            BCR = Dict("u" => Chebyshev.R1T0, "f" => Chebyshev.R0),
+            vars = Dict("u" => 1, "f" => 2))
+
+        grid_d = createGrid(gp); pts = solver_gridpoints(grid_d, "u")
+        grid_d.physical[:, 2, 1] .= -π^2 .* sin.(π .* pts)
+        u_d = Field(grid_d, "u")
+        prob_d = SpringsteelProblem(grid_d, ∂ᵢ^2 * u_d => :f)
+        solve!(prob_d)
+
+        grid_v = createGrid(gp)
+        grid_v.physical[:, 2, 1] .= -π^2 .* sin.(π .* pts)
+        u_v = Field(grid_v, "u")
+        prob_v = SpringsteelProblem(grid_v, ∂ᵢ^2 * u_v => :f; backend = SVDLinearBackend())
+        solve!(prob_v)
+
+        @test prob_v.backend isa SVDLinearBackend
+        @test maximum(abs.(grid_d.physical[:, 1, 1] .- grid_v.physical[:, 1, 1])) < 1e-10
+    end
+
+    @testset "SVDLinearBackend: :svd symbol resolution" begin
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = 12, b_iDim = 12,
+            BCL = Dict("u" => Chebyshev.R1T0, "f" => Chebyshev.R0),
+            BCR = Dict("u" => Chebyshev.R1T0, "f" => Chebyshev.R0),
+            vars = Dict("u" => 1, "f" => 2))
+        grid = createGrid(gp); pts = solver_gridpoints(grid, "u")
+        grid.physical[:, 2, 1] .= -π^2 .* sin.(π .* pts)
+        u = Field(grid, "u")
+        prob = SpringsteelProblem(grid, ∂ᵢ^2 * u => :f; backend = :svd)
+        @test prob.backend isa SVDLinearBackend
+        solve!(prob)
+        @test maximum(abs.(grid.physical[:, 1, 1] .- sin.(π .* pts))) < 1e-4
+    end
+
+    @testset "SVDLinearBackend: rtol truncation has effect" begin
+        # Compare rtol=0 (matches LocalLinearBackend) vs rtol=0.5 (drops most
+        # singular values) — the truncated solution should differ visibly.
+        N  = 20
+        gp = SpringsteelGridParameters(
+            geometry = "Z",
+            iMin = 0.0, iMax = 1.0, iDim = N, b_iDim = N,
+            BCL = Dict("u" => Chebyshev.R1T0, "f" => Chebyshev.R0),
+            BCR = Dict("u" => Chebyshev.R1T0, "f" => Chebyshev.R0),
+            vars = Dict("u" => 1, "f" => 2))
+
+        g0 = createGrid(gp); pts = solver_gridpoints(g0, "u")
+        g0.physical[:, 2, 1] .= -π^2 .* sin.(π .* pts)
+        u0 = Field(g0, "u")
+        prob0 = SpringsteelProblem(g0, ∂ᵢ^2 * u0 => :f; backend = SVDLinearBackend(rtol = 0.0))
+        solve!(prob0)
+
+        g1 = createGrid(gp)
+        g1.physical[:, 2, 1] .= -π^2 .* sin.(π .* pts)
+        u1 = Field(g1, "u")
+        prob1 = SpringsteelProblem(g1, ∂ᵢ^2 * u1 => :f; backend = SVDLinearBackend(rtol = 0.5))
+        solve!(prob1)
+
+        @test maximum(abs.(g0.physical[:, 1, 1] .- g1.physical[:, 1, 1])) > 1e-3
+    end
+
+    @testset "SVDLinearBackend: preconditioner kwarg is rejected" begin
+        gp = SpringsteelGridParameters(
+            geometry = "R",
+            iMin = 0.0, iMax = 1.0, num_cells = 5,
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            vars = Dict("u" => 1))
+        grid = createGrid(gp)
+        u = Field(grid, "u")
+        @test_throws ArgumentError SpringsteelProblem(grid,
+            ∂_x^2 * u => zeros(gp.iDim);
+            backend = SVDLinearBackend(),
+            preconditioner = :diag)
+    end
 end

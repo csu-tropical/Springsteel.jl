@@ -323,6 +323,36 @@ See also: [`SL_Grid`](@ref), [`RLZ_Grid`](@ref), [`SpringsteelGrid`](@ref)
 """
 const SLZ_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, ChebyshevBasisArray{1}}
 
+"""
+    RLR_Grid
+
+Type alias for a 3-D cylindrical grid (Spline × Fourier × Spline) — like
+`RLZ_Grid` but with a cubic-spline k-direction in place of Chebyshev.
+Suited to k-direction BCs that the Chebyshev R0/R1T0/R1T1 menu cannot
+express (R3X / Robin / Cauchy / …).
+
+```julia
+const RLR_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, SplineBasisArray{1}}
+```
+
+See also: [`RLZ_Grid`](@ref), [`SLR_Grid`](@ref), [`SpringsteelGrid`](@ref)
+"""
+const RLR_Grid = SpringsteelGrid{CylindricalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, SplineBasisArray{1}}
+
+"""
+    SLR_Grid
+
+Type alias for a 3-D spherical grid (Spline × Fourier × Spline) — like
+`SLZ_Grid` but with a cubic-spline k-direction in place of Chebyshev.
+
+```julia
+const SLR_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, SplineBasisArray{1}}
+```
+
+See also: [`SLZ_Grid`](@ref), [`RLR_Grid`](@ref), [`SpringsteelGrid`](@ref)
+"""
+const SLR_Grid = SpringsteelGrid{SphericalGeometry, SplineBasisArray{2}, FourierBasisArray{2}, SplineBasisArray{1}}
+
 # ────────────────────────────────────────────────────────────────────────────
 # Type aliases — backward-compatible old grid names
 # Old names → parametric SpringsteelGrid types

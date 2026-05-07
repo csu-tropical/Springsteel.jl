@@ -81,8 +81,9 @@ function _resolve_backend(b::Symbol, grid::AbstractGrid)
     b === :dense  && return LocalLinearBackend()
     b === :sparse && return SparseLinearBackend()
     b === :krylov && return KrylovLinearBackend()
+    b === :svd    && return SVDLinearBackend()
     throw(ArgumentError(
-        "Unknown backend symbol `:$b` — use :auto, :dense, :sparse, or :krylov"))
+        "Unknown backend symbol `:$b` — use :auto, :dense, :sparse, :krylov, or :svd"))
 end
 
 # Wrapper that holds the sparse operator plus any preconditioner the user
@@ -106,6 +107,16 @@ end
 function _factorize_operator(b::KrylovLinearBackend, L::Matrix{Float64})
     A = sparse(L)
     return KrylovOp(A, _resolve_preconditioner(b.preconditioner, A))
+end
+function _factorize_operator(b::SVDLinearBackend, L::Matrix{Float64})
+    F = svd(L)
+    if b.rtol > 0
+        cutoff = b.rtol * F.S[1]
+        @inbounds for i in eachindex(F.S)
+            F.S[i] < cutoff && (F.S[i] = 0.0)
+        end
+    end
+    return F
 end
 
 """

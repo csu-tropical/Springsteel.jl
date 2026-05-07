@@ -117,6 +117,29 @@ end
 KrylovLinearBackend() = KrylovLinearBackend(nothing)
 
 """
+    SVDLinearBackend(; rtol=0.0) <: AbstractLinearBackend
+
+Backend that factorises the assembled operator via `LinearAlgebra.svd` and
+solves through the SVD pseudo-inverse (`a = V · Σ⁺ · Uᵀ · b`). Useful for
+rank-deficient or ill-conditioned systems and for regularised least-squares.
+
+# Fields
+- `rtol::Float64` — relative tolerance for singular-value truncation.
+  Singular values below `rtol · σ_max` are zeroed before the solve.
+  `rtol = 0.0` (default) keeps LAPACK's natural precision; the SVD object's
+  `\\` already handles tiny singulars correctly.
+
+Full dense SVD is O(N³); appropriate up to ~few-thousand-row systems. For
+larger problems use a partial / iterative SVD outside the framework
+(e.g. `KrylovKit.svdsolve`).
+"""
+struct SVDLinearBackend <: AbstractLinearBackend
+    rtol::Float64
+end
+
+SVDLinearBackend(; rtol::Real=0.0) = SVDLinearBackend(Float64(rtol))
+
+"""
     OptimizationBackend <: AbstractSolverBackend
 
 Backend sentinel for the Optimization.jl extension. Requires the `Optimization`

@@ -1711,6 +1711,57 @@ function _eval_unstructured_rlz(source::SpringsteelGrid, pts::AbstractMatrix{Flo
     return view(result, 1:npts)
 end
 
+# ── Unstructured evaluation: Spline+Fourier+Spline (RLR, SLR) ────────────
+#
+# Spectral layout is identical to RLZ/SLZ — z-major × wavenumber-interleaved
+# (TRAP-1: p = (k-1)*2). The k direction uses cubic B-spline rather than
+# Chebyshev: after the per-point Fourier sum collects k-spline B-coefficients,
+# call SAtransform!(kspl) to recover spline A-coefficients, then evaluate the
+# spline at the target z.
+function _eval_unstructured_rlr(source::SpringsteelGrid, pts::AbstractMatrix{Float64}, sv::Int)
+    gp = source.params
+    b_iDim = gp.b_iDim
+    b_kDim = gp.b_kDim
+    kDim_wn = gp.iDim + gp.patchOffsetL
+    npts = size(pts, 1)
+    n_kslots = 1 + 2 * kDim_wn
+
+    sc = _get_scratch_rlz(objectid(source), npts, b_kDim, n_kslots)
+    r_view = view(pts, :, 1)
+
+    a_cache = _get_ahat_cache_rlz(source, sv)
+    sp0 = source.ibasis.data[1, sv]
+
+    for z_b in 1:b_kDim
+        stripe_offset = (z_b - 1) * n_kslots
+        for slot in 1:n_kslots
+            CubicBSpline.SItransform(sp0.params, view(a_cache, :, stripe_offset + slot),
+                                     r_view, view(sc.spline_vals, 1:npts, z_b, slot))
+        end
+    end
+
+    result = sc.result
+    kspl = source.kbasis.data[sv]
+
+    for n in 1:npts
+        λ = pts[n, 2]
+        z = pts[n, 3]
+
+        for z_b in 1:b_kDim
+            val = sc.spline_vals[n, z_b, 1]
+            for k in 1:kDim_wn
+                val += 2.0 * (sc.spline_vals[n, z_b, 2k] * cos(k * λ) +
+                              sc.spline_vals[n, z_b, 2k + 1] * sin(k * λ))
+            end
+            kspl.b[z_b] = val
+        end
+
+        SAtransform!(kspl)
+        result[n] = CubicBSpline.SItransform(kspl.params, kspl.a, z, 0)
+    end
+    return view(result, 1:npts)
+end
+
 # ── Unified unstructured evaluation dispatch ──────────────────────────────
 
 """
@@ -1795,9 +1846,11 @@ function evaluate_unstructured(source::SpringsteelGrid, pts::AbstractMatrix{Floa
             _eval_unstructured_2d_ik(source, pts_ib, sv)
 
         elseif i_active && j_active && k_active
-            # 3D: RRR, RLZ, SLZ
+            # 3D: RRR, RLZ, SLZ, RLR, SLR
             if i_spline && j_fourier && k_cheb
                 _eval_unstructured_rlz(source, pts_ib, sv)
+            elseif i_spline && j_fourier && k_spline
+                _eval_unstructured_rlr(source, pts_ib, sv)
             elseif i_spline && j_spline && k_spline
                 _eval_unstructured_3d_ijk(source, pts_ib, sv)
             else

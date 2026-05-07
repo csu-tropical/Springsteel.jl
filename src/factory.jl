@@ -93,6 +93,8 @@ function parse_geometry(geometry::String)
         "SphericalShell" => (SphericalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType()),
         "SLZ"          => (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
         "Sphere"       => (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
+        "RLR"          => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   SplineBasisType()),
+        "SLR"          => (SphericalGeometry(),   SplineBasisType(),    FourierBasisType(),   SplineBasisType()),
         # ── Fourier-based ────────────────────────────────────────────────────────
         "L"            => (CartesianGeometry(),   FourierBasisType(),   NoBasisType(),        NoBasisType()),
         "Ring1D"       => (CartesianGeometry(),   FourierBasisType(),   NoBasisType(),        NoBasisType()),
@@ -214,8 +216,8 @@ function _cartesian_j_dims(gp::SpringsteelGridParameters)
     return nc_j * gp.mubar, nc_j + 3
 end
 
-# kDim, b_kDim for Cartesian Spline k (RRR)
-function _cartesian_k_dims(gp::SpringsteelGridParameters)
+# kDim, b_kDim for Cartesian Spline k (RRR) — also reused for RLR / SLR
+function _spline_k_dims(gp::SpringsteelGridParameters)
     if gp.kDim == 0
         dk = gp.kMax - gp.kMin
         dx = gp.iMax - gp.iMin
@@ -225,6 +227,9 @@ function _cartesian_k_dims(gp::SpringsteelGridParameters)
     end
     return nc_k * gp.mubar, nc_k + 3
 end
+
+# Backward-compat alias
+const _cartesian_k_dims = _spline_k_dims
 
 # Reconstruct SpringsteelGridParameters with updated j/k dims
 function _update_gp(gp::SpringsteelGridParameters;
@@ -308,7 +313,17 @@ function compute_derived_params(gp::SpringsteelGridParameters)
 
     elseif geom == "RRR"
         jDim, b_jDim = _cartesian_j_dims(gp)
-        kDim, b_kDim = _cartesian_k_dims(gp)
+        kDim, b_kDim = _spline_k_dims(gp)
+        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
+
+    elseif geom == "RLR"
+        jDim, b_jDim = _fourier_j_dims_cyl(gp)
+        kDim, b_kDim = _spline_k_dims(gp)
+        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
+
+    elseif geom == "SLR"
+        jDim, b_jDim = _fourier_j_dims_sph(gp)
+        kDim, b_kDim = _spline_k_dims(gp)
         return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
 
     # Fourier-based (user supplies iDim/b_iDim/jDim/b_jDim/kDim/b_kDim directly)
@@ -837,6 +852,122 @@ function _create_spherical_3d_slz(gp::SpringsteelGridParameters)
     return grid
 end
 
+# 3D Cylindrical Spline×Fourier×Spline (RLR)
+# Drop-in replacement for RLZ where the k-direction uses CubicBSpline rather
+# than Chebyshev — gains the full spline BC menu (R3X, Robin, Cauchy, …) at
+# the cost of mish-vs-collocation point counts.
+function _create_cylindrical_3d_rlr(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    splines = Array{Spline1D}(undef, gp.b_kDim, nvars)   # ibasis: per-z splines
+    rings   = Array{Fourier1D}(undef, gp.iDim, gp.b_kDim)
+    columns = Array{Spline1D}(undef, nvars)              # kbasis: per-var spline
+    ibasis  = SplineBasisArray(splines)
+    jbasis  = FourierBasisArray(rings)
+    kbasis  = SplineBasisArray(columns)
+
+    kDim_fourier = gp.iDim + gp.patchOffsetL
+    spec_dim     = gp.b_kDim * gp.b_iDim * (1 + 2 * kDim_fourier)
+    phys_dim     = gp.kDim * gp.jDim
+    spectral = zeros(Float64, spec_dim, nvars)
+    physical = zeros(Float64, phys_dim, nvars, 7)
+
+    grid = SpringsteelGrid{CylindricalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    nc_k = gp.b_kDim - 3
+    for key in keys(gp.vars)
+        v = gp.vars[key]
+        var_l_q   = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
+        var_l_q_k = get(gp.l_q, string(key, "_k"), var_l_q)
+        for z in 1:gp.b_kDim
+            grid.ibasis.data[z, v] = Spline1D(SplineParameters(
+                xmin      = gp.iMin,
+                xmax      = gp.iMax,
+                num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
+                l_q       = var_l_q,
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
+        end
+        grid.kbasis.data[v] = Spline1D(SplineParameters(
+            xmin      = gp.kMin,
+            xmax      = gp.kMax,
+            num_cells = nc_k,
+            mubar     = gp.mubar,
+            quadrature = gp.quadrature,
+            l_q       = var_l_q_k,
+            BCL       = _get_spline_bc(gp.BCB, key),
+            BCR       = _get_spline_bc(gp.BCT, key)))
+    end
+
+    var_kmax = get(gp.max_wavenumber, "default", -1)
+    for key in keys(gp.vars)
+        var_kmax = get(gp.max_wavenumber, key, var_kmax)
+    end
+    for b in 1:gp.b_kDim
+        _fill_fourier_rings_cyl!(grid.jbasis.data, gp, var_kmax, b)
+    end
+    return grid
+end
+
+# 3D Spherical Spline×Fourier×Spline (SLR)
+function _create_spherical_3d_slr(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    mishpts = _i_mishpoints(gp)
+    splines  = Array{Spline1D}(undef, gp.b_kDim, nvars)
+    rings    = Array{Fourier1D}(undef, gp.iDim, gp.b_kDim)
+    columns  = Array{Spline1D}(undef, nvars)
+    ibasis   = SplineBasisArray(splines)
+    jbasis   = FourierBasisArray(rings)
+    kbasis   = SplineBasisArray(columns)
+
+    kDim_fourier = gp.iDim + gp.patchOffsetL
+    spec_dim     = gp.b_kDim * gp.b_iDim * (1 + 2 * kDim_fourier)
+    phys_dim     = gp.kDim * gp.jDim
+    spectral = zeros(Float64, spec_dim, nvars)
+    physical = zeros(Float64, phys_dim, nvars, 7)
+
+    grid = SpringsteelGrid{SphericalGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    nc_k = gp.b_kDim - 3
+    for key in keys(gp.vars)
+        v = gp.vars[key]
+        var_l_q   = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
+        var_l_q_k = get(gp.l_q, string(key, "_k"), var_l_q)
+        for z in 1:gp.b_kDim
+            grid.ibasis.data[z, v] = Spline1D(SplineParameters(
+                xmin      = gp.iMin,
+                xmax      = gp.iMax,
+                num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
+                l_q       = var_l_q,
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
+        end
+        grid.kbasis.data[v] = Spline1D(SplineParameters(
+            xmin      = gp.kMin,
+            xmax      = gp.kMax,
+            num_cells = nc_k,
+            mubar     = gp.mubar,
+            quadrature = gp.quadrature,
+            l_q       = var_l_q_k,
+            BCL       = _get_spline_bc(gp.BCB, key),
+            BCR       = _get_spline_bc(gp.BCT, key)))
+    end
+
+    var_kmax = get(gp.max_wavenumber, "default", -1)
+    for key in keys(gp.vars)
+        var_kmax = get(gp.max_wavenumber, key, var_kmax)
+    end
+    for b in 1:gp.b_kDim
+        _fill_fourier_rings_sph!(grid.jbasis.data, gp, mishpts, var_kmax, b)
+    end
+    return grid
+end
+
 # ────────────────────────────────────────────────────────────────────────────
 # Fourier-based and Chebyshev-based creation functions
 # ────────────────────────────────────────────────────────────────────────────
@@ -1124,6 +1255,10 @@ function createGrid(gp::SpringsteelGridParameters)
         return _create_spherical_2d_sl(gp_final)
     elseif geom == "SLZ"
         return _create_spherical_3d_slz(gp_final)
+    elseif geom == "RLR"
+        return _create_cylindrical_3d_rlr(gp_final)
+    elseif geom == "SLR"
+        return _create_spherical_3d_slr(gp_final)
     # ── Fourier-based (canonical: L, LL, LLZ) ───────────────────────────────────
     elseif geom == "L"
         return _create_cartesian_1d_fourier(gp_final)

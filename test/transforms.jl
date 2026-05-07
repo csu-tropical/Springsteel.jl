@@ -906,6 +906,186 @@
             @test maximum(abs.(grid.physical[:, 1, 4])) < 0.05
         end
 
+        # ── 3D Cylindrical Spline×Fourier×Spline (RLR) ──────────────────────
+        @testset "RLR roundtrip f(r,λ,z) = r·cos(λ)·z" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RLR",
+                num_cells = 4,
+                iMin = 0.0, iMax = 60.0,
+                kMin = 0.0, kMax = 10.0,
+                kDim = 12,    # nc_k = 4
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R0),
+                BCT  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            @test typeof(grid) == RLR_Grid
+            @test grid.params.b_kDim == 7   # nc_k + 3
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi   = 1
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m     = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    l_m = grid.jbasis.data[r, 1].mishPoints[l]
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] =
+                            r_m * cos(l_m) * z_m
+                    end
+                end
+                zi += lpoints * kDim
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10
+            gridTransform!(grid)
+
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-2
+        end
+
+        @testset "RLR axisymmetric polynomial roundtrip f(r,λ,z) = r·z²" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RLR",
+                num_cells = 5,
+                iMin = 0.0, iMax = 50.0,
+                kMin = 0.0, kMax = 5.0,
+                kDim = 9,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R0),
+                BCT  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi   = 1
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                r_m     = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = r_m * z_m^2
+                    end
+                end
+                zi += lpoints * kDim
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 1e-2
+        end
+
+        @testset "RLR vertical derivative ∂f/∂z" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "RLR",
+                num_cells = 5,
+                iMin = 0.0, iMax = 50.0,
+                kMin = 0.0, kMax = 10.0,
+                kDim = 12,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R0),
+                BCT  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi   = 1
+            for r in 1:iDim
+                ri      = r + grid.params.patchOffsetL
+                lpoints = 4 + 4*ri
+                for l in 1:lpoints
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] = z_m / 10.0
+                    end
+                end
+                zi += lpoints * kDim
+            end
+
+            spectralTransform!(grid)
+            gridTransform!(grid)
+
+            # ∂f/∂z = 0.1
+            @test maximum(abs.(grid.physical[:, 1, 6] .- 0.1)) < 0.05
+            # ∂f/∂λ = 0
+            @test maximum(abs.(grid.physical[:, 1, 4])) < 0.05
+        end
+
+        # ── 3D Spherical Spline×Fourier×Spline (SLR) ────────────────────────
+        @testset "SLR roundtrip f(θ,λ,z) = sin(θ)·cos(λ)·z" begin
+            gp = SpringsteelGridParameters(
+                geometry  = "SLR",
+                num_cells = 6,
+                iMin = 0.0, iMax = π,
+                kMin = 0.0, kMax = 10.0,
+                kDim = 12,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R0),
+                BCT  = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            @test typeof(grid) == SLR_Grid
+
+            iDim = grid.params.iDim
+            kDim = grid.params.kDim
+            zi   = 1
+            for r in 1:iDim
+                lpoints = grid.jbasis.data[r, 1].params.yDim
+                θ_r     = grid.ibasis.data[1, 1].mishPoints[r]
+                for l in 1:lpoints
+                    λ_l = grid.jbasis.data[r, 1].mishPoints[l]
+                    for z in 1:kDim
+                        z_m = grid.kbasis.data[1].mishPoints[z]
+                        grid.physical[zi + (l-1)*kDim + (z-1), 1, 1] =
+                            sin(θ_r) * cos(λ_l) * z_m
+                    end
+                end
+                zi += lpoints * kDim
+            end
+            original = copy(grid.physical[:, 1, 1])
+
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-10
+            gridTransform!(grid)
+
+            max_err = maximum(abs.(grid.physical[:, 1, 1] .- original))
+            @test max_err < 5e-2
+        end
+
+        @testset "RLR Dirichlet k-BC enforces u(z=zMin)=0" begin
+            # Spline R1T0 on top and bottom forces field to 0 at endpoints.
+            gp = SpringsteelGridParameters(
+                geometry  = "RLR",
+                num_cells = 4,
+                iMin = 0.0, iMax = 50.0,
+                kMin = 0.0, kMax = 10.0,
+                kDim = 12,
+                vars = Dict("u" => 1),
+                BCL  = Dict("u" => CubicBSpline.R0),
+                BCR  = Dict("u" => CubicBSpline.R0),
+                BCB  = Dict("u" => CubicBSpline.R1T0),
+                BCT  = Dict("u" => CubicBSpline.R1T0))
+            grid = createGrid(gp)
+            @test grid.kbasis.data[1].params.BCL == CubicBSpline.R1T0
+            @test grid.kbasis.data[1].params.BCR == CubicBSpline.R1T0
+        end
+
     end  # 3D Transforms
 
     # ── Regular Grid Transforms (2D/3D) ──────────────────────────────────

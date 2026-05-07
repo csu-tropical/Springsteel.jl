@@ -484,6 +484,8 @@ function _spline_dirs(geom::String)
         return (:i,)
     elseif g in ("RL", "RLZ", "SL", "SLZ", "Cylindrical", "Polar")
         return (:i,)
+    elseif g in ("RLR", "SLR")
+        return (:i, :k)
     else
         return ()
     end
@@ -728,6 +730,54 @@ function _filter_mish_impl!(
                 _convolve_axis!(row, view(scratch, 1:kDim),
                                 ksp.mishPoints, K, support)
             end
+        end
+    end
+    return nothing
+end
+
+# ── RLR / SLR (3D Spline×Fourier×Spline) — k-direction physical filter ────
+#
+# For RLR/SLR the i-direction filter is applied inline inside spectralTransform
+# (on the post-Fourier spline uMish), matching the RLZ/SLZ pattern. Only the
+# k-direction filter runs as a physical-space pre-pass here.
+# Physical layout (mirrors RLZ/SLZ):
+#   For each radius r with ring size lpoints = 4 + 4(r + patchOffsetL) (cyl)
+#   or = jbasis.data[r, 1].params.yDim (sph), for each azimuthal index l,
+#   the k-strip occupies kDim contiguous rows. Outer offset advances by
+#   lpoints * kDim per radius.
+function _filter_mish_impl!(
+        grid::SpringsteelGrid{<:Union{CylindricalGeometry, SphericalGeometry},
+                              <:SplineBasisArray, <:FourierBasisArray, <:SplineBasisArray},
+        sf::Dict)
+    kDim = grid.params.kDim
+    iDim = grid.params.iDim
+    scratch = Vector{Float64}(undef, kDim)
+
+    # Cylindrical: lpoints = 4 + 4*(r + patchOffsetL); Spherical: lpoints = ring.params.yDim.
+    is_cyl = grid isa SpringsteelGrid{CylindricalGeometry}
+
+    for (var_name, v) in grid.params.vars
+        filt_k = _resolve_spline_filter(sf, var_name, :k)
+        filt_k === nothing && continue
+        ksp = grid.kbasis.data[v]
+        K, support = _spline_kernel(filt_k, ksp.params.DX)
+
+        zi = 1
+        for r in 1:iDim
+            lpoints = if is_cyl
+                4 + 4*(r + grid.params.patchOffsetL)
+            else
+                grid.jbasis.data[r, 1].params.yDim
+            end
+            for l in 1:lpoints
+                z1 = zi + (l - 1) * kDim
+                z2 = z1 + kDim - 1
+                row = view(grid.physical, z1:z2, v, 1)
+                @inbounds copyto!(view(scratch, 1:kDim), row)
+                _convolve_axis!(row, view(scratch, 1:kDim),
+                                ksp.mishPoints, K, support)
+            end
+            zi += lpoints * kDim
         end
     end
     return nothing
