@@ -234,7 +234,10 @@ export AbstractFilter, SpectralFilter, GaussianFilter
 
 # Multi-patch exports
 export PatchInterface, MultiPatchGrid
+export PatchInterfaceMetadata, InterfacePayload
 export update_interface!, multiGridTransform!
+export compute_interface_payload, compute_interface_payload!
+export apply_interface_payload!
 export PatchChain, PatchEmbedded
 export AbstractMultiGrid, SpringsteelMultiGrid, createMultiGrid
 

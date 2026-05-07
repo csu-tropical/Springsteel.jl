@@ -53,8 +53,113 @@ function _build_coupling_matrix(primary_DX::Float64, secondary_DX::Float64)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
-# PatchInterface
+# Spline-coupling scheme trait
 # ────────────────────────────────────────────────────────────────────────────
+
+"""
+    _is_reused_spline_grid(grid) -> Bool
+
+Return `true` if the grid reuses spline objects across wavenumbers.
+RL, RLZ, SL, SLZ grids have only 3 ibasis splines (k=0, k-real, k-imag)
+shared across all wavenumbers, unlike R/RR/RRR which have dedicated splines
+per spectral mode.
+"""
+function _is_reused_spline_grid(grid::SpringsteelGrid)
+    return (grid.jbasis isa FourierBasisArray) && (grid.ibasis isa SplineBasisArray)
+end
+
+"""
+    _spline_coupling_scheme(grid::SpringsteelGrid) -> Symbol
+
+Return the spline-coupling scheme used by `gridTransform!` and
+`update_interface!`:
+
+- `:per_mode`   — dedicated splines per j/k spectral mode (R, RR, RRR, RZ).
+- `:reused_2d`  — Fourier λ + reused splines, no Chebyshev (RL, SL).
+- `:reused_3d`  — Fourier λ + reused splines + Chebyshev z (RLZ, SLZ).
+
+Single extension point: a new spline-coupled geometry only needs a method on
+this function, not on `compute_interface_payload` / `apply_interface_payload!`.
+"""
+function _spline_coupling_scheme(grid::SpringsteelGrid)
+    if _is_reused_spline_grid(grid)
+        return grid.kbasis isa NoBasisArray ? :reused_2d : :reused_3d
+    else
+        return :per_mode
+    end
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+# PatchInterfaceMetadata, InterfacePayload, PatchInterface
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    PatchInterfaceMetadata
+
+Side / coupling / topology data plus the minimum secondary descriptors needed
+to size and dispatch interface payloads.  Safe to replicate across processes;
+carries no grid pointers.
+
+# Fields
+- `primary_side::Symbol`, `secondary_side::Symbol`, `dimension::Symbol`
+- `coupling_matrix::Matrix{Float64}` — 3×3 basis-conversion matrix
+- `is_stacked::Bool`
+- `primary_node_indices::Tuple{Int,Int,Int}`
+- `scheme::Symbol` — `:per_mode | :reused_2d | :reused_3d`; both ends agree
+- `nvars::Int`
+- `n_modes::Int` — `:per_mode` mode count; `1` otherwise
+- `kDim_couple::Int` — `min(kDim_p, kDim_s)` for `:reused_*`; `0` otherwise
+- `b_kDim::Int` — `:reused_3d` Chebyshev levels; `0` otherwise
+- `n_slots::Int` — secondary registry slot count (also the payload's slot dim)
+- `b_iDim_p::Int`, `b_iDim_s::Int` — primary/secondary spline lengths along `:i`
+- `kDim_s::Int` — secondary kDim along Fourier dim (for `:reused_*`)
+"""
+struct PatchInterfaceMetadata
+    primary_side::Symbol
+    secondary_side::Symbol
+    dimension::Symbol
+    coupling_matrix::Matrix{Float64}
+    is_stacked::Bool
+    primary_node_indices::Tuple{Int,Int,Int}
+    scheme::Symbol
+    nvars::Int
+    n_modes::Int
+    kDim_couple::Int
+    b_kDim::Int
+    n_slots::Int
+    b_iDim_p::Int
+    b_iDim_s::Int
+    kDim_s::Int
+end
+
+"""
+    InterfacePayload
+
+Wire-format buffer carrying coupled border coefficients from a primary to a
+secondary patch.  Layout is opaque to callers; consumed only by
+[`apply_interface_payload!`](@ref).  Plain `Array{Float64}` for trivial
+`Serialization.serialize` round-trip.
+
+# Fields
+- `scheme::Symbol` — `:per_mode | :reused_2d | :reused_3d`
+- `side::Symbol`   — secondary side (`:left | :right`)
+- `nvars::Int`
+- `n_slots::Int`   — `n_modes` for `:per_mode`; total slot count otherwise
+- `border::Array{Float64,3}` — `(3, n_slots, nvars)`
+"""
+struct InterfacePayload
+    scheme::Symbol
+    side::Symbol
+    nvars::Int
+    n_slots::Int
+    border::Array{Float64,3}
+end
+
+function _allocate_payload(meta::PatchInterfaceMetadata)
+    border = zeros(Float64, 3, meta.n_slots, meta.nvars)
+    return InterfacePayload(meta.scheme, meta.secondary_side,
+                            meta.nvars, meta.n_slots, border)
+end
 
 """
     PatchInterface
@@ -68,30 +173,42 @@ spectral coefficients to the secondary's `ahat` vector before transforming the
 secondary.
 
 # Fields
-- `primary::SpringsteelGrid` — freely-evolving patch
+- `metadata::PatchInterfaceMetadata` — side / coupling / topology info
+- `primary::SpringsteelGrid`   — freely-evolving patch
 - `secondary::SpringsteelGrid` — patch receiving boundary data via R3X
-- `primary_side::Symbol` — `:left` or `:right`, which side of primary faces the interface
-- `secondary_side::Symbol` — `:left` or `:right`, which side of secondary receives data
-- `dimension::Symbol` — connected dimension (`:i` only for now)
-- `coupling_matrix::Matrix{Float64}` — 3×3 basis conversion matrix
-- `is_stacked::Bool` — `true` for interior (stacked) nest, `false` for hollow nest
-- `primary_node_indices::Tuple{Int,Int,Int}` — indices into primary `.a` for coefficient extraction
+- `_a_extract`, `_a_border`   — per-call 3-element scratch buffers
+- `_payload_buf::InterfacePayload` — preallocated payload (zero-alloc path)
+
+For backwards compatibility, the legacy fields `primary_side`, `secondary_side`,
+`dimension`, `coupling_matrix`, `is_stacked`, `primary_node_indices` are forwarded
+to `metadata` via `Base.getproperty`.
 
 See also: [`MultiPatchGrid`](@ref), [`update_interface!`](@ref),
 [`PatchChain`](@ref), [`PatchEmbedded`](@ref)
 """
 struct PatchInterface{P<:SpringsteelGrid, S<:SpringsteelGrid}
+    metadata::PatchInterfaceMetadata
     primary::P
     secondary::S
-    primary_side::Symbol
-    secondary_side::Symbol
-    dimension::Symbol
-    coupling_matrix::Matrix{Float64}
-    is_stacked::Bool
-    primary_node_indices::Tuple{Int,Int,Int}
     # Per-call scratch buffers for the 3-element extract / coupling matvec
     _a_extract::Vector{Float64}
     _a_border::Vector{Float64}
+    # Preallocated payload buffer to keep the single-process update_interface!
+    # path zero-alloc (as recorded in project memory).
+    _payload_buf::InterfacePayload
+end
+
+# Forward legacy field names (primary_side, coupling_matrix, etc.) onto
+# metadata.  The compiler inlines this when the property name is a literal,
+# so hot paths inside this file pay no extra cost.
+function Base.getproperty(iface::PatchInterface, name::Symbol)
+    if name === :primary_side    || name === :secondary_side       ||
+       name === :dimension       || name === :coupling_matrix      ||
+       name === :is_stacked      || name === :primary_node_indices
+        return getfield(getfield(iface, :metadata), name)
+    else
+        return getfield(iface, name)
+    end
 end
 
 # ── Validation helpers ─────────────────────────────────────────────────────
@@ -294,9 +411,49 @@ function PatchInterface(primary::SpringsteelGrid, secondary::SpringsteelGrid,
         end
     end
 
-    return PatchInterface(primary, secondary, primary_side, secondary_side,
-                          dimension, coupling_matrix, is_stacked, primary_node_indices,
-                          zeros(Float64, 3), zeros(Float64, 3))
+    # Build metadata (carries all wire-relevant descriptors)
+    p_scheme = _spline_coupling_scheme(primary)
+    s_scheme = _spline_coupling_scheme(secondary)
+    p_scheme === s_scheme || throw(ArgumentError(
+        "Primary scheme :$p_scheme ≠ secondary scheme :$s_scheme"))
+
+    nvars = length(secondary.params.vars)
+    b_iDim_p = primary.params.b_iDim
+    b_iDim_s = secondary.params.b_iDim
+
+    if p_scheme === :per_mode
+        n_modes = size(secondary.ibasis.data, 1)
+        n_slots = n_modes
+        kDim_couple = 0
+        b_kDim = 0
+        kDim_s = 0
+    elseif p_scheme === :reused_2d
+        n_modes = 1
+        kDim_p = primary.params.iDim + primary.params.patchOffsetL
+        kDim_s = secondary.params.iDim + secondary.params.patchOffsetL
+        kDim_couple = min(kDim_p, kDim_s)
+        b_kDim = 0
+        n_slots = 2 + 2 * kDim_s
+    else  # :reused_3d
+        n_modes = 1
+        kDim_p = primary.params.iDim + primary.params.patchOffsetL
+        kDim_s = secondary.params.iDim + secondary.params.patchOffsetL
+        kDim_couple = min(kDim_p, kDim_s)
+        b_kDim = primary.params.b_kDim
+        n_slots = b_kDim * (1 + 2 * kDim_s)
+    end
+
+    metadata = PatchInterfaceMetadata(
+        primary_side, secondary_side, dimension,
+        coupling_matrix, is_stacked, primary_node_indices,
+        p_scheme, nvars, n_modes, kDim_couple, b_kDim,
+        n_slots, b_iDim_p, b_iDim_s, kDim_s,
+    )
+
+    payload = _allocate_payload(metadata)
+
+    return PatchInterface(metadata, primary, secondary,
+                          zeros(Float64, 3), zeros(Float64, 3), payload)
 end
 
 # ── Coefficient transfer ───────────────────────────────────────────────────
@@ -323,7 +480,7 @@ Write 3 coupled border coefficients into the secondary spline's `.ahat` vector.
 - `side == :right` → write to `ahat[end-2:end]`
 """
 function _write_interface_ahat!(spline::CubicBSpline.Spline1D,
-                                coeffs::Vector{Float64}, side::Symbol)
+                                coeffs::AbstractVector{<:Real}, side::Symbol)
     if side == :left
         @inbounds spline.ahat[1] = coeffs[1]
         @inbounds spline.ahat[2] = coeffs[2]
@@ -338,236 +495,329 @@ function _write_interface_ahat!(spline::CubicBSpline.Spline1D,
     end
 end
 
-"""
-    _is_reused_spline_grid(grid) -> Bool
+# ────────────────────────────────────────────────────────────────────────────
+# Distributed-friendly compute / apply split
+# ────────────────────────────────────────────────────────────────────────────
+#
+# `compute_interface_payload[!]` reads only the primary grid and writes a
+# self-contained `InterfacePayload`.  `apply_interface_payload!` reads only
+# the secondary grid and the payload.  The payload is plain Float64 data —
+# it can be sent across a process boundary via `Serialization.serialize`.
+#
+# `update_interface!(iface)` is now a thin wrapper that runs both halves
+# in-process using the preallocated payload buffer on `iface`, preserving
+# the legacy zero-allocation invariant.
 
-Return `true` if the grid reuses spline objects across wavenumbers.
-RL, RLZ, SL, SLZ grids have only 3 ibasis splines (k=0, k-real, k-imag)
-shared across all wavenumbers, unlike R/RR/RRR which have dedicated splines
-per spectral mode.
-"""
-function _is_reused_spline_grid(grid::SpringsteelGrid)
-    return (grid.jbasis isa FourierBasisArray) && (grid.ibasis isa SplineBasisArray)
-end
+# ── Compute kernels (write into payload.border) ────────────────────────────
 
-"""
-    _wavenumber_offset_formula(grid) -> Symbol
-
-Return the wavenumber offset convention for the grid's spectral layout.
-- `:rl` for RL, SL grids: `p = k * 2`
-- `:rlz` for RLZ, SLZ grids: `p = (k - 1) * 2`  (offset by 1, see TRAP-1)
-"""
-function _wavenumber_offset_formula(grid::SpringsteelGrid)
-    if grid.kbasis isa NoBasisArray
-        return :rl   # RL or SL (2D)
-    else
-        return :rlz  # RLZ or SLZ (3D)
-    end
-end
-
-"""
-    _update_interface_per_mode!(iface)
-
-Transfer interface coefficients for grids with dedicated splines per mode
-(R, RR, RRR).  Each ibasis.data[l, v] holds a separate spline whose `.a`
-is valid after gridTransform!.
-"""
-function _update_interface_per_mode!(iface::PatchInterface)
-    _per_mode_kernel!(iface, iface.primary, iface.secondary)
-end
-
-function _per_mode_kernel!(iface::PatchInterface,
-                           primary::SpringsteelGrid,
-                           secondary::SpringsteelGrid)
-    nvars = length(secondary.params.vars)
-    n_modes = size(secondary.ibasis.data, 1)
-    a_extract = iface._a_extract
-    a_border  = iface._a_border
-
-    for v in 1:nvars
+function _fill_payload_per_mode!(border::Array{Float64,3},
+                                 meta::PatchInterfaceMetadata,
+                                 primary::SpringsteelGrid,
+                                 sx::Vector{Float64},
+                                 sb::Vector{Float64})
+    nvars   = meta.nvars
+    n_modes = meta.n_modes
+    @inbounds for v in 1:nvars
         for l in 1:n_modes
             primary_spline = primary.ibasis.data[l, v]
-            secondary_spline = secondary.ibasis.data[l, v]
-
-            _extract_primary_coeffs!(a_extract, primary_spline, iface.primary_node_indices)
-            mul!(a_border, iface.coupling_matrix, a_extract)
-            _write_interface_ahat!(secondary_spline, a_border, iface.secondary_side)
+            _extract_primary_coeffs!(sx, primary_spline, meta.primary_node_indices)
+            mul!(sb, meta.coupling_matrix, sx)
+            border[1, l, v] = sb[1]
+            border[2, l, v] = sb[2]
+            border[3, l, v] = sb[3]
         end
     end
+    return nothing
 end
 
-"""
-    _update_interface_per_wavenumber!(iface)
+function _fill_payload_reused_2d!(border::Array{Float64,3},
+                                  meta::PatchInterfaceMetadata,
+                                  primary::SpringsteelGrid,
+                                  sx::Vector{Float64},
+                                  sb::Vector{Float64})
+    nvars       = meta.nvars
+    b_iDim_p    = meta.b_iDim_p
+    kDim_couple = meta.kDim_couple
+    spec_stride = size(primary.spectral, 1)
 
-Transfer interface coefficients for grids with reused splines (RL, RLZ, SL, SLZ).
+    @inbounds for v in 1:nvars
+        spec_col_off = (v - 1) * spec_stride
 
-Since ibasis.data has only 3 spline slots reused for all wavenumbers, we must:
-1. Load B-coefficients from the primary's spectral array per wavenumber
-2. Run SAtransform! to recover A-coefficients for that wavenumber
-3. Extract interface coefficients and couple them
-4. Store per-wavenumber ahat in the registry (read by gridTransform later)
-
-Uses RL offset convention `p = k*2`.
-"""
-function _update_interface_per_wavenumber_rl!(iface::PatchInterface)
-    # Function barrier: extract concrete-typed grids so the kernel specializes.
-    _rl_kernel!(iface, iface.primary, iface.secondary)
-end
-
-function _rl_kernel!(iface::PatchInterface,
-                     primary::SpringsteelGrid,
-                     secondary::SpringsteelGrid)
-    nvars = length(secondary.params.vars)
-    b_iDim_p = primary.params.b_iDim
-    kDim_p = primary.params.iDim + primary.params.patchOffsetL
-    kDim_s = secondary.params.iDim + secondary.params.patchOffsetL
-    kDim_couple = min(kDim_p, kDim_s)
-
-    a_extract = iface._a_extract
-    a_border  = iface._a_border
-
-    for v in 1:nvars
-        # ── k=0: spline slot 1 ───────────────────────────────────────────
+        # k=0 → registry slot 0 → payload column 1
         spline_k0 = primary.ibasis.data[1, v]
-        copyto!(spline_k0.b, 1, primary.spectral, (v - 1) * size(primary.spectral, 1) + 1, b_iDim_p)
+        copyto!(spline_k0.b, 1, primary.spectral, spec_col_off + 1, b_iDim_p)
         CubicBSpline.SAtransform!(spline_k0)
+        _extract_primary_coeffs!(sx, spline_k0, meta.primary_node_indices)
+        mul!(sb, meta.coupling_matrix, sx)
+        border[1, 1, v] = sb[1]
+        border[2, 1, v] = sb[2]
+        border[3, 1, v] = sb[3]
 
-        _extract_primary_coeffs!(a_extract, spline_k0, iface.primary_node_indices)
-        mul!(a_border, iface.coupling_matrix, a_extract)
-
-        # Write to the secondary spline's ahat for k=0 (slot 1 is always unique)
-        sec_spline_k0 = secondary.ibasis.data[1, v]
-        _write_interface_ahat!(sec_spline_k0, a_border, iface.secondary_side)
-
-        # Also store in per-wavenumber registry for k=0 (slot 0)
-        _set_wavenumber_ahat!(secondary, v, 0, sec_spline_k0.ahat, 2 + 2 * kDim_s)
-
-        # ── k=1..kDim: spline slots 2 (real) and 3 (imag) ────────────────
-        spec_col_off = (v - 1) * size(primary.spectral, 1)
+        # k=1..kDim_couple, RL convention p = k*2
         for k in 1:kDim_couple
-            # RL convention: p = k * 2
             p = k * 2
 
-            # Real part
+            # Real
             p1_r = (p - 1) * b_iDim_p + 1
             spline_real = primary.ibasis.data[2, v]
             copyto!(spline_real.b, 1, primary.spectral, spec_col_off + p1_r, b_iDim_p)
             CubicBSpline.SAtransform!(spline_real)
+            _extract_primary_coeffs!(sx, spline_real, meta.primary_node_indices)
+            mul!(sb, meta.coupling_matrix, sx)
+            border[1, p + 1, v] = sb[1]
+            border[2, p + 1, v] = sb[2]
+            border[3, p + 1, v] = sb[3]
 
-            _extract_primary_coeffs!(a_extract, spline_real, iface.primary_node_indices)
-            mul!(a_border, iface.coupling_matrix, a_extract)
-
-            sec_spline_real = secondary.ibasis.data[2, v]
-            _write_interface_ahat!(sec_spline_real, a_border, iface.secondary_side)
-            _set_wavenumber_ahat!(secondary, v, p, sec_spline_real.ahat, 2 + 2 * kDim_s)
-
-            # Imaginary part
+            # Imag
             p1_i = p * b_iDim_p + 1
             spline_imag = primary.ibasis.data[3, v]
             copyto!(spline_imag.b, 1, primary.spectral, spec_col_off + p1_i, b_iDim_p)
             CubicBSpline.SAtransform!(spline_imag)
-
-            _extract_primary_coeffs!(a_extract, spline_imag, iface.primary_node_indices)
-            mul!(a_border, iface.coupling_matrix, a_extract)
-
-            sec_spline_imag = secondary.ibasis.data[3, v]
-            _write_interface_ahat!(sec_spline_imag, a_border, iface.secondary_side)
-            _set_wavenumber_ahat!(secondary, v, p + 1, sec_spline_imag.ahat, 2 + 2 * kDim_s)
+            _extract_primary_coeffs!(sx, spline_imag, meta.primary_node_indices)
+            mul!(sb, meta.coupling_matrix, sx)
+            border[1, p + 2, v] = sb[1]
+            border[2, p + 2, v] = sb[2]
+            border[3, p + 2, v] = sb[3]
         end
     end
+    return nothing
 end
 
-"""
-    _update_interface_per_wavenumber_rlz!(iface)
-
-Transfer interface coefficients for 3D grids with reused splines and Chebyshev
-z-dimension (RLZ, SLZ).
-
-Same as the RL version but adds an outer loop over Chebyshev levels `z_b` and
-uses the RLZ offset convention `p = (k-1)*2` (TRAP-1).
-
-Composite registry slot = `(z_b-1) * (1 + 2*kDim) + wavenumber_slot_within_z_level`.
-"""
-function _update_interface_per_wavenumber_rlz!(iface::PatchInterface)
-    # Function barrier: concrete-type kernel for dispatch specialization.
-    _rlz_kernel!(iface, iface.primary, iface.secondary)
-end
-
-function _rlz_kernel!(iface::PatchInterface,
-                      primary::SpringsteelGrid,
-                      secondary::SpringsteelGrid)
-    nvars = length(secondary.params.vars)
-    b_iDim_p = primary.params.b_iDim
-    b_kDim = primary.params.b_kDim
-    kDim_p = primary.params.iDim + primary.params.patchOffsetL
-    kDim_s = secondary.params.iDim + secondary.params.patchOffsetL
-    kDim_couple = min(kDim_p, kDim_s)
-
-    # Slots per z-level: 1 (k=0) + 2*kDim (k real/imag pairs)
+function _fill_payload_reused_3d!(border::Array{Float64,3},
+                                  meta::PatchInterfaceMetadata,
+                                  primary::SpringsteelGrid,
+                                  sx::Vector{Float64},
+                                  sb::Vector{Float64})
+    nvars       = meta.nvars
+    b_iDim_p    = meta.b_iDim_p
+    b_kDim      = meta.b_kDim
+    kDim_couple = meta.kDim_couple
+    kDim_s      = meta.kDim_s
     slots_per_z = 1 + 2 * kDim_s
-    total_slots = b_kDim * slots_per_z
-
-    a_extract = iface._a_extract
-    a_border  = iface._a_border
+    kDim_p      = primary.params.iDim + primary.params.patchOffsetL
     spec_stride = size(primary.spectral, 1)
 
-    for v in 1:nvars
+    @inbounds for v in 1:nvars
         spec_col_off = (v - 1) * spec_stride
         for z_b in 1:b_kDim
-            # Base offset in spectral array for this Chebyshev level
-            base_p = (z_b - 1) * b_iDim_p * (1 + kDim_p * 2)
+            base_p      = (z_b - 1) * b_iDim_p * (1 + kDim_p * 2)
             z_slot_base = (z_b - 1) * slots_per_z
 
-            # ── k=0 ──────────────────────────────────────────────────────
+            # k=0 → registry slot z_slot_base → payload column z_slot_base+1
             r1 = base_p + 1
             spline_k0 = primary.ibasis.data[1, v]
             copyto!(spline_k0.b, 1, primary.spectral, spec_col_off + r1, b_iDim_p)
             CubicBSpline.SAtransform!(spline_k0)
+            _extract_primary_coeffs!(sx, spline_k0, meta.primary_node_indices)
+            mul!(sb, meta.coupling_matrix, sx)
+            border[1, z_slot_base + 1, v] = sb[1]
+            border[2, z_slot_base + 1, v] = sb[2]
+            border[3, z_slot_base + 1, v] = sb[3]
 
-            _extract_primary_coeffs!(a_extract, spline_k0, iface.primary_node_indices)
-            mul!(a_border, iface.coupling_matrix, a_extract)
-
-            sec_spline_k0 = secondary.ibasis.data[1, v]
-            _write_interface_ahat!(sec_spline_k0, a_border, iface.secondary_side)
-            _set_wavenumber_ahat!(secondary, v, z_slot_base + 0,
-                                  sec_spline_k0.ahat, total_slots)
-
-            # ── k=1..kDim ────────────────────────────────────────────────
+            # k=1..kDim_couple, RLZ convention p = (k-1)*2 (TRAP-1)
             r2 = base_p + b_iDim_p
             for k in 1:kDim_couple
-                # RLZ convention: p = (k-1)*2
                 p = (k - 1) * 2
 
-                # Real part
+                # Real
                 p1_r = r2 + 1 + p * b_iDim_p
                 spline_real = primary.ibasis.data[2, v]
                 copyto!(spline_real.b, 1, primary.spectral, spec_col_off + p1_r, b_iDim_p)
                 CubicBSpline.SAtransform!(spline_real)
+                _extract_primary_coeffs!(sx, spline_real, meta.primary_node_indices)
+                mul!(sb, meta.coupling_matrix, sx)
+                slot_real = z_slot_base + 1 + p
+                border[1, slot_real + 1, v] = sb[1]
+                border[2, slot_real + 1, v] = sb[2]
+                border[3, slot_real + 1, v] = sb[3]
 
-                _extract_primary_coeffs!(a_extract, spline_real, iface.primary_node_indices)
-                mul!(a_border, iface.coupling_matrix, a_extract)
-
-                sec_spline_real = secondary.ibasis.data[2, v]
-                _write_interface_ahat!(sec_spline_real, a_border, iface.secondary_side)
-                _set_wavenumber_ahat!(secondary, v, z_slot_base + 1 + p,
-                                      sec_spline_real.ahat, total_slots)
-
-                # Imaginary part
+                # Imag
                 p1_i = p1_r + b_iDim_p
                 spline_imag = primary.ibasis.data[3, v]
                 copyto!(spline_imag.b, 1, primary.spectral, spec_col_off + p1_i, b_iDim_p)
                 CubicBSpline.SAtransform!(spline_imag)
-
-                _extract_primary_coeffs!(a_extract, spline_imag, iface.primary_node_indices)
-                mul!(a_border, iface.coupling_matrix, a_extract)
-
-                sec_spline_imag = secondary.ibasis.data[3, v]
-                _write_interface_ahat!(sec_spline_imag, a_border, iface.secondary_side)
-                _set_wavenumber_ahat!(secondary, v, z_slot_base + 1 + p + 1,
-                                      sec_spline_imag.ahat, total_slots)
+                _extract_primary_coeffs!(sx, spline_imag, meta.primary_node_indices)
+                mul!(sb, meta.coupling_matrix, sx)
+                slot_imag = slot_real + 1
+                border[1, slot_imag + 1, v] = sb[1]
+                border[2, slot_imag + 1, v] = sb[2]
+                border[3, slot_imag + 1, v] = sb[3]
             end
         end
     end
+    return nothing
+end
+
+"""
+    compute_interface_payload!(payload, meta, primary;
+                               _a_extract, _a_border) -> InterfacePayload
+
+In-place variant of [`compute_interface_payload`](@ref).  Zeroes `payload.border`
+and writes coupled border coefficients from `primary` into it.  Used by
+`update_interface!(iface)` to keep the single-process path zero-alloc.
+"""
+function compute_interface_payload!(payload::InterfacePayload,
+                                    meta::PatchInterfaceMetadata,
+                                    primary::SpringsteelGrid;
+                                    _a_extract::Vector{Float64} = zeros(Float64, 3),
+                                    _a_border::Vector{Float64}  = zeros(Float64, 3))
+    payload.scheme === meta.scheme || throw(ArgumentError(
+        "Payload scheme :$(payload.scheme) ≠ metadata scheme :$(meta.scheme)"))
+    payload.n_slots == meta.n_slots || throw(ArgumentError(
+        "Payload n_slots $(payload.n_slots) ≠ metadata n_slots $(meta.n_slots)"))
+    fill!(payload.border, 0.0)
+    if meta.scheme === :per_mode
+        _fill_payload_per_mode!(payload.border, meta, primary, _a_extract, _a_border)
+    elseif meta.scheme === :reused_2d
+        _fill_payload_reused_2d!(payload.border, meta, primary, _a_extract, _a_border)
+    else  # :reused_3d
+        _fill_payload_reused_3d!(payload.border, meta, primary, _a_extract, _a_border)
+    end
+    return payload
+end
+
+"""
+    compute_interface_payload(meta, primary; _a_extract, _a_border) -> InterfacePayload
+
+Read coupled border coefficients from `primary` and return an
+[`InterfacePayload`](@ref) that can be serialized and shipped to the process
+that owns the secondary patch.  No secondary grid is required.
+
+The returned payload is consumed by [`apply_interface_payload!`](@ref).
+"""
+function compute_interface_payload(meta::PatchInterfaceMetadata,
+                                   primary::SpringsteelGrid;
+                                   _a_extract::Vector{Float64} = zeros(Float64, 3),
+                                   _a_border::Vector{Float64}  = zeros(Float64, 3))
+    payload = _allocate_payload(meta)
+    compute_interface_payload!(payload, meta, primary;
+                               _a_extract=_a_extract, _a_border=_a_border)
+    return payload
+end
+
+# ── Apply kernels (read payload.border, write secondary) ───────────────────
+#
+# Apply mirrors the legacy kernels exactly.  In particular, `spline.ahat` is
+# *not* zero-filled before writing the 3 border floats: non-border positions
+# are zero on first allocation and are the caller's invariant elsewhere.
+# Embedded both-sides interfaces rely on this so that a left-side write
+# followed by a right-side write deposits *both* sides' borders into the
+# registry's per-wavenumber `ahat` buffer.
+
+function _apply_payload_per_mode!(meta::PatchInterfaceMetadata,
+                                  secondary::SpringsteelGrid,
+                                  payload::InterfacePayload)
+    side = meta.secondary_side
+    @inbounds for v in 1:meta.nvars
+        for l in 1:meta.n_modes
+            sec_spline = secondary.ibasis.data[l, v]
+            _write_interface_ahat!(sec_spline, view(payload.border, :, l, v), side)
+        end
+    end
+    return nothing
+end
+
+function _apply_payload_reused_2d!(meta::PatchInterfaceMetadata,
+                                   secondary::SpringsteelGrid,
+                                   payload::InterfacePayload)
+    side        = meta.secondary_side
+    nvars       = meta.nvars
+    kDim_couple = meta.kDim_couple
+    n_slots_reg = meta.n_slots                 # 2 + 2*kDim_s
+    @inbounds for v in 1:nvars
+        sec_spline_k0 = secondary.ibasis.data[1, v]
+        _write_interface_ahat!(sec_spline_k0, view(payload.border, :, 1, v), side)
+        _set_wavenumber_ahat!(secondary, v, 0, sec_spline_k0.ahat, n_slots_reg)
+
+        for k in 1:kDim_couple
+            p = k * 2
+
+            sec_spline_real = secondary.ibasis.data[2, v]
+            _write_interface_ahat!(sec_spline_real,
+                                   view(payload.border, :, p + 1, v), side)
+            _set_wavenumber_ahat!(secondary, v, p,
+                                  sec_spline_real.ahat, n_slots_reg)
+
+            sec_spline_imag = secondary.ibasis.data[3, v]
+            _write_interface_ahat!(sec_spline_imag,
+                                   view(payload.border, :, p + 2, v), side)
+            _set_wavenumber_ahat!(secondary, v, p + 1,
+                                  sec_spline_imag.ahat, n_slots_reg)
+        end
+    end
+    return nothing
+end
+
+function _apply_payload_reused_3d!(meta::PatchInterfaceMetadata,
+                                   secondary::SpringsteelGrid,
+                                   payload::InterfacePayload)
+    side        = meta.secondary_side
+    nvars       = meta.nvars
+    b_kDim      = meta.b_kDim
+    kDim_couple = meta.kDim_couple
+    kDim_s      = meta.kDim_s
+    slots_per_z = 1 + 2 * kDim_s
+    n_slots_reg = meta.n_slots                 # b_kDim * slots_per_z
+    @inbounds for v in 1:nvars
+        for z_b in 1:b_kDim
+            z_slot_base = (z_b - 1) * slots_per_z
+
+            sec_spline_k0 = secondary.ibasis.data[1, v]
+            _write_interface_ahat!(sec_spline_k0,
+                                   view(payload.border, :, z_slot_base + 1, v), side)
+            _set_wavenumber_ahat!(secondary, v, z_slot_base + 0,
+                                  sec_spline_k0.ahat, n_slots_reg)
+
+            for k in 1:kDim_couple
+                p = (k - 1) * 2
+                slot_real = z_slot_base + 1 + p
+
+                sec_spline_real = secondary.ibasis.data[2, v]
+                _write_interface_ahat!(sec_spline_real,
+                                       view(payload.border, :, slot_real + 1, v), side)
+                _set_wavenumber_ahat!(secondary, v, slot_real,
+                                      sec_spline_real.ahat, n_slots_reg)
+
+                slot_imag = slot_real + 1
+                sec_spline_imag = secondary.ibasis.data[3, v]
+                _write_interface_ahat!(sec_spline_imag,
+                                       view(payload.border, :, slot_imag + 1, v), side)
+                _set_wavenumber_ahat!(secondary, v, slot_imag,
+                                      sec_spline_imag.ahat, n_slots_reg)
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    apply_interface_payload!(meta, secondary, payload)
+
+Apply a coupled-border `payload` to `secondary`.  Mirrors the writes that
+[`update_interface!`](@ref) used to perform — `spline.ahat` borders for
+per-mode grids, plus the per-wavenumber registry for reused-spline grids.
+
+The payload's scheme/side/nvars/n_slots must match `meta`.
+"""
+function apply_interface_payload!(meta::PatchInterfaceMetadata,
+                                  secondary::SpringsteelGrid,
+                                  payload::InterfacePayload)
+    payload.side    === meta.secondary_side || throw(ArgumentError(
+        "Payload side :$(payload.side) ≠ metadata secondary_side :$(meta.secondary_side)"))
+    payload.scheme  === meta.scheme || throw(ArgumentError(
+        "Payload scheme :$(payload.scheme) ≠ metadata scheme :$(meta.scheme)"))
+    payload.nvars   == meta.nvars || throw(ArgumentError(
+        "Payload nvars $(payload.nvars) ≠ metadata nvars $(meta.nvars)"))
+    payload.n_slots == meta.n_slots || throw(ArgumentError(
+        "Payload n_slots $(payload.n_slots) ≠ metadata n_slots $(meta.n_slots)"))
+    if meta.scheme === :per_mode
+        _apply_payload_per_mode!(meta, secondary, payload)
+    elseif meta.scheme === :reused_2d
+        _apply_payload_reused_2d!(meta, secondary, payload)
+    else  # :reused_3d
+        _apply_payload_reused_3d!(meta, secondary, payload)
+    end
+    return nothing
 end
 
 """
@@ -576,18 +826,13 @@ end
 Transfer spectral coefficients from the primary patch to the secondary patch
 at the interface.
 
-Must be called after `gridTransform!` (or `SAtransform!`) on the primary and
-before `gridTransform!` on the secondary.  The primary's `.a` coefficients
-are extracted at the interface, multiplied by the 3×3 coupling matrix, and
-written to the secondary's `.ahat` vector.
+Equivalent to `compute_interface_payload!` followed by `apply_interface_payload!`,
+using the preallocated payload buffer on `iface`.  Single-process callers
+should keep using `update_interface!`; distributed drivers should split the
+two halves and ship the [`InterfacePayload`](@ref) over the wire.
 
-For grids with dedicated splines per mode (R, RR, RRR), the transfer is
-performed independently for each j-spectral mode.
-
-For grids with reused splines (RL, RLZ, SL, SLZ), per-wavenumber coupling is
-performed: B-coefficients are loaded from the spectral array, SAtransform!
-recovers A-coefficients, and the coupled ahat is stored in a per-wavenumber
-registry for use by gridTransform.
+Must be called after `gridTransform!` on the primary and before
+`gridTransform!` on the secondary.
 
 # Example
 ```julia
@@ -596,18 +841,15 @@ update_interface!(iface)
 gridTransform!(secondary)
 ```
 
-See also: [`PatchInterface`](@ref), [`multiGridTransform!`](@ref)
+See also: [`compute_interface_payload`](@ref), [`apply_interface_payload!`](@ref),
+[`PatchInterface`](@ref), [`multiGridTransform!`](@ref)
 """
 function update_interface!(iface::PatchInterface)
-    if _is_reused_spline_grid(iface.secondary)
-        if iface.secondary.kbasis isa NoBasisArray
-            _update_interface_per_wavenumber_rl!(iface)
-        else
-            _update_interface_per_wavenumber_rlz!(iface)
-        end
-    else
-        _update_interface_per_mode!(iface)
-    end
+    meta = iface.metadata
+    compute_interface_payload!(iface._payload_buf, meta, iface.primary;
+                               _a_extract=iface._a_extract,
+                               _a_border=iface._a_border)
+    apply_interface_payload!(meta, iface.secondary, iface._payload_buf)
     return nothing
 end
 

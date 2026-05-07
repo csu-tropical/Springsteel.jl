@@ -2071,4 +2071,322 @@ using LinearAlgebra
         @test mg.mpg.patches[2].physical[:, 1, 1] ≈ g2.physical[:, 1, 1] atol=1e-14
     end
 
+    # ── Distributed payload round-trip ────────────────────────────────────
+    #
+    # Asserts the wire contract: compute → serialize → deserialize → apply
+    # is byte-identical to the in-process update_interface!.  Uses
+    # Serialization (no Distributed/MPI in CI) to exercise the same path a
+    # remote driver would take.
+
+    @testset "Distributed payload round-trip" begin
+        using Serialization
+
+        # Builders, one per geometry × scheme combination.
+        function _build_R_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="R", iMin=0.0, iMax=10.0, num_cells=10,
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="R", iMin=10.0, iMax=20.0, num_cells=20,
+                BCL=Dict("u" => CubicBSpline.R3X),
+                BCR=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in eachindex(pts1); g1.physical[i, 1, 1] = 2*pts1[i] + 5; end
+            for i in eachindex(pts2); g2.physical[i, 1, 1] = 2*pts2[i] + 5; end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_RR_chain()
+            nc_j = 5; jDim = nc_j * 3
+            gp1 = SpringsteelGridParameters(
+                geometry="RR", iMin=0.0, iMax=10.0, num_cells=10,
+                jMin=0.0, jMax=5.0, jDim=jDim, b_jDim=nc_j + 3,
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCU=Dict("u" => CubicBSpline.R0),
+                BCD=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="RR", iMin=10.0, iMax=15.0, num_cells=10,
+                jMin=0.0, jMax=5.0, jDim=jDim, b_jDim=nc_j + 3,
+                BCL=Dict("u" => CubicBSpline.R3X),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCU=Dict("u" => CubicBSpline.R0),
+                BCD=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            iDim1 = gp1.iDim; iDim2 = gp2.iDim
+            pts_i1 = g1.ibasis.data[1, 1].mishPoints
+            pts_j  = g1.jbasis.data[1, 1].mishPoints
+            pts_i2 = g2.ibasis.data[1, 1].mishPoints
+            pts_j2 = g2.jbasis.data[1, 1].mishPoints
+            for r in 1:iDim1, l in 1:jDim
+                g1.physical[(r - 1) * jDim + l, 1, 1] = 2 * pts_i1[r] + pts_j[l]
+            end
+            for r in 1:iDim2, l in 1:jDim
+                g2.physical[(r - 1) * jDim + l, 1, 1] = 2 * pts_i2[r] + pts_j2[l]
+            end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_RRR_chain()
+            nc_j = 4; nc_k = 4
+            jDim = nc_j * 3; kDim = nc_k * 3
+            common = (
+                jMin=0.0, jMax=4.0, jDim=jDim, b_jDim=nc_j + 3,
+                kMin=0.0, kMax=4.0, kDim=kDim, b_kDim=nc_k + 3,
+                BCU=Dict("u" => CubicBSpline.R0),
+                BCD=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            gp1 = SpringsteelGridParameters(;
+                geometry="RRR", iMin=0.0, iMax=10.0, num_cells=10,
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                common...)
+            gp2 = SpringsteelGridParameters(;
+                geometry="RRR", iMin=10.0, iMax=15.0, num_cells=10,
+                BCL=Dict("u" => CubicBSpline.R3X),
+                BCR=Dict("u" => CubicBSpline.R0),
+                common...)
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            # Linear-in-i field is enough to populate non-trivial primary `.a`
+            iDim1 = gp1.iDim; iDim2 = gp2.iDim
+            pts_i1 = g1.ibasis.data[1, 1].mishPoints
+            pts_i2 = g2.ibasis.data[1, 1].mishPoints
+            for r in 1:iDim1, j in 1:jDim, k in 1:kDim
+                idx = ((r - 1) * jDim + (j - 1)) * kDim + k
+                g1.physical[idx, 1, 1] = 3 * pts_i1[r] + 1.0
+            end
+            for r in 1:iDim2, j in 1:jDim, k in 1:kDim
+                idx = ((r - 1) * jDim + (j - 1)) * kDim + k
+                g2.physical[idx, 1, 1] = 3 * pts_i2[r] + 1.0
+            end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_RZ_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="RZ", iMin=0.0, iMax=10.0, num_cells=10,
+                kMin=0.0, kMax=4.0, kDim=12,
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => Chebyshev.R0),
+                BCT=Dict("u" => Chebyshev.R0),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="RZ", iMin=10.0, iMax=15.0, num_cells=10,
+                kMin=0.0, kMax=4.0, kDim=12,
+                BCL=Dict("u" => CubicBSpline.R3X),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => Chebyshev.R0),
+                BCT=Dict("u" => Chebyshev.R0),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = 2 * pts1[i, 1] + pts1[i, 2]; end
+            for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = 2 * pts2[i, 1] + pts2[i, 2]; end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_RL_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="RL", iMin=0.0, iMax=50.0, num_cells=10,
+                BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="RL", iMin=50.0, iMax=75.0, num_cells=10,
+                BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in 1:size(pts1, 1)
+                g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2])
+            end
+            for i in 1:size(pts2, 1)
+                g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2])
+            end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_RL_embedded()
+            # Coarse annulus contains a fine disc — stacked nest with both
+            # left and right interfaces sharing the same secondary.
+            gp_outer = SpringsteelGridParameters(
+                geometry="RL", iMin=0.0, iMax=100.0, num_cells=10,
+                BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+                vars=Dict("u" => 1))
+            gp_inner = SpringsteelGridParameters(
+                geometry="RL", iMin=20.0, iMax=70.0, num_cells=10,
+                BCL=Dict("u" => FixedBC()), BCR=Dict("u" => FixedBC()),
+                vars=Dict("u" => 1))
+            g_outer = createGrid(gp_outer); g_inner = createGrid(gp_inner)
+            pts_o = getGridpoints(g_outer); pts_i = getGridpoints(g_inner)
+            for i in 1:size(pts_o, 1)
+                g_outer.physical[i, 1, 1] = pts_o[i, 1] * cos(pts_o[i, 2])
+            end
+            for i in 1:size(pts_i, 1)
+                g_inner.physical[i, 1, 1] = pts_i[i, 1] * cos(pts_i[i, 2])
+            end
+            return PatchEmbedded([g_outer, g_inner])
+        end
+
+        function _build_RLZ_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="RLZ", iMin=0.0, iMax=50.0, num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=6,
+                BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="RLZ", iMin=50.0, iMax=75.0, num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=6,
+                BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in 1:size(pts1, 1)
+                g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2]) * pts1[i, 3]
+            end
+            for i in 1:size(pts2, 1)
+                g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3]
+            end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_SL_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="SL", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+                BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="SL", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+                BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in 1:size(pts1, 1)
+                g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2])
+            end
+            for i in 1:size(pts2, 1)
+                g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2])
+            end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_SLZ_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="SLZ", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=6,
+                BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="SLZ", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=6,
+                BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => Chebyshev.R0), BCT=Dict("u" => Chebyshev.R0),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in 1:size(pts1, 1)
+                g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+            end
+            for i in 1:size(pts2, 1)
+                g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+            end
+            return PatchChain([g1, g2])
+        end
+
+        function _snapshot_patch(g)
+            nvars = length(g.params.vars)
+            n_modes = size(g.ibasis.data, 1)
+            ahats = [deepcopy(g.ibasis.data[l, v].ahat)
+                     for v in 1:nvars, l in 1:n_modes]
+            reg = Springsteel._has_wavenumber_ahat(g) ?
+                  deepcopy(Springsteel._WN_AHAT_REGISTRY[objectid(g)]) : nothing
+            return (deepcopy(g.physical), ahats, reg)
+        end
+
+        # Run a multiGridTransform-equivalent loop, but route every interface
+        # through compute_interface_payload + serialize + deserialize + apply.
+        # In a single-process implementation this is a no-op compared to
+        # update_interface!, but it exercises the wire contract.
+        function _serdes_multiGridTransform!(mpg)
+            patches = mpg.patches
+            interfaces = mpg.interfaces
+            idx_map = Dict{UInt, Int}()
+            for (i, p) in enumerate(patches)
+                idx_map[objectid(p)] = i
+            end
+            for layer in mpg.transform_order
+                for idx in layer
+                    gridTransform!(patches[idx])
+                end
+                for iface in interfaces
+                    idx_map[objectid(iface.primary)] in layer || continue
+                    payload = compute_interface_payload(iface.metadata,
+                                                        iface.primary)
+                    io = IOBuffer()
+                    serialize(io, payload)
+                    seekstart(io)
+                    payload2 = deserialize(io)
+                    apply_interface_payload!(iface.metadata,
+                                             iface.secondary, payload2)
+                end
+            end
+        end
+
+        function _round_trip_check!(mpg_ref, mpg_rt)
+            for p in mpg_ref.patches
+                spectralTransform!(p)
+            end
+            for p in mpg_rt.patches
+                spectralTransform!(p)
+            end
+            multiGridTransform!(mpg_ref)
+            _serdes_multiGridTransform!(mpg_rt)
+
+            # Smoke-check the payload shape on one interface.
+            iface = mpg_rt.interfaces[1]
+            payload = compute_interface_payload(iface.metadata, iface.primary)
+            @test isa(payload.border, Array{Float64,3})
+            @test size(payload.border, 1) == 3
+            @test size(payload.border, 2) == iface.metadata.n_slots
+            @test size(payload.border, 3) == iface.metadata.nvars
+
+            for (p_ref, p_rt) in zip(mpg_ref.patches, mpg_rt.patches)
+                ref = _snapshot_patch(p_ref)
+                got = _snapshot_patch(p_rt)
+                @test got[1] == ref[1]   # physical
+                @test got[2] == ref[2]   # spline.ahat per (v, l)
+                @test got[3] == ref[3]   # per-wavenumber registry (if any)
+            end
+        end
+
+        fixtures = [
+            ("R chain (per_mode)",      _build_R_chain),
+            ("RR chain (per_mode)",     _build_RR_chain),
+            ("RRR chain (per_mode)",    _build_RRR_chain),
+            ("RZ chain (per_mode)",     _build_RZ_chain),
+            ("RL chain (reused_2d)",    _build_RL_chain),
+            ("RL embedded (reused_2d)", _build_RL_embedded),
+            ("RLZ chain (reused_3d)",   _build_RLZ_chain),
+            ("SL chain (reused_2d)",    _build_SL_chain),
+            ("SLZ chain (reused_3d)",   _build_SLZ_chain),
+        ]
+
+        for (name, build) in fixtures
+            @testset "$name" begin
+                _round_trip_check!(build(), build())
+            end
+        end
+    end
+
 end
