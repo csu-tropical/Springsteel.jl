@@ -552,12 +552,41 @@ function interpolate_to_grid(source::SpringsteelGrid{G,I,J,K},
     elseif i_active && !j_active && k_active
         _interpolate_2d_ik!(result, source, target, matched, out_of_bounds)
     elseif i_active && j_active && k_active
-        _interpolate_3d!(result, source, target, matched, out_of_bounds)
+        # `_interpolate_3d!` assumes the RRR (Spline×Spline×Spline) tensor-product
+        # spectral layout. Cylindrical / spherical 3D grids (RLZ/SLZ/RLR/SLR)
+        # have a Fourier j-direction with z-major × wavenumber-interleaved
+        # layout; route those through the unstructured eval path instead.
+        if source.jbasis isa FourierBasisArray
+            _interpolate_via_unstructured!(result, source, target, matched, out_of_bounds)
+        else
+            _interpolate_3d!(result, source, target, matched, out_of_bounds)
+        end
     else
         throw(ArgumentError("Unsupported grid dimensionality for interpolation"))
     end
 
     return result
+end
+
+# Generic same-geometry interpolation that uses `evaluate_unstructured` on
+# the target's mish points. Works for any geometry where evaluate_unstructured
+# is implemented (1D/2D/3D Cartesian, RL, SL, RLZ, SLZ, RLR, SLR).
+function _interpolate_via_unstructured!(result::Matrix{Float64},
+                                         source::SpringsteelGrid,
+                                         target::SpringsteelGrid,
+                                         matched::Vector{Tuple{String,String}},
+                                         out_of_bounds)
+    sgp = source.params
+    tgp = target.params
+    t_pts = getGridpoints(target)
+    src_var_names = String[sname for (sname, _) in matched]
+    src_result = evaluate_unstructured(source, t_pts;
+                                        vars=src_var_names, out_of_bounds=out_of_bounds)
+    for (sname, tname) in matched
+        sv = sgp.vars[sname]; tv = tgp.vars[tname]
+        result[:, tv] .= src_result[:, sv]
+    end
+    return nothing
 end
 
 """

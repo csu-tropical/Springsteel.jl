@@ -874,7 +874,208 @@ using Springsteel.Chebyshev
             end
         end
 
+        @testset "RLR axisymmetric" begin
+            rMin, rMax = 0.0, 30.0
+            zMin, zMax = 0.0, 10.0
+            gp = SpringsteelGridParameters(
+                geometry = "RLR",
+                iMin = rMin, iMax = rMax, num_cells = 6,
+                patchOffsetL = 0,
+                kMin = zMin, kMax = zMax, kDim = 12,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            mish_pts = getGridpoints(grid)
+            for i in 1:size(mish_pts, 1)
+                r_val = mish_pts[i, 1]; z_val = mish_pts[i, 3]
+                grid.physical[i, 1, 1] = sin(π * r_val / rMax) * (z_val / zMax)
+            end
+            spectralTransform!(grid)
+
+            test_pts = Float64[
+                 5.0  0.0   2.0;
+                10.0  π/4   5.0;
+                15.0  π/2   7.0;
+                25.0  π     8.0;
+            ]
+            result = Springsteel.evaluate_unstructured(grid, test_pts)
+            @test size(result) == (4, 1)
+            for i in 1:size(test_pts, 1)
+                r_val = test_pts[i, 1]; z_val = test_pts[i, 3]
+                expected = sin(π * r_val / rMax) * (z_val / zMax)
+                @test result[i, 1] ≈ expected atol=0.1
+            end
+
+            # OOB :nan and numeric fill paths (with at least one in-bounds
+            # point, since the eval helper short-circuits when all points
+            # are OOB)
+            mixed_pts = Float64[10.0 0.0 5.0; 100.0 0.0 5.0]
+            r_nan = Springsteel.evaluate_unstructured(grid, mixed_pts)
+            @test !isnan(r_nan[1, 1])
+            @test isnan(r_nan[2, 1])
+            r_fill = Springsteel.evaluate_unstructured(grid, mixed_pts; out_of_bounds=99.0)
+            @test r_fill[2, 1] == 99.0
+        end
+
+        @testset "SLR axisymmetric" begin
+            zMin, zMax = 0.0, 10.0
+            gp = SpringsteelGridParameters(
+                geometry = "SLR",
+                iMin = 0.0, iMax = π, num_cells = 6,
+                patchOffsetL = 0,
+                kMin = zMin, kMax = zMax, kDim = 12,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            mish_pts = getGridpoints(grid)
+            for i in 1:size(mish_pts, 1)
+                θ_val = mish_pts[i, 1]; z_val = mish_pts[i, 3]
+                grid.physical[i, 1, 1] = sin(θ_val) * (z_val / zMax)
+            end
+            spectralTransform!(grid)
+
+            test_pts = Float64[
+                 π/3   0.0   3.0;
+                 π/2   π/4   5.0;
+                 2π/3  π/2   7.0;
+            ]
+            result = Springsteel.evaluate_unstructured(grid, test_pts)
+            @test size(result) == (3, 1)
+            for i in 1:size(test_pts, 1)
+                θ_val = test_pts[i, 1]; z_val = test_pts[i, 3]
+                expected = sin(θ_val) * (z_val / zMax)
+                @test result[i, 1] ≈ expected atol=0.1
+            end
+        end
+
     end  # "evaluate_unstructured"
+
+    # ════════════════════════════════════════════════════════════════════════
+    # RLR / SLR same-geometry interpolation and regular grid output
+    # ════════════════════════════════════════════════════════════════════════
+
+    @testset "RLR / SLR interpolation" begin
+
+        @testset "interpolate_to_grid RLR→RLR axisymmetric" begin
+            rMin, rMax = 0.0, 30.0
+            zMin, zMax = 0.0, 10.0
+            gp_src = SpringsteelGridParameters(
+                geometry = "RLR",
+                iMin = rMin, iMax = rMax, num_cells = 6,
+                patchOffsetL = 0,
+                kMin = zMin, kMax = zMax, kDim = 12,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            gp_tgt = SpringsteelGridParameters(
+                geometry = "RLR",
+                iMin = rMin, iMax = rMax, num_cells = 8,
+                patchOffsetL = 0,
+                kMin = zMin, kMax = zMax, kDim = 15,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            source = createGrid(gp_src)
+            target = createGrid(gp_tgt)
+
+            mish_pts = getGridpoints(source)
+            for i in 1:size(mish_pts, 1)
+                r_val = mish_pts[i, 1]; z_val = mish_pts[i, 3]
+                source.physical[i, 1, 1] = sin(π * r_val / rMax) * (z_val / zMax)
+            end
+            spectralTransform!(source)
+
+            result = interpolate_to_grid(source, target)
+            @test size(result, 1) == size(target.physical, 1)
+
+            tgt_pts = getGridpoints(target)
+            for i in 1:size(tgt_pts, 1)
+                r_val = tgt_pts[i, 1]; z_val = tgt_pts[i, 3]
+                expected = sin(π * r_val / rMax) * (z_val / zMax)
+                @test result[i, 1] ≈ expected atol=0.1
+            end
+        end
+
+        @testset "RLR regularGridTransform — axisymmetric f(r,z) = sin(πr/rMax)·z" begin
+            rMax = 30.0; zMax = 10.0
+            gp = SpringsteelGridParameters(
+                geometry = "RLR",
+                iMin = 0.0, iMax = rMax, num_cells = 6,
+                kMin = 0.0, kMax = zMax, kDim = 12,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            mish_pts = getGridpoints(grid)
+            for i in 1:size(mish_pts, 1)
+                r_val = mish_pts[i, 1]; z_val = mish_pts[i, 3]
+                grid.physical[i, 1, 1] = sin(π * r_val / rMax) * (z_val / zMax)
+            end
+            spectralTransform!(grid)
+
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+            @test size(reg_phys, 3) == 7   # 7 derivative slots
+
+            # Sample the 0th-derivative slot
+            for i in 1:size(reg_pts, 1)
+                r_val = reg_pts[i, 1]; z_val = reg_pts[i, 3]
+                expected = sin(π * r_val / rMax) * (z_val / zMax)
+                @test reg_phys[i, 1, 1] ≈ expected atol=0.2
+            end
+
+            # Matrix-input wrapper variant
+            reg_phys2 = regularGridTransform(grid, reg_pts)
+            @test size(reg_phys2) == size(reg_phys)
+        end
+
+        @testset "SLR regularGridTransform" begin
+            zMax = 10.0
+            gp = SpringsteelGridParameters(
+                geometry = "SLR",
+                iMin = 0.0, iMax = π, num_cells = 6,
+                kMin = 0.0, kMax = zMax, kDim = 12,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            mish_pts = getGridpoints(grid)
+            for i in 1:size(mish_pts, 1)
+                θ_val = mish_pts[i, 1]; z_val = mish_pts[i, 3]
+                grid.physical[i, 1, 1] = sin(θ_val) * (z_val / zMax)
+            end
+            spectralTransform!(grid)
+
+            reg_pts = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+            @test size(reg_phys, 3) == 7
+
+            for i in 1:size(reg_pts, 1)
+                θ_val = reg_pts[i, 1]; z_val = reg_pts[i, 3]
+                expected = sin(θ_val) * (z_val / zMax)
+                @test reg_phys[i, 1, 1] ≈ expected atol=0.2
+            end
+        end
+
+    end  # "RLR / SLR interpolation"
 
     # ════════════════════════════════════════════════════════════════════════
     # Layer 3: Cross-geometry interpolation

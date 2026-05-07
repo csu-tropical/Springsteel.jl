@@ -706,4 +706,116 @@ using LinearAlgebra: norm
         @test grid.physical ≈ before
     end
 
+    @testset "RLR grid spline_filter — k-direction smooths" begin
+        gp_nf = SpringsteelGridParameters(
+            geometry = "RLR", num_cells = 4,
+            iMin = 0.0, iMax = 50.0,
+            kMin = 0.0, kMax = 1.0, kDim = 24,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => CubicBSpline.R0),
+            BCT = Dict("u" => CubicBSpline.R0))
+        gp_f = SpringsteelGridParameters(
+            geometry = "RLR", num_cells = 4,
+            iMin = 0.0, iMax = 50.0,
+            kMin = 0.0, kMax = 1.0, kDim = 24,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => CubicBSpline.R0),
+            BCT = Dict("u" => CubicBSpline.R0),
+            spline_filter = Dict("u" => Dict(:k => GaussianFilter(sigma=2.0))))
+
+        grid_nf = createGrid(gp_nf)
+        grid_f  = createGrid(gp_f)
+
+        # Seed a high-frequency-in-k axisymmetric field (k=0 mode only)
+        iDim = grid_nf.params.iDim
+        kDim = grid_nf.params.kDim
+        zi   = 1
+        for r in 1:iDim
+            ri      = r + grid_nf.params.patchOffsetL
+            lpoints = 4 + 4*ri
+            for l in 1:lpoints
+                for z in 1:kDim
+                    z_m = grid_nf.kbasis.data[1].mishPoints[z]
+                    val = sin(2π * z_m) + 0.5 * sin(20π * z_m)
+                    grid_nf.physical[zi + (l-1)*kDim + (z-1), 1, 1] = val
+                    grid_f.physical[zi + (l-1)*kDim + (z-1), 1, 1]  = val
+                end
+            end
+            zi += lpoints * kDim
+        end
+
+        spectralTransform!(grid_nf)
+        spectralTransform!(grid_f)
+        # Filter should reduce total spectral energy on the high-k component.
+        @test norm(grid_f.spectral[:, 1]) < norm(grid_nf.spectral[:, 1])
+    end
+
+    @testset "SLR grid spline_filter — k-direction smooths" begin
+        gp_nf = SpringsteelGridParameters(
+            geometry = "SLR", num_cells = 5,
+            iMin = 0.0, iMax = π,
+            kMin = 0.0, kMax = 1.0, kDim = 18,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => CubicBSpline.R0),
+            BCT = Dict("u" => CubicBSpline.R0))
+        gp_f = SpringsteelGridParameters(
+            geometry = "SLR", num_cells = 5,
+            iMin = 0.0, iMax = π,
+            kMin = 0.0, kMax = 1.0, kDim = 18,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => CubicBSpline.R0),
+            BCT = Dict("u" => CubicBSpline.R0),
+            spline_filter = Dict("u" => Dict(:k => GaussianFilter(sigma=1.5))))
+        grid_nf = createGrid(gp_nf)
+        grid_f  = createGrid(gp_f)
+
+        iDim = grid_nf.params.iDim
+        kDim = grid_nf.params.kDim
+        zi   = 1
+        for r in 1:iDim
+            lpoints = grid_nf.jbasis.data[r, 1].params.yDim
+            for l in 1:lpoints
+                for z in 1:kDim
+                    z_m = grid_nf.kbasis.data[1].mishPoints[z]
+                    val = sin(2π * z_m) + 0.4 * sin(15π * z_m)
+                    grid_nf.physical[zi + (l-1)*kDim + (z-1), 1, 1] = val
+                    grid_f.physical[zi + (l-1)*kDim + (z-1), 1, 1]  = val
+                end
+            end
+            zi += lpoints * kDim
+        end
+
+        spectralTransform!(grid_nf)
+        spectralTransform!(grid_f)
+        @test norm(grid_f.spectral[:, 1]) < norm(grid_nf.spectral[:, 1])
+    end
+
+    @testset "RLR spline_filter — i and k together" begin
+        # Exercise the (:i, :k) combined dispatch — i inline + k pre-pass.
+        gp = SpringsteelGridParameters(
+            geometry = "RLR", num_cells = 4,
+            iMin = 0.0, iMax = 50.0,
+            kMin = 0.0, kMax = 1.0, kDim = 12,
+            vars = Dict("u" => 1),
+            BCL = Dict("u" => CubicBSpline.R0),
+            BCR = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => CubicBSpline.R0),
+            BCT = Dict("u" => CubicBSpline.R0),
+            spline_filter = Dict("u" => Dict(
+                :i => GaussianFilter(sigma=1.5),
+                :k => GaussianFilter(sigma=1.5))))
+        grid = createGrid(gp)
+        @test Springsteel._spline_dirs("RLR") == (:i, :k)
+        @test Springsteel._resolve_spline_filter(grid.params.spline_filter, "u", :i) isa GaussianFilter
+        @test Springsteel._resolve_spline_filter(grid.params.spline_filter, "u", :k) isa GaussianFilter
+    end
+
 end

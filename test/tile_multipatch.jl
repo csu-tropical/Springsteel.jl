@@ -893,4 +893,159 @@ using SparseArrays
         @test all(g.spectral[siL:siR1, 1] .== 1.0)
     end
 
+    # ── RLR tiled chain ──────────────────────────────────────────────────
+
+    @testset "RLR tiled chain: non-axisymmetric tiled vs non-tiled" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RLR", iMin=0.0, iMax=50.0, num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLR", iMin=50.0, iMax=75.0, num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+
+        g1_ref = createGrid(gp1); g2_ref = createGrid(gp2)
+        pts1 = getGridpoints(g1_ref); pts2 = getGridpoints(g2_ref)
+        for i in 1:size(pts1, 1)
+            g1_ref.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2_ref.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1_ref); spectralTransform!(g2_ref)
+        mpg_ref = PatchChain([g1_ref, g2_ref])
+        multiGridTransform!(mpg_ref)
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        tiles1 = calcTileSizes(g1, 4); @test length(tiles1) == 4
+        tiles2 = calcTileSizes(g2, 4); @test length(tiles2) == 4
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        @test g2.physical[:, 1, 1] ≈ g2_ref.physical[:, 1, 1] atol=1e-12
+    end
+
+    @testset "RLR tiled primary SharedArray pipeline" begin
+        gp = SpringsteelGridParameters(
+            geometry="RLR", iMin=0.0, iMax=50.0, num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        g = createGrid(gp)
+        pts = getGridpoints(g)
+        for i in 1:size(pts, 1)
+            g.physical[i, 1, 1] = pts[i, 1] * cos(pts[i, 2]) * pts[i, 3]
+        end
+        spectralTransform!(g)
+
+        # Reference: standard gridTransform!
+        g_ref = createGrid(gp)
+        for i in 1:size(pts, 1)
+            g_ref.physical[i, 1, 1] = pts[i, 1] * cos(pts[i, 2]) * pts[i, 3]
+        end
+        spectralTransform!(g_ref)
+        gridTransform!(g_ref)
+
+        # Tiled: splineTransform! + tileTransform!
+        shared = SharedArray{Float64}(size(g.spectral))
+        shared[:, :] .= g.spectral
+        splineTransform!(shared, g)
+        phys_tiled = zeros(Float64, size(g.physical))
+        tileTransform!(shared, g, phys_tiled, g.spectral)
+
+        # R0 primary: tiled should match standard pipeline
+        @test phys_tiled[:, 1, 1] ≈ g_ref.physical[:, 1, 1] atol=1e-10
+    end
+
+    @testset "SLR tiled primary SharedArray pipeline" begin
+        gp = SpringsteelGridParameters(
+            geometry="SLR", iMin=0.0, iMax=Float64(π), num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        g = createGrid(gp)
+        pts = getGridpoints(g)
+        for i in 1:size(pts, 1)
+            g.physical[i, 1, 1] = sin(pts[i, 1]) * cos(pts[i, 2]) * pts[i, 3]
+        end
+        spectralTransform!(g)
+
+        g_ref = createGrid(gp)
+        for i in 1:size(pts, 1)
+            g_ref.physical[i, 1, 1] = sin(pts[i, 1]) * cos(pts[i, 2]) * pts[i, 3]
+        end
+        spectralTransform!(g_ref)
+        gridTransform!(g_ref)
+
+        shared = SharedArray{Float64}(size(g.spectral))
+        shared[:, :] .= g.spectral
+        splineTransform!(shared, g)
+        phys_tiled = zeros(Float64, size(g.physical))
+        tileTransform!(shared, g, phys_tiled, g.spectral)
+
+        @test phys_tiled[:, 1, 1] ≈ g_ref.physical[:, 1, 1] atol=1e-10
+    end
+
+    # ── SLR tiled chain ──────────────────────────────────────────────────
+
+    @testset "SLR tiled chain: non-axisymmetric tiled vs non-tiled" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SLR", iMin=0.0, iMax=Float64(π)/2, num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SLR", iMin=Float64(π)/2, iMax=Float64(π), num_cells=12,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+
+        g1_ref = createGrid(gp1); g2_ref = createGrid(gp2)
+        pts1 = getGridpoints(g1_ref); pts2 = getGridpoints(g2_ref)
+        for i in 1:size(pts1, 1)
+            g1_ref.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2_ref.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1_ref); spectralTransform!(g2_ref)
+        mpg_ref = PatchChain([g1_ref, g2_ref])
+        multiGridTransform!(mpg_ref)
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        tiles1 = calcTileSizes(g1, 4); @test length(tiles1) == 4
+        tiles2 = calcTileSizes(g2, 4); @test length(tiles2) == 4
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        @test g2.physical[:, 1, 1] ≈ g2_ref.physical[:, 1, 1] atol=1e-12
+    end
+
 end

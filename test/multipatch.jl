@@ -1807,6 +1807,103 @@ using LinearAlgebra
         @test max_err < 1.0
     end
 
+    # ── RLR / SLR chains ─────────────────────────────────────────────────
+
+    @testset "RLR chain axisymmetric linear: f(r) = 3r + 7" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RLR", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLR", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1); g1.physical[i, 1, 1] = 3*pts1[i, 1] + 7; end
+        for i in 1:size(pts2, 1); g2.physical[i, 1, 1] = 3*pts2[i, 1] + 7; end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - (3*pts2[i, 1] + 7))
+            for i in 1:size(pts2, 1))
+        @test max_err < 1e-6
+    end
+
+    @testset "RLR chain full 3D: f(r,λ,z) = r·cos(λ)·z" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="RLR", iMin=0.0, iMax=50.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="RLR", iMin=50.0, iMax=75.0, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3])
+            for i in 1:size(pts2, 1))
+        @test max_err < 1.0
+    end
+
+    @testset "SLR chain full 3D: f(θ,λ,z) = sin(θ)·cos(λ)·z" begin
+        gp1 = SpringsteelGridParameters(
+            geometry="SLR", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        gp2 = SpringsteelGridParameters(
+            geometry="SLR", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+
+        g1 = createGrid(gp1); g2 = createGrid(gp2)
+        pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+        for i in 1:size(pts1, 1)
+            g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+        end
+        for i in 1:size(pts2, 1)
+            g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+        end
+        spectralTransform!(g1); spectralTransform!(g2)
+
+        mpg = PatchChain([g1, g2])
+        multiGridTransform!(mpg)
+
+        max_err = maximum(
+            abs(g2.physical[i, 1, 1] - sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3])
+            for i in 1:size(pts2, 1))
+        @test max_err < 1.0
+    end
+
     # ── createMultiGrid factory ───────────────────────────────────────────
 
     @testset "createMultiGrid chain: 1D R" begin
@@ -2304,6 +2401,54 @@ using LinearAlgebra
             return PatchChain([g1, g2])
         end
 
+        function _build_RLR_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="RLR", iMin=0.0, iMax=50.0, num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=12,
+                BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="RLR", iMin=50.0, iMax=75.0, num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=12,
+                BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in 1:size(pts1, 1)
+                g1.physical[i, 1, 1] = pts1[i, 1] * cos(pts1[i, 2]) * pts1[i, 3]
+            end
+            for i in 1:size(pts2, 1)
+                g2.physical[i, 1, 1] = pts2[i, 1] * cos(pts2[i, 2]) * pts2[i, 3]
+            end
+            return PatchChain([g1, g2])
+        end
+
+        function _build_SLR_chain()
+            gp1 = SpringsteelGridParameters(
+                geometry="SLR", iMin=0.0, iMax=Float64(π)/2, num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=12,
+                BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            gp2 = SpringsteelGridParameters(
+                geometry="SLR", iMin=Float64(π)/2, iMax=Float64(π), num_cells=10,
+                kMin=0.0, kMax=10.0, kDim=12,
+                BCL=Dict("u" => FixedBC()), BCR=Dict("u" => NaturalBC()),
+                BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+                vars=Dict("u" => 1))
+            g1 = createGrid(gp1); g2 = createGrid(gp2)
+            pts1 = getGridpoints(g1); pts2 = getGridpoints(g2)
+            for i in 1:size(pts1, 1)
+                g1.physical[i, 1, 1] = sin(pts1[i, 1]) * cos(pts1[i, 2]) * pts1[i, 3]
+            end
+            for i in 1:size(pts2, 1)
+                g2.physical[i, 1, 1] = sin(pts2[i, 1]) * cos(pts2[i, 2]) * pts2[i, 3]
+            end
+            return PatchChain([g1, g2])
+        end
+
         function _snapshot_patch(g)
             nvars = length(g.params.vars)
             n_modes = size(g.ibasis.data, 1)
@@ -2380,6 +2525,8 @@ using LinearAlgebra
             ("RLZ chain (reused_3d)",   _build_RLZ_chain),
             ("SL chain (reused_2d)",    _build_SL_chain),
             ("SLZ chain (reused_3d)",   _build_SLZ_chain),
+            ("RLR chain (reused_3d)",   _build_RLR_chain),
+            ("SLR chain (reused_3d)",   _build_SLR_chain),
         ]
 
         for (name, build) in fixtures
