@@ -361,13 +361,14 @@ end
 """
     num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray}) -> Int
 
-Return `1` for 1-D Cartesian grids.  The single radial spline corresponds to one
-spectral "column" per variable.
+Return `0` for 1-D Cartesian grids: there is no vertical column decomposition,
+so model drivers advance all points as a single column. Matches the RL/SL
+convention (and the pre-1.0 `R_Grid` behavior).
 
 See also: [`allocateSplineBuffer`](@ref)
 """
 function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, NoBasisArray})
-    return 1
+    return 0
 end
 
 """
@@ -383,11 +384,13 @@ end
 """
     num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:ChebyshevBasisArray}) -> Int
 
-Return `b_kDim` for 2-D Cartesian Spline×Chebyshev (RZ) grids: one radial spline
-column per Chebyshev vertical mode.
+Return `iDim` for 2-D Cartesian Spline×Chebyshev (RZ) grids: the number of
+physical vertical columns (one per horizontal gridpoint). Model drivers advance
+the state one vertical column at a time, matching the RLZ/SLZ convention (and
+the pre-1.0 `RZ_Grid` behavior, which returned `rDim`).
 """
 function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:ChebyshevBasisArray})
-    return grid.params.b_kDim
+    return grid.params.iDim
 end
 
 """
@@ -2700,6 +2703,200 @@ function setSpectralTile(dest::Array{real}, patchParams::SpringsteelGridParamete
     siR = tile.params.spectralIndexR
     dest[siL:siR, :] .= tile.spectral[:, :]
     return dest
+end
+
+# ════════════════════════════════════════════════════════════════════════════
+# 2-D Cartesian Spline×Chebyshev (RZ) tiling
+# ════════════════════════════════════════════════════════════════════════════
+#
+# The RZ spectral array is laid out as b_kDim consecutive blocks of b_iDim
+# rows: block z holds the i-direction (spline) coefficients for Chebyshev
+# mode z (see transforms_cartesian.jl). Tiles split the i-dimension only, so
+# every block has the same tile window starting at spectralIndexL and the
+# same 3-row right halo as the 1-D Cartesian case, repeated per block.
+
+"""
+    calcPatchMap(patch::RZ_Grid, tile::RZ_Grid) -> SparseMatrixCSC{Float64, Int64}
+
+Mark the inner (non-halo) spectral rows contributed by `tile` within the patch
+spectral array, repeated for each of the `b_kDim` Chebyshev-mode blocks.
+
+See also: [`calcHaloMap`](@ref)
+"""
+function calcPatchMap(patch::_2DCartesianRZ, tile::_2DCartesianRZ)
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    b_kDim      = tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    patchStride = patch.params.b_iDim
+    tileShare   = tile.params.b_iDim - 4  # inner rows (excluding 3-row halo)
+
+    map_arr = spzeros(Float64, n, nvars)
+    for z in 1:b_kDim
+        p1 = (z - 1) * patchStride + siL
+        p2 = p1 + tileShare
+        if p1 >= 1 && p2 <= n
+            map_arr[p1:p2, :] .= 1.0
+        end
+    end
+    return map_arr
+end
+
+"""
+    calcHaloMap(patch::RZ_Grid, tile1::RZ_Grid, tile2::RZ_Grid) -> SparseMatrixCSC{Float64, Int64}
+
+Mark the 3-row right-edge halo of `tile1` within the patch spectral array,
+repeated for each of the `b_kDim` Chebyshev-mode blocks.
+
+See also: [`calcPatchMap`](@ref)
+"""
+function calcHaloMap(patch::_2DCartesianRZ, tile1::_2DCartesianRZ, tile2::_2DCartesianRZ)
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    b_kDim      = tile1.params.b_kDim
+    siL         = tile1.params.spectralIndexL
+    patchStride = patch.params.b_iDim
+    tileShare   = tile1.params.b_iDim - 3  # first halo index within tile block
+
+    map_arr = spzeros(Float64, n, nvars)
+    for z in 1:b_kDim
+        p1 = (z - 1) * patchStride + siL + tileShare
+        if p1 >= 1 && p1 + 2 <= n
+            map_arr[p1:p1+2, :] .= 1.0
+        end
+    end
+    return map_arr
+end
+
+"""
+    splineTransform!(sharedSpectral, tile::RZ_Grid) -> Nothing
+
+Apply the SA (B-vector → A-coefficient) transform for every Chebyshev-mode
+block in `tile`, reading B-coefficients from `sharedSpectral`. Single-tile
+form: `tile` spans the full patch.
+
+See also: [`tileTransform!`](@ref)
+"""
+function splineTransform!(sharedSpectral::SharedArray{real}, tile::_2DCartesianRZ)
+    b_iDim = tile.params.b_iDim
+    b_kDim = tile.params.b_kDim
+
+    for v in 1:length(tile.params.vars)
+        for z in 1:b_kDim
+            r1 = (z - 1) * b_iDim + 1
+            r2 = r1 + b_iDim - 1
+            tile.spectral[r1:r2, v] .= SAtransform(tile.ibasis.data[z, v],
+                                                    view(sharedSpectral, r1:r2, v))
+        end
+    end
+    return nothing
+end
+
+"""
+    splineTransform!(sharedSpectral, patch::RZ_Grid, tile::RZ_Grid) -> Nothing
+
+Apply the SA transform per Chebyshev-mode block using the patch splines, then
+extract the tile's A-coefficient window (starting at `spectralIndexL`) into
+`tile.spectral`.
+
+See also: [`tileTransform!`](@ref)
+"""
+function splineTransform!(sharedSpectral::SharedArray{real},
+                            patch::_2DCartesianRZ,
+                            tile::_2DCartesianRZ)
+    b_iDim_tile  = tile.params.b_iDim
+    b_iDim_patch = patch.params.b_iDim
+    b_kDim       = tile.params.b_kDim
+    siL          = tile.params.spectralIndexL
+
+    for v in 1:length(tile.params.vars)
+        for z in 1:b_kDim
+            pp1 = (z - 1) * b_iDim_patch + 1
+            tp1 = (z - 1) * b_iDim_tile + 1
+            patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                SAtransform(patch.ibasis.data[z, v],
+                            view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+            tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+        end
+    end
+    return nothing
+end
+
+"""
+    tileTransform!(sharedSpectral, tile::RZ_Grid, physical, spectral) -> Array{Float64}
+
+Evaluate field values and derivatives on `tile`'s gridpoints from the
+A-coefficients in `spectral` (populated by [`splineTransform!`](@ref)).
+
+Mirrors [`gridTransform!`](@ref) for the RZ layout, but starts from spline
+A-coefficients instead of B-vectors. Populates all five derivative slots of
+`physical` (value, ∂i, ∂i², ∂k, ∂k²).
+"""
+function tileTransform!(sharedSpectral::SharedArray{real},
+                          tile::_2DCartesianRZ,
+                          physical::Array{real},
+                          spectral::Array{real})
+    iDim   = tile.params.iDim
+    kDim   = tile.params.kDim
+    b_iDim = tile.params.b_iDim
+    b_kDim = tile.params.b_kDim
+    nvars  = length(tile.params.vars)
+    s = _scratch(tile)
+    splineBuffer   = s.splineBuffer
+    spline_scratch = s.spline_scratch
+
+    for v in 1:nvars
+        for dr in 0:2
+            # i-direction inverse transform per Chebyshev-mode block
+            for z in 1:b_kDim
+                r1 = (z - 1) * b_iDim + 1
+                isp = tile.ibasis.data[z, v]
+                copyto!(isp.a, view(spectral, r1:r1+b_iDim-1, v))
+                if dr == 0
+                    SItransform!(isp)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = isp.uMish[r]
+                    end
+                elseif dr == 1
+                    SIxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
+                else
+                    SIxxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
+                end
+            end
+
+            # k-direction inverse transform per i gridpoint
+            kcol = tile.kbasis.data[v]
+            for r in 1:iDim
+                @inbounds for z in 1:b_kDim
+                    kcol.b[z] = splineBuffer[r, z]
+                end
+                CAtransform!(kcol)
+                CItransform!(kcol)
+                z1 = (r - 1) * kDim + 1
+                z2 = z1 + kDim - 1
+                if dr == 0
+                    copyto!(view(physical, z1:z2, v, 1), kcol.uMish)
+                    # Reuse kcol.uMish as scratch — its prior content was just copied above.
+                    CIxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 4), kcol.uMish)
+                    CIxxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 5), kcol.uMish)
+                elseif dr == 1
+                    copyto!(view(physical, z1:z2, v, 2), kcol.uMish)
+                else
+                    copyto!(view(physical, z1:z2, v, 3), kcol.uMish)
+                end
+            end
+        end
+    end
+    return physical
 end
 
 # ════════════════════════════════════════════════════════════════════════════

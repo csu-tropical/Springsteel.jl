@@ -980,7 +980,8 @@
             )
             grid = createGrid(gp)
 
-            @test Springsteel.num_columns(grid) == 1
+            # 1-D Cartesian grids have no vertical column decomposition
+            @test Springsteel.num_columns(grid) == 0
 
             buf = allocateSplineBuffer(grid)
             @test isa(buf, Array)   # returns a (trivial) array

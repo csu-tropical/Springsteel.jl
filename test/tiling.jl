@@ -54,7 +54,8 @@
             @test count(!iszero, haloMap) == 3   # 3-row halo for 1 variable
 
             # ── num_columns ─────────────────────────────────────────────────
-            @test num_columns(patch) >= 1
+            # 1-D Cartesian grids have no vertical column decomposition
+            @test num_columns(patch) == 0
 
             # ── allocateSplineBuffer ─────────────────────────────────────────
             buf = allocateSplineBuffer(tiles[1])
