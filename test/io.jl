@@ -691,11 +691,11 @@ using DataFrames
 
                 data = read_netcdf(tmpfile)
 
-                @test data["dimensions"]["x"] == gp.i_regular_out
+                @test data["dimensions"]["x"] == grid.params.i_regular_out
                 reg_pts = getRegularGridpoints(grid)
                 @test data["coordinates"]["x"] ≈ reg_pts
                 @test haskey(data["variables"], "u")
-                @test length(data["variables"]["u"]) == gp.i_regular_out
+                @test length(data["variables"]["u"]) == grid.params.i_regular_out
                 x_vals = data["coordinates"]["x"]
                 @test maximum(abs.(data["variables"]["u"] .- sin.(2π .* x_vals ./ 10.0))) < 1e-4
                 @test data["attributes"]["Conventions"] == "CF-1.12"
@@ -723,7 +723,7 @@ using DataFrames
                 @test haskey(data["coordinates"], "radius")
                 @test haskey(data["coordinates"], "azimuth")
                 @test haskey(data["variables"], "u")
-                @test size(data["variables"]["u"]) == (gp.i_regular_out, gp.j_regular_out)
+                @test size(data["variables"]["u"]) == (grid.params.i_regular_out, grid.params.j_regular_out)
                 @test data["attributes"]["Conventions"] == "CF-1.12"
             end
 
@@ -844,7 +844,7 @@ using DataFrames
                     @test ds["time"].attrib["units"] == "seconds since 1970-01-01T00:00:00Z"
                     # Data variable should have time as leading dimension
                     @test "time" in dimnames(ds["u"])
-                    @test size(ds["u"]) == (1, gp.i_regular_out)
+                    @test size(ds["u"]) == (1, grid.params.i_regular_out)
                 end
             end
 
@@ -940,7 +940,7 @@ using DataFrames
                     @test ds.dim["time"] == 1
                     @test haskey(ds, "grid_mapping")
                     # Data shape: (time, x, y)
-                    @test size(ds["u"]) == (1, gp.i_regular_out, gp.j_regular_out)
+                    @test size(ds["u"]) == (1, grid.params.i_regular_out, grid.params.j_regular_out)
                 end
             end
 
@@ -969,7 +969,7 @@ using DataFrames
                     @test ds["u"].attrib["units"] == "K"
                     @test haskey(ds.dim, "time")
                     @test haskey(ds, "grid_mapping")
-                    @test size(ds["u"]) == (1, gp.i_regular_out, gp.k_regular_out)
+                    @test size(ds["u"]) == (1, grid.params.i_regular_out, grid.params.k_regular_out)
                 end
             end
 
@@ -1012,7 +1012,7 @@ using DataFrames
                     @test ds.dim["time"] == 1
                     @test haskey(ds, "grid_mapping")
                     @test ds["grid_mapping"].attrib["latitude_of_projection_origin"] ≈ 40.0
-                    @test size(ds["u"]) == (1, gp.i_regular_out, gp.j_regular_out, gp.k_regular_out)
+                    @test size(ds["u"]) == (1, grid.params.i_regular_out, grid.params.j_regular_out, grid.params.k_regular_out)
                 end
             end
 
@@ -1031,7 +1031,7 @@ using DataFrames
 
                 NCDataset(tmpfile, "r") do ds
                     @test !haskey(ds.dim, "time")
-                    @test size(ds["u"]) == (gp.i_regular_out,)
+                    @test size(ds["u"]) == (grid.params.i_regular_out,)
                 end
             end
 

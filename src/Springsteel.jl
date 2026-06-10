@@ -354,9 +354,16 @@ primary parameters (marked *auto* below).
 - `tile_num::Int64 = 0`: Tile number identifier
 
 ## Regular Output Grid
-- `i_regular_out::Int64`: i-points for regular output (*auto*: `num_cells + 1`)
-- `j_regular_out::Int64`: j-points for regular output (*auto*: `iDim*2 + 1`)
-- `k_regular_out::Int64`: k-points for regular output (*auto*: `kDim + 1`)
+- `i_regular_out::Int64`: i-points for regular output (`0` = *auto*: `num_cells + 1`
+  for spline i, `iDim + 1` for Fourier/Chebyshev i)
+- `j_regular_out::Int64`: j-points for regular output (`0` = *auto*: j-cells + 1 for
+  Cartesian spline j, the outermost-ring rule `iDim*2 + 1` for cylindrical/spherical
+  Fourier j, `jDim + 1` otherwise)
+- `k_regular_out::Int64`: k-points for regular output (`0` = *auto*: k-cells + 1 for
+  spline k, `kDim + 1` for Chebyshev k)
+
+The *auto* values are resolved by [`compute_derived_params`](@ref) (run inside
+[`createGrid`](@ref)); explicitly set (nonzero) values are preserved.
 
 # Boundary Condition Options
 
@@ -469,11 +476,14 @@ Base.@kwdef struct SpringsteelGridParameters
     patchOffsetL::int = (spectralIndexL - 1) * mubar
     patchOffsetR::int = patchOffsetL + iDim
     tile_num::int = 0
-    # The default i increment is the number of spline cells
-    i_regular_out::int = num_cells + 1
-    # The default j_increment is the maximum number of wavenumbers on the outermost ring
-    j_regular_out::int = (iDim*2) + 1
-    k_regular_out::int = kDim + 1
+    # Regular output sizing. 0 = auto: resolved geometry-aware by
+    # compute_derived_params — spline axes resample onto cell-boundary nodes
+    # (cells + 1); the cylindrical/spherical Fourier azimuth keeps the
+    # outermost-ring rule (iDim*2 + 1); Chebyshev/Fourier axes use their
+    # gridpoint count + 1. Nonzero user values pass through untouched.
+    i_regular_out::int = 0
+    j_regular_out::int = 0
+    k_regular_out::int = 0
 end
 
 # Deprecated alias for SpringsteelGridParameters. Kept for one release

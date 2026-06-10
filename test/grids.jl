@@ -479,7 +479,7 @@
             
             # Build regular output gridpoints using the default i_regular_out
             # Default: i_regular_out = num_cells + 1 = 101 evenly-spaced points
-            n = gp.i_regular_out  # 101
+            n = grid.params.i_regular_out  # 101
             x_incr = (gp.iMax - gp.iMin) / (n - 1)
             reg_pts = [gp.iMin + (i - 1) * x_incr for i = 1:n]
             
@@ -531,7 +531,7 @@
             # Use getRegularGridpoints to obtain output locations
             reg_pts = Springsteel.getRegularGridpoints(grid)
 
-            @test length(reg_pts) == gp.i_regular_out   # 101
+            @test length(reg_pts) == grid.params.i_regular_out   # 101
             @test reg_pts[1] ≈ gp.iMin
             @test reg_pts[end] ≈ gp.iMax
             @test all(diff(reg_pts) .> 0)               # monotonically increasing
@@ -1569,6 +1569,55 @@
             @test grid.ibasis isa SplineBasisArray
             @test grid.jbasis isa FourierBasisArray
             @test grid.kbasis isa ChebyshevBasisArray
+        end
+
+        @testset "Regular output sizing is geometry-aware (issue #6)" begin
+            # Cartesian RRR: a square configuration must produce square
+            # cell-boundary output (cells + 1 per spline axis), not the
+            # cylindrical outermost-ring j rule / mish-based k count.
+            gp = SpringsteelGridParameters(
+                geometry = "RRR",
+                iMin = 0.0, iMax = 240.0, num_cells = 240,
+                jMin = 0.0, jMax = 240.0,
+                kMin = 0.0, kMax = 18.0, kDim = 18 * 3,
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            @test grid.params.i_regular_out == 241
+            @test grid.params.j_regular_out == 241
+            @test grid.params.k_regular_out == 19
+
+            # Explicitly set values must survive createGrid — the
+            # compute_derived_params reconstruction used to drop them and
+            # reset to the defaults.
+            gp2 = SpringsteelGridParameters(
+                geometry = "RRR",
+                iMin = 0.0, iMax = 240.0, num_cells = 240,
+                jMin = 0.0, jMax = 240.0,
+                kMin = 0.0, kMax = 18.0, kDim = 18 * 3,
+                i_regular_out = 121, j_regular_out = 61, k_regular_out = 10,
+                vars = Dict("u" => 1))
+            grid2 = createGrid(gp2)
+            @test grid2.params.i_regular_out == 121
+            @test grid2.params.j_regular_out == 61
+            @test grid2.params.k_regular_out == 10
+
+            # Cylindrical keeps the outermost-ring azimuth rule.
+            gp3 = SpringsteelGridParameters(
+                geometry = "RL",
+                iMin = 0.0, iMax = 50.0, num_cells = 20,
+                vars = Dict("u" => 1))
+            grid3 = createGrid(gp3)
+            @test grid3.params.i_regular_out == 21
+            @test grid3.params.j_regular_out == (grid3.params.iDim * 2) + 1
+
+            # Spline-k geometries (RLR) get cells + 1 in the vertical too.
+            gp4 = SpringsteelGridParameters(
+                geometry = "RLR",
+                iMin = 0.0, iMax = 50.0, num_cells = 20,
+                kMin = 0.0, kMax = 10.0, kDim = 8 * 3,
+                vars = Dict("u" => 1))
+            grid4 = createGrid(gp4)
+            @test grid4.params.k_regular_out == 9
         end
 
     end  # SpringsteelGrid Factory

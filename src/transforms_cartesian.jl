@@ -755,7 +755,7 @@ and file I/O.
 
 The output dimensions are controlled by [`SpringsteelGridParameters`](@ref) fields:
 - `i_regular_out` — x-points in `[iMin, iMax]`   (default `num_cells + 1`)
-- `j_regular_out` — y-points in `[jMin, jMax]`   (default `iDim * 2 + 1`)
+- `j_regular_out` — y-points in `[jMin, jMax]`   (default: y cells + 1)
 
 Points are ordered x-outer, y-inner (y varies fastest), matching
 [`regularGridTransform`](@ref).
@@ -1354,8 +1354,8 @@ this function returns a regular tensor-product grid for visualisation and file I
 
 The output dimensions are controlled by [`SpringsteelGridParameters`](@ref) fields:
 - `i_regular_out` — x-points in `[iMin, iMax]`   (default `num_cells + 1`)
-- `j_regular_out` — y-points in `[jMin, jMax]`   (default `iDim * 2 + 1`)
-- `k_regular_out` — z-points in `[kMin, kMax]`   (default `kDim + 1`)
+- `j_regular_out` — y-points in `[jMin, jMax]`   (default: y cells + 1)
+- `k_regular_out` — z-points in `[kMin, kMax]`   (default: z cells + 1)
 
 Points are ordered x-outer, y-middle, z-inner (z varies fastest), matching
 [`regularGridTransform`](@ref).

@@ -231,10 +231,18 @@ end
 # Backward-compat alias
 const _cartesian_k_dims = _spline_k_dims
 
-# Reconstruct SpringsteelGridParameters with updated j/k dims
+# Reconstruct SpringsteelGridParameters with updated j/k dims and/or regular
+# output sizing. Every other field — including the user's i/j/k_regular_out —
+# must pass through verbatim: this reconstruction used to omit the
+# *_regular_out fields, silently resetting explicitly set output sizes back
+# to the @kwdef defaults for every geometry that re-derives dimensions
+# (issue #6).
 function _update_gp(gp::SpringsteelGridParameters;
         jDim   = gp.jDim,   b_jDim  = gp.b_jDim,
-        kDim   = gp.kDim,   b_kDim  = gp.b_kDim)
+        kDim   = gp.kDim,   b_kDim  = gp.b_kDim,
+        i_regular_out = gp.i_regular_out,
+        j_regular_out = gp.j_regular_out,
+        k_regular_out = gp.k_regular_out)
     return SpringsteelGridParameters(
         geometry       = gp.geometry,
         iMin           = gp.iMin,
@@ -268,7 +276,51 @@ function _update_gp(gp::SpringsteelGridParameters;
         spectralIndexR = gp.spectralIndexR,
         patchOffsetL   = gp.patchOffsetL,
         patchOffsetR   = gp.patchOffsetR,
-        tile_num       = gp.tile_num)
+        tile_num       = gp.tile_num,
+        i_regular_out  = i_regular_out,
+        j_regular_out  = j_regular_out,
+        k_regular_out  = k_regular_out)
+end
+
+# Resolve the regular-output sizing sentinels (0 = auto) to geometry-aware
+# counts. Spline axes resample onto cell-boundary nodes (cells + 1); the
+# cylindrical/spherical Fourier azimuth keeps the outermost-ring rule
+# (iDim*2 + 1); Fourier/Chebyshev axes use their gridpoint count + 1.
+# Nonzero (user-supplied) values pass through untouched. Must run AFTER the
+# dimension derivation so jDim/kDim are final.
+function _resolve_regular_out(gp::SpringsteelGridParameters)
+    geom = _normalize_geometry(gp.geometry)
+    iout = gp.i_regular_out
+    if iout == 0
+        # "Spline1D"/"Spline2D" are accepted geometry names that are not in
+        # _GEOMETRY_ALIASES (matching the defensive checks in
+        # _compute_derived_dims).
+        spline_i = geom in ("R", "Spline1D", "RZ", "RR", "Spline2D", "RRR",
+                            "RL", "RLZ", "RLR", "SL", "SLZ", "SLR")
+        iout = spline_i ? gp.num_cells + 1 : gp.iDim + 1
+    end
+    jout = gp.j_regular_out
+    if jout == 0
+        jout = if geom in ("RR", "Spline2D", "RRR")
+            (gp.jDim ÷ gp.mubar) + 1            # Cartesian spline j: cells + 1
+        elseif geom in ("RL", "RLZ", "RLR", "SL", "SLZ", "SLR")
+            (gp.iDim * 2) + 1                   # outermost-ring azimuth rule
+        else
+            gp.jDim + 1                         # Fourier/Chebyshev j (1 when absent)
+        end
+    end
+    kout = gp.k_regular_out
+    if kout == 0
+        kout = geom in ("RRR", "RLR", "SLR") ?
+            (gp.kDim ÷ gp.mubar) + 1 :          # spline k: cells + 1
+            gp.kDim + 1                         # Chebyshev k (1 when absent)
+    end
+    if iout == gp.i_regular_out && jout == gp.j_regular_out &&
+       kout == gp.k_regular_out
+        return gp
+    end
+    return _update_gp(gp; i_regular_out = iout, j_regular_out = jout,
+                          k_regular_out = kout)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -291,9 +343,18 @@ domain-aspect-ratio-dependent j/k dimensions require recomputation.
 | `"RR"`, `"Spline2D"` | `jDim`, `b_jDim` from domain aspect ratio |
 | `"RRR"` | `jDim`, `b_jDim` AND `kDim`, `b_kDim` from domain aspect ratio |
 
+After the dimension derivation, the regular-output sizing sentinels
+(`i/j/k_regular_out == 0`) are resolved to geometry-aware counts (spline axes
+→ cells + 1; cylindrical/spherical Fourier j → `iDim*2 + 1`; otherwise
+dim + 1). Explicitly set (nonzero) values are preserved.
+
 See also: [`parse_geometry`](@ref), [`createGrid`](@ref)
 """
 function compute_derived_params(gp::SpringsteelGridParameters)
+    return _resolve_regular_out(_compute_derived_dims(gp))
+end
+
+function _compute_derived_dims(gp::SpringsteelGridParameters)
     geom = _normalize_geometry(gp.geometry)
 
     if geom in ("R", "Spline1D", "RZ")
