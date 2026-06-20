@@ -96,6 +96,16 @@ function _build_scratch(grid::_2DCartesianRZ)
     )
 end
 
+# RiRk reuses the RZ scratch layout (one k-column per var; [iDim,b_kDim] buffers).
+function _build_scratch(grid::_2DCartesianRiRk)
+    p = grid.params
+    return _ScratchRZ(
+        zeros(Float64, p.iDim, p.b_kDim),
+        zeros(Float64, p.iDim),
+        zeros(Float64, p.b_kDim, p.iDim),
+    )
+end
+
 function _build_scratch(grid::_3DCartesianRRR)
     p = grid.params
     return _ScratchRRR(
@@ -167,6 +177,7 @@ end
 for (gridtype, scratchtype) in (
         (:(_2DCartesianRR),  :_ScratchRR),
         (:(_2DCartesianRZ),  :_ScratchRZ),
+        (:(_2DCartesianRiRk), :_ScratchRZ),
         (:(_3DCartesianRRR), :_ScratchRRR),
         (:(_RLGrid),         :_ScratchRL),
         (:(_RLZGrid),        :_ScratchRLZ),

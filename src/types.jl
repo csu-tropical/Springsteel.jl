@@ -433,6 +433,32 @@ const Spline2D_Grid = RR_Grid
 const Spline2D_Grid = RR_Grid
 
 """
+    RiRj_Grid
+
+Alias for [`RR_Grid`](@ref).  Explicit-dimension name (`R` in `i`, `R` in `j`).
+
+```julia
+const RiRj_Grid = RR_Grid
+```
+"""
+const RiRj_Grid = RR_Grid
+
+"""
+    RiRk_Grid
+
+Type alias for a 2-D Cartesian grid with a Spline i-basis and a Spline k-basis
+(cubic B-spline vertical). Mirrors [`RZ_Grid`](@ref) but the k-basis is a
+B-spline instead of Chebyshev, so the vertical stays in the k-slot.
+
+```julia
+const RiRk_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, SplineBasisArray{1}}
+```
+
+See also: [`RZ_Grid`](@ref), [`RR_Grid`](@ref), [`SpringsteelGrid`](@ref)
+"""
+const RiRk_Grid = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, SplineBasisArray{1}}
+
+"""
     RLZ_Grid
 
 Type alias for a 3-D cylindrical grid (Spline × Fourier × Chebyshev).

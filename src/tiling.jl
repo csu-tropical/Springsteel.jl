@@ -394,6 +394,17 @@ function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray
 end
 
 """
+    num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:SplineBasisArray}) -> Int
+
+Return `iDim` for 2-D Cartesian Spline×Spline-in-k (RiRk) grids: the number of
+physical vertical columns (one per horizontal gridpoint), matching the RZ
+convention.
+"""
+function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:SplineBasisArray})
+    return grid.params.iDim
+end
+
+"""
     num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, <:SplineBasisArray}) -> Int
 
 Return `b_jDim * b_kDim` for 3-D Cartesian Spline×Spline×Spline (RRR) grids.
@@ -447,7 +458,8 @@ function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, <:SplineB
     return zeros(Float64, tile.params.iDim, tile.params.b_jDim, length(tile.params.vars))
 end
 
-function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:ChebyshevBasisArray})
+# RZ (Chebyshev k) and RiRk (spline k) share the same (iDim, b_kDim, nvars) buffer shape.
+function allocateSplineBuffer(tile::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, NoBasisArray, <:Union{ChebyshevBasisArray, SplineBasisArray}})
     return zeros(Float64, tile.params.iDim, tile.params.b_kDim, length(tile.params.vars))
 end
 
@@ -2723,7 +2735,8 @@ spectral array, repeated for each of the `b_kDim` Chebyshev-mode blocks.
 
 See also: [`calcHaloMap`](@ref)
 """
-function calcPatchMap(patch::_2DCartesianRZ, tile::_2DCartesianRZ)
+function calcPatchMap(patch::Union{_2DCartesianRZ, _2DCartesianRiRk},
+                      tile::Union{_2DCartesianRZ, _2DCartesianRiRk})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     b_kDim      = tile.params.b_kDim
@@ -2750,7 +2763,9 @@ repeated for each of the `b_kDim` Chebyshev-mode blocks.
 
 See also: [`calcPatchMap`](@ref)
 """
-function calcHaloMap(patch::_2DCartesianRZ, tile1::_2DCartesianRZ, tile2::_2DCartesianRZ)
+function calcHaloMap(patch::Union{_2DCartesianRZ, _2DCartesianRiRk},
+                     tile1::Union{_2DCartesianRZ, _2DCartesianRiRk},
+                     tile2::Union{_2DCartesianRZ, _2DCartesianRiRk})
     n           = size(patch.spectral, 1)
     nvars       = size(patch.spectral, 2)
     b_kDim      = tile1.params.b_kDim
@@ -2777,7 +2792,8 @@ form: `tile` spans the full patch.
 
 See also: [`tileTransform!`](@ref)
 """
-function splineTransform!(sharedSpectral::SharedArray{real}, tile::_2DCartesianRZ)
+function splineTransform!(sharedSpectral::SharedArray{real},
+                          tile::Union{_2DCartesianRZ, _2DCartesianRiRk})
     b_iDim = tile.params.b_iDim
     b_kDim = tile.params.b_kDim
 
@@ -2802,8 +2818,8 @@ extract the tile's A-coefficient window (starting at `spectralIndexL`) into
 See also: [`tileTransform!`](@ref)
 """
 function splineTransform!(sharedSpectral::SharedArray{real},
-                            patch::_2DCartesianRZ,
-                            tile::_2DCartesianRZ)
+                            patch::Union{_2DCartesianRZ, _2DCartesianRiRk},
+                            tile::Union{_2DCartesianRZ, _2DCartesianRiRk})
     b_iDim_tile  = tile.params.b_iDim
     b_iDim_patch = patch.params.b_iDim
     b_kDim       = tile.params.b_kDim
@@ -2887,6 +2903,80 @@ function tileTransform!(sharedSpectral::SharedArray{real},
                     CIxtransform(kcol, kcol.uMish)
                     copyto!(view(physical, z1:z2, v, 4), kcol.uMish)
                     CIxxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 5), kcol.uMish)
+                elseif dr == 1
+                    copyto!(view(physical, z1:z2, v, 2), kcol.uMish)
+                else
+                    copyto!(view(physical, z1:z2, v, 3), kcol.uMish)
+                end
+            end
+        end
+    end
+    return physical
+end
+
+"""
+    tileTransform!(sharedSpectral, tile::RiRk_Grid, physical, spectral) -> Array{Float64}
+
+RiRk (spline-i × spline-k) analog of the RZ [`tileTransform!`](@ref): the
+i-direction inverse transform is identical, while the k-direction uses cubic
+B-spline transforms (`SAtransform!`/`SItransform!`/`SIxtransform`/`SIxxtransform`)
+instead of Chebyshev. Populates all five derivative slots (value, ∂i, ∂i², ∂k, ∂k²).
+"""
+function tileTransform!(sharedSpectral::SharedArray{real},
+                          tile::_2DCartesianRiRk,
+                          physical::Array{real},
+                          spectral::Array{real})
+    iDim   = tile.params.iDim
+    kDim   = tile.params.kDim
+    b_iDim = tile.params.b_iDim
+    b_kDim = tile.params.b_kDim
+    nvars  = length(tile.params.vars)
+    s = _scratch(tile)
+    splineBuffer   = s.splineBuffer
+    spline_scratch = s.spline_scratch
+
+    for v in 1:nvars
+        for dr in 0:2
+            # i-direction inverse transform per vertical-spline-mode block
+            for z in 1:b_kDim
+                r1 = (z - 1) * b_iDim + 1
+                isp = tile.ibasis.data[z, v]
+                copyto!(isp.a, view(spectral, r1:r1+b_iDim-1, v))
+                if dr == 0
+                    SItransform!(isp)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = isp.uMish[r]
+                    end
+                elseif dr == 1
+                    SIxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
+                else
+                    SIxxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
+                end
+            end
+
+            # k-direction inverse transform per i gridpoint
+            kcol = tile.kbasis.data[v]
+            for r in 1:iDim
+                @inbounds for z in 1:b_kDim
+                    kcol.b[z] = splineBuffer[r, z]
+                end
+                SAtransform!(kcol)
+                SItransform!(kcol)
+                z1 = (r - 1) * kDim + 1
+                z2 = z1 + kDim - 1
+                if dr == 0
+                    copyto!(view(physical, z1:z2, v, 1), kcol.uMish)
+                    # Reuse kcol.uMish as scratch — its prior content was just copied above.
+                    SIxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 4), kcol.uMish)
+                    SIxxtransform(kcol, kcol.uMish)
                     copyto!(view(physical, z1:z2, v, 5), kcol.uMish)
                 elseif dr == 1
                     copyto!(view(physical, z1:z2, v, 2), kcol.uMish)

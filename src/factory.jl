@@ -83,7 +83,9 @@ function parse_geometry(geometry::String)
         "RL"           => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType()),
         "Polar"        => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   NoBasisType()),
         "RR"           => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    NoBasisType()),
+        "RiRj"         => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    NoBasisType()),  # explicit-dimension alias for RR
         "Spline2D"     => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    NoBasisType()),
+        "RiRk"         => (CartesianGeometry(),   SplineBasisType(),    NoBasisType(),        SplineBasisType()),  # spline-i × spline-k (B-spline vertical)
         "RLZ"          => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
         "Cylindrical"  => (CylindricalGeometry(), SplineBasisType(),    FourierBasisType(),   ChebyshevBasisType()),
         "RRR"          => (CartesianGeometry(),   SplineBasisType(),    SplineBasisType(),    SplineBasisType()),
@@ -130,6 +132,7 @@ const _GEOMETRY_ALIASES = Dict{String,String}(
     # ── Spline grid: descriptive name → canonical code ────────────────────────
     "Polar"          => "RL",
     "Cylindrical"    => "RLZ",
+    "RiRj"           => "RR",
     "Spline3D"       => "RRR",
     "Samurai"        => "RRR",
     "SphericalShell" => "SL",
@@ -295,7 +298,7 @@ function _resolve_regular_out(gp::SpringsteelGridParameters)
         # "Spline1D"/"Spline2D" are accepted geometry names that are not in
         # _GEOMETRY_ALIASES (matching the defensive checks in
         # _compute_derived_dims).
-        spline_i = geom in ("R", "Spline1D", "RZ", "RR", "Spline2D", "RRR",
+        spline_i = geom in ("R", "Spline1D", "RZ", "RR", "Spline2D", "RRR", "RiRk",
                             "RL", "RLZ", "RLR", "SL", "SLZ", "SLR")
         iout = spline_i ? gp.num_cells + 1 : gp.iDim + 1
     end
@@ -311,7 +314,7 @@ function _resolve_regular_out(gp::SpringsteelGridParameters)
     end
     kout = gp.k_regular_out
     if kout == 0
-        kout = geom in ("RRR", "RLR", "SLR") ?
+        kout = geom in ("RRR", "RLR", "SLR", "RiRk") ?
             (gp.kDim ÷ gp.mubar) + 1 :          # spline k: cells + 1
             gp.kDim + 1                         # Chebyshev k (1 when absent)
     end
@@ -340,8 +343,9 @@ domain-aspect-ratio-dependent j/k dimensions require recomputation.
 | `"R"`, `"Spline1D"`, `"RZ"` | Nothing — `jDim`/`kDim` stay at user-provided values |
 | `"RL"`, `"RLZ"` | `jDim`, `b_jDim` from cylindrical ring formula `∑(4+4rᵢ)` |
 | `"SL"`, `"SLZ"` | `jDim`, `b_jDim` from spherical sin(θ) ring formula |
-| `"RR"`, `"Spline2D"` | `jDim`, `b_jDim` from domain aspect ratio |
+| `"RR"`, `"RiRj"`, `"Spline2D"` | `jDim`, `b_jDim` from domain aspect ratio |
 | `"RRR"` | `jDim`, `b_jDim` AND `kDim`, `b_kDim` from domain aspect ratio |
+| `"RiRk"` | `kDim`, `b_kDim` from the vertical spline cell count (`j` absent) |
 
 After the dimension derivation, the regular-output sizing sentinels
 (`i/j/k_regular_out == 0`) are resolved to geometry-aware counts (spline axes
@@ -376,6 +380,11 @@ function _compute_derived_dims(gp::SpringsteelGridParameters)
         jDim, b_jDim = _cartesian_j_dims(gp)
         kDim, b_kDim = _spline_k_dims(gp)
         return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
+
+    elseif geom == "RiRk"
+        # spline-i × (none) × spline-k: derive only the vertical spline dims
+        kDim, b_kDim = _spline_k_dims(gp)
+        return _update_gp(gp; kDim=kDim, b_kDim=b_kDim)
 
     elseif geom == "RLR"
         jDim, b_jDim = _fourier_j_dims_cyl(gp)
@@ -574,6 +583,56 @@ function _create_cartesian_2d_rz(gp::SpringsteelGridParameters)
             bDim = gp.b_kDim,
             BCB  = _get_chebyshev_bc(gp.BCB, key),
             BCT  = _get_chebyshev_bc(gp.BCT, key)))
+    end
+    return grid
+end
+
+# 2D Cartesian Spline×Spline with the vertical in k (RiRk): spline-i × spline-k.
+# Identical structure to RZ except the kbasis is a cubic B-spline instead of
+# Chebyshev, so the vertical stays in the k-slot (one column per variable).
+function _create_cartesian_2d_rirk(gp::SpringsteelGridParameters)
+    nvars   = length(values(gp.vars))
+    # ibasis: b_kDim splines per variable (one per vertical spline mode)
+    splines  = Array{Spline1D}(undef, gp.b_kDim, nvars)
+    columns  = Array{Spline1D}(undef, nvars)
+    ibasis   = SplineBasisArray(splines)
+    jbasis   = NoBasisArray()
+    kbasis   = SplineBasisArray(columns)
+
+    spec_dim = gp.b_kDim * gp.b_iDim
+    phys_dim = gp.iDim * gp.kDim
+    spectral = zeros(Float64, spec_dim, nvars)
+    physical = zeros(Float64, phys_dim, nvars, 5)
+
+    grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
+        gp, ibasis, jbasis, kbasis, spectral, physical)
+
+    nc_k = Int64(gp.kDim / gp.mubar)
+    for key in keys(gp.vars)
+        v = gp.vars[key]
+        var_l_q   = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
+        var_l_q_k = get(gp.l_q, string(key, "_k"), var_l_q)
+        # One horizontal spline per vertical spline mode
+        for z in 1:gp.b_kDim
+            grid.ibasis.data[z, v] = Spline1D(SplineParameters(
+                xmin      = gp.iMin,
+                xmax      = gp.iMax,
+                num_cells = gp.num_cells,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
+                l_q       = var_l_q,
+                BCL       = _get_spline_bc(gp.BCL, key),
+                BCR       = _get_spline_bc(gp.BCR, key)))
+        end
+        grid.kbasis.data[v] = Spline1D(SplineParameters(
+            xmin      = gp.kMin,
+            xmax      = gp.kMax,
+            num_cells = nc_k,
+            mubar     = gp.mubar,
+            quadrature = gp.quadrature,
+            l_q       = var_l_q_k,
+            BCL       = _get_spline_bc(gp.BCB, key),
+            BCR       = _get_spline_bc(gp.BCT, key)))
     end
     return grid
 end
@@ -1306,6 +1365,8 @@ function createGrid(gp::SpringsteelGridParameters)
         return _create_cartesian_2d_rz(gp_final)
     elseif geom in ("RR", "Spline2D")
         return _create_cartesian_2d_rr(gp_final)
+    elseif geom == "RiRk"
+        return _create_cartesian_2d_rirk(gp_final)
     elseif geom == "RRR"
         return _create_cartesian_3d_rrr(gp_final)
     elseif geom == "RL"

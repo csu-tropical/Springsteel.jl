@@ -197,6 +197,9 @@ Ixxtransform(obj::CubicBSpline.Spline1D)  = CubicBSpline.Ixxtransform(obj)
 Ixxtransform(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Ixxtransform(obj)
 
 IInttransform(obj::CubicBSpline.Spline1D, u::Vector{Float64}, C0::Float64=0.0) = CubicBSpline.IInttransform(obj, u, C0)
+# Cached 2-arg form (integrate the function held in obj.uMish), mirroring the
+# Chebyshev signature so basis-agnostic callers use one `IInttransform(col, C0)`.
+IInttransform(obj::CubicBSpline.Spline1D, C0::Float64=0.0) = CubicBSpline.IInttransform(obj, C0)
 IInttransform(obj::Chebyshev.Chebyshev1D, C0::Float64=0.0) = Chebyshev.IInttransform(obj, C0)
 
 export AbstractGrid
@@ -254,6 +257,7 @@ export SplineBasisArray, FourierBasisArray, ChebyshevBasisArray, NoBasisArray
 export SL_Grid, SLZ_Grid
 export RLR_Grid, SLR_Grid
 export R_Grid, RL_Grid, RZ_Grid, RR_Grid, RLZ_Grid, RRR_Grid, Spline1D_Grid, Spline2D_Grid
+export RiRk_Grid, RiRj_Grid
 # Geometry-name aliases for spline grids
 export Polar_Grid, Cylindrical_Grid, Spline3D_Grid, Samurai_Grid, SphericalShell_Grid, Sphere_Grid
 # Fourier-based grids: canonical L / LL / LLZ, descriptive Ring1D / Ring2D / DoublyPeriodic

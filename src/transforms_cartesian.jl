@@ -739,6 +739,183 @@ function gridTransform!(grid::_2DCartesianRZ)
     return grid.physical
 end
 
+# ════════════════════════════════════════════════════════════════════════════
+# 2D Cartesian Spline×Spline with vertical in k (RiRk) — spline-i × spline-k.
+# Structurally identical to RZ (one k-column per variable, shared across i),
+# but the k-direction uses cubic B-spline transforms instead of Chebyshev.
+# ════════════════════════════════════════════════════════════════════════════
+
+const _2DCartesianRiRk = SpringsteelGrid{CartesianGeometry, SplineBasisArray{2}, NoBasisArray, SplineBasisArray{1}}
+
+"""
+    getGridpoints(grid::_2DCartesianRiRk) -> Matrix{Float64}
+
+Return a `(iDim*kDim, 2)` matrix of physical grid coordinates. Column 1 is the
+i-direction (spline) coordinate, column 2 the k-direction (spline) coordinate;
+the k index varies fastest, matching the RZ layout `(r-1)*kDim + z`.
+"""
+function getGridpoints(grid::_2DCartesianRiRk)
+    iDim = grid.params.iDim
+    kDim = grid.params.kDim
+    pts  = zeros(Float64, iDim * kDim, 2)
+    g = 1
+    for r in 1:iDim
+        xi = grid.ibasis.data[1, 1].mishPoints[r]
+        for z in 1:kDim
+            pts[g, 1] = xi
+            pts[g, 2] = grid.kbasis.data[1].mishPoints[z]
+            g += 1
+        end
+    end
+    return pts
+end
+
+"""
+    spectralTransform(grid::_2DCartesianRiRk, physical, spectral)
+
+Forward transform (physical → spectral) for a 2-D Cartesian Spline×Spline (k)
+grid. Mirrors the RZ transform with the k-direction Chebyshev `CBtransform!`
+replaced by the spline `SBtransform!`. Spectral layout is identical to RZ:
+`b_kDim` consecutive `b_iDim`-element blocks, one per vertical spline mode.
+"""
+function spectralTransform(
+        grid     :: _2DCartesianRiRk,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim  = grid.params.iDim
+    kDim  = grid.params.kDim
+    b_iDim = grid.params.b_iDim
+    b_kDim = grid.params.b_kDim
+    nvars = size(spectral, 2)
+    tempcb = _scratch(grid).tempcb
+
+    for v in 1:nvars
+        # Step 1: k-direction (spline) transform for each i gridpoint
+        kcol = grid.kbasis.data[v]
+        for r in 1:iDim
+            @inbounds for z in 1:kDim
+                kcol.uMish[z] = physical[(r-1)*kDim + z, v, 1]
+            end
+            SBtransform!(kcol)
+            @inbounds for k in 1:b_kDim
+                tempcb[k, r] = kcol.b[k]
+            end
+        end
+
+        # Step 2: i-direction (spline) transform for each k spectral mode
+        for z in 1:b_kDim
+            isp = grid.ibasis.data[z, v]
+            @inbounds for r in 1:iDim
+                isp.uMish[r] = tempcb[z, r]
+            end
+            SBtransform!(isp)
+            r1 = (z-1)*b_iDim + 1
+            @inbounds for k in 0:(b_iDim - 1)
+                spectral[r1 + k, v] = isp.b[k + 1]
+            end
+        end
+    end
+    return spectral
+end
+
+"""
+    spectralTransform!(grid::_2DCartesianRiRk)
+
+In-place forward transform for a 2-D Cartesian Spline×Spline (k) grid.
+"""
+function spectralTransform!(grid::_2DCartesianRiRk)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+"""
+    gridTransform(grid::_2DCartesianRiRk, physical, spectral)
+
+Inverse transform (spectral → physical + derivatives) for a 2-D Cartesian
+Spline×Spline (k) grid. Mirrors the RZ inverse transform; the k-direction
+Chebyshev calls are replaced by their spline equivalents. Derivative slots:
+1=value, 2=∂i, 3=∂²i, 4=∂k, 5=∂²k.
+"""
+function gridTransform(
+        grid     :: _2DCartesianRiRk,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim  = grid.params.iDim
+    kDim  = grid.params.kDim
+    b_iDim = grid.params.b_iDim
+    b_kDim = grid.params.b_kDim
+    nvars = size(spectral, 2)
+    s = _scratch(grid)
+    splineBuffer = s.splineBuffer
+    spline_scratch = s.spline_scratch
+
+    for v in 1:nvars
+        for dr in 0:2
+            # i-direction inverse transform per k-spectral mode
+            for z in 1:b_kDim
+                r1 = (z-1)*b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                isp = grid.ibasis.data[z, v]
+                copyto!(isp.b, view(spectral, r1:r2, v))
+                SAtransform!(isp)
+                if dr == 0
+                    SItransform!(isp)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = isp.uMish[r]
+                    end
+                elseif dr == 1
+                    SIxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
+                else
+                    SIxxtransform(isp, spline_scratch)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, z] = spline_scratch[r]
+                    end
+                end
+            end
+
+            # k-direction inverse transform per i gridpoint
+            kcol = grid.kbasis.data[v]
+            for r in 1:iDim
+                @inbounds for z in 1:b_kDim
+                    kcol.b[z] = splineBuffer[r, z]
+                end
+                SAtransform!(kcol)
+                SItransform!(kcol)
+                z1 = (r-1)*kDim + 1
+                z2 = z1 + kDim - 1
+                if dr == 0
+                    copyto!(view(physical, z1:z2, v, 1), kcol.uMish)
+                    # Reuse kcol.uMish as scratch — its prior content was just copied above.
+                    SIxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 4), kcol.uMish)
+                    SIxxtransform(kcol, kcol.uMish)
+                    copyto!(view(physical, z1:z2, v, 5), kcol.uMish)
+                elseif dr == 1
+                    copyto!(view(physical, z1:z2, v, 2), kcol.uMish)
+                else
+                    copyto!(view(physical, z1:z2, v, 3), kcol.uMish)
+                end
+            end
+        end
+    end
+    return physical
+end
+
+"""
+    gridTransform!(grid::_2DCartesianRiRk)
+
+In-place inverse transform for a 2-D Cartesian Spline×Spline (k) grid.
+"""
+function gridTransform!(grid::_2DCartesianRiRk)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Regular-grid output — 2D Cartesian Spline×Spline (RR)
 # ═══════════════════════════════════════════════════════════════════════════

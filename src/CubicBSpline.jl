@@ -1873,6 +1873,15 @@ Ixxtransform(spline::Spline1D, points::Vector{real}, uprime2::AbstractVector) =
 IInttransform(spline::Spline1D, uMish::Vector{real}, C0::real = 0.0) =
     SIInttransform(spline, uMish, C0)
 
+"""
+Cached indefinite-integral wrapper for `Spline1D` mirroring the Chebyshev
+`IInttransform(column, C0)` form: integrates the function currently held in
+`spline.uMish`. Lets basis-agnostic callers (e.g. reference-state integration)
+use a single 2-argument signature across Chebyshev and spline columns.
+"""
+IInttransform(spline::Spline1D, C0::real = 0.0) =
+    SIInttransform(spline, spline.uMish, C0)
+
 """Generic I-transform matrix wrapper for `Spline1D`. Delegates to [`SItransform_matrix`](@ref)."""
 Itransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64=0) =
     SItransform_matrix(spline, points, derivative)
