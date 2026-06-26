@@ -385,6 +385,31 @@ using LinearAlgebra
         @test !all(grid.ibasis.data[1, 1].ahat .== 0.0)
     end
 
+    @testset "set_boundary_values! 2D RiRk grid" begin
+        kDim = 12   # divisible by mubar (spline k)
+        gp = SpringsteelGridParameters(
+            geometry="RiRk",
+            iMin=0.0, iMax=10.0,
+            num_cells=20,
+            kMin=0.0, kMax=5.0,
+            kDim=kDim,
+            BCL=Dict("u" => CubicBSpline.R3X),
+            BCR=Dict("u" => CubicBSpline.R3X),
+            BCB=Dict("u" => CubicBSpline.R0),
+            BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        grid = createGrid(gp)
+
+        u0 = fill(1.0, kDim)
+        u1 = fill(0.0, kDim)
+        u2 = fill(0.0, kDim)
+
+        set_boundary_values!(grid, :left, "u", u0, u1, u2)
+
+        # Verify ahat was set
+        @test !all(grid.ibasis.data[1, 1].ahat .== 0.0)
+    end
+
     @testset "Multi-variable R3X" begin
         gp = SpringsteelGridParameters(
             geometry="R",

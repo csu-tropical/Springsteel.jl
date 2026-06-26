@@ -1196,6 +1196,122 @@ function regularGridTransform(grid::_2DCartesianRZ, gridpoints::AbstractMatrix{F
 end
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Regular-grid output — 2D Cartesian Spline×Spline in k (RiRk)
+# ═══════════════════════════════════════════════════════════════════════════
+
+"""
+    getRegularGridpoints(grid::_2DCartesianRiRk) -> Matrix{Float64}
+
+Return an `(n_i × n_k, 2)` matrix of uniformly-spaced `(x, z)` coordinates for a
+2-D Cartesian Spline×Spline-in-k (RiRk) grid. Mirrors the RZ method — both place
+the vertical in `k` — but here `k` is a cubic B-spline rather than Chebyshev.
+
+Output dimensions come from [`SpringsteelGridParameters`](@ref):
+- `i_regular_out` — x-points in `[iMin, iMax]`   (default `num_cells + 1`)
+- `k_regular_out` — z-points in `[kMin, kMax]`   (default `kDim + 1`)
+
+Points are ordered x-outer, z-inner (z varies fastest), matching
+[`regularGridTransform`](@ref).
+
+See also: [`regularGridTransform`](@ref), [`getGridpoints`](@ref)
+"""
+function getRegularGridpoints(grid::_2DCartesianRiRk)
+    n_i   = grid.params.i_regular_out
+    n_k   = grid.params.k_regular_out
+    i_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_i))
+    k_pts = collect(LinRange(grid.params.kMin, grid.params.kMax, n_k))
+    pts   = zeros(Float64, n_i * n_k, 2)
+    idx   = 1
+    for i in 1:n_i
+        for k in 1:n_k
+            pts[idx, 1] = i_pts[i]
+            pts[idx, 2] = k_pts[k]
+            idx += 1
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_2DCartesianRiRk, i_pts, k_pts) -> Array{Float64}
+    regularGridTransform(grid::_2DCartesianRiRk, gridpoints)   -> Array{Float64}
+
+Evaluate the RiRk spectral representation on a regular tensor-product `x × z`
+grid, returning field values and all five derivatives.
+
+`grid.spectral` must be populated (call [`spectralTransform!`](@ref) first).
+
+**Algorithm** (two-level tensor-product, identical structure to RZ but with the
+k-direction Chebyshev replaced by a cubic B-spline):
+1. Evaluate i-splines at `i_pts` for all k-modes → buffer `ibuf[n_i, b_kDim]`
+   (k-major spectral layout, `r1 = (z-1)*b_iDim + 1`).
+2. For each `i_out`, set k-spline b-coefficients from `ibuf[i_out, :]`, apply
+   `SAtransform!`, then evaluate at `k_pts`.
+
+# Returns
+`Array{Float64}` of shape `(n_i × n_k, nvars, 5)` — z varies fastest. Derivative
+slots: `[:,:,1]` `f(x,z)`, `[:,:,2]` `∂f/∂x`, `[:,:,3]` `∂²f/∂x²`,
+`[:,:,4]` `∂f/∂z`, `[:,:,5]` `∂²f/∂z²`.
+
+See also: [`getRegularGridpoints`](@ref), [`gridTransform!`](@ref)
+"""
+function regularGridTransform(grid::_2DCartesianRiRk,
+                               i_pts::AbstractVector{Float64},
+                               k_pts::AbstractVector{Float64})
+    gp     = grid.params
+    b_iDim = gp.b_iDim
+    b_kDim = gp.b_kDim
+    nvars  = length(gp.vars)
+    n_i    = length(i_pts)
+    n_k    = length(k_pts)
+    i_vec  = collect(Float64, i_pts)
+    k_vec  = collect(Float64, k_pts)
+
+    physical = zeros(Float64, n_i * n_k, nvars, 5)
+
+    for v in 1:length(gp.vars)
+        ibuf = zeros(Float64, n_i, b_kDim)
+        tmp  = zeros(Float64, n_k)
+        for dr in 0:2
+            # Step 1: i-direction spline evaluation at i_pts for each k-mode
+            for z in 1:b_kDim
+                r1 = (z - 1) * b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                sp = grid.ibasis.data[z, v]
+                sp.b .= view(grid.spectral, r1:r2, v)
+                SAtransform!(sp)
+                _spline_eval!(sp, i_vec, dr, view(ibuf, :, z))
+            end
+
+            # Step 2: k-direction spline evaluation at k_pts for each i output
+            dk_range = (dr == 0) ? (0:2) : (0:0)
+            for dk in dk_range
+                slot = _rz_slot(dr, dk)   # same (i-deriv, k-deriv) → slot mapping as RZ
+                slot == 0 && continue
+                scratch = grid.kbasis.data[v]
+                for xi in 1:n_i
+                    for z in 1:b_kDim
+                        scratch.b[z] = ibuf[xi, z]
+                    end
+                    SAtransform!(scratch)
+                    _spline_eval!(scratch, k_vec, dk, tmp)
+                    flat = (xi - 1) * n_k + 1
+                    physical[flat:flat + n_k - 1, v, slot] .= tmp
+                end
+            end
+        end
+    end
+
+    return physical
+end
+
+function regularGridTransform(grid::_2DCartesianRiRk, gridpoints::AbstractMatrix{Float64})
+    i_pts = sort(unique(gridpoints[:, 1]))
+    k_pts = sort(unique(gridpoints[:, 2]))
+    return regularGridTransform(grid, i_pts, k_pts)
+end
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 3D Cartesian Transforms  (Spline×Spline×Spline = RRR)
 # ═══════════════════════════════════════════════════════════════════════════
 
