@@ -1690,6 +1690,144 @@
             @test phys_matrix ≈ phys_vectors
         end
 
+        # ── RiRk regularGridTransform (spline-i × spline-k) ───────────────
+        @testset "RiRk getRegularGridpoints" begin
+            kDim = 12   # divisible by mubar (spline k)
+            gp = SpringsteelGridParameters(
+                geometry="RiRk", num_cells=4,
+                iMin=0.0, iMax=30.0,
+                kMin=0.0, kMax=15.0,
+                kDim=kDim,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            reg_pts = getRegularGridpoints(grid)
+            n_i = grid.params.i_regular_out
+            n_k = grid.params.k_regular_out
+            @test size(reg_pts) == (n_i * n_k, 2)
+            @test minimum(reg_pts[:, 1]) ≈ gp.iMin
+            @test maximum(reg_pts[:, 1]) ≈ gp.iMax
+            @test minimum(reg_pts[:, 2]) ≈ gp.kMin
+            @test maximum(reg_pts[:, 2]) ≈ gp.kMax
+        end
+
+        @testset "RiRk regularGridTransform — f(x,z) = x·z" begin
+            kDim = 15
+            xmax = 30.0; zmax = 20.0
+            gp = SpringsteelGridParameters(
+                geometry="RiRk", num_cells=6,
+                iMin=1.0, iMax=xmax,
+                kMin=1.0, kMax=zmax,
+                kDim=kDim,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            for r in 1:iDim
+                xi = grid.ibasis.data[1, 1].mishPoints[r]
+                for z in 1:kDim
+                    zp = grid.kbasis.data[1].mishPoints[z]
+                    grid.physical[(r-1)*kDim + z, 1, 1] = xi * zp
+                end
+            end
+
+            spectralTransform!(grid)
+            reg_pts  = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            n_i = grid.params.i_regular_out
+            n_k = grid.params.k_regular_out
+            @test size(reg_phys) == (n_i * n_k, 1, 5)
+
+            # Values: f(x,z) = x·z
+            analytic_vals = [reg_pts[i, 1] * reg_pts[i, 2] for i in 1:size(reg_pts, 1)]
+            @test maximum(abs.(reg_phys[:, 1, 1] .- analytic_vals)) < 0.5
+
+            # ∂f/∂x = z (slot 2)
+            analytic_dx = [reg_pts[i, 2] for i in 1:size(reg_pts, 1)]
+            @test maximum(abs.(reg_phys[:, 1, 2] .- analytic_dx)) < 0.5
+
+            # ∂f/∂z = x (slot 4)
+            analytic_dz = [reg_pts[i, 1] for i in 1:size(reg_pts, 1)]
+            @test maximum(abs.(reg_phys[:, 1, 4] .- analytic_dz)) < 0.5
+        end
+
+        @testset "RiRk regularGridTransform — f(x,z) = z² derivative slots" begin
+            kDim = 15
+            gp = SpringsteelGridParameters(
+                geometry="RiRk", num_cells=6,
+                iMin=0.0, iMax=30.0,
+                kMin=0.0, kMax=20.0,
+                kDim=kDim,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            for r in 1:iDim
+                for z in 1:kDim
+                    zp = grid.kbasis.data[1].mishPoints[z]
+                    grid.physical[(r-1)*kDim + z, 1, 1] = zp^2
+                end
+            end
+
+            spectralTransform!(grid)
+            reg_pts  = getRegularGridpoints(grid)
+            reg_phys = regularGridTransform(grid, reg_pts)
+
+            # ∂f/∂x = 0 (slot 2)
+            @test maximum(abs.(reg_phys[:, 1, 2])) < 0.1
+
+            # ∂f/∂z = 2z (slot 4)
+            analytic_dz = [2.0 * reg_pts[i, 2] for i in 1:size(reg_pts, 1)]
+            @test maximum(abs.(reg_phys[:, 1, 4] .- analytic_dz)) < 1.0
+
+            # ∂²f/∂z² = 2 (slot 5)
+            @test maximum(abs.(reg_phys[:, 1, 5] .- 2.0)) < 1.0
+        end
+
+        @testset "RiRk regularGridTransform — matrix-input wrapper" begin
+            kDim = 12
+            gp = SpringsteelGridParameters(
+                geometry="RiRk", num_cells=4,
+                iMin=1.0, iMax=30.0,
+                kMin=1.0, kMax=15.0,
+                kDim=kDim,
+                vars=Dict("u" => 1),
+                BCL=Dict("u" => CubicBSpline.R0),
+                BCR=Dict("u" => CubicBSpline.R0),
+                BCB=Dict("u" => CubicBSpline.R0),
+                BCT=Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+
+            iDim = grid.params.iDim
+            for r in 1:iDim
+                xi = grid.ibasis.data[1, 1].mishPoints[r]
+                for z in 1:kDim
+                    grid.physical[(r-1)*kDim + z, 1, 1] = xi
+                end
+            end
+
+            spectralTransform!(grid)
+            reg_pts = getRegularGridpoints(grid)
+
+            phys_matrix  = regularGridTransform(grid, reg_pts)
+            i_pts_vec = sort(unique(reg_pts[:, 1]))
+            k_pts_vec = sort(unique(reg_pts[:, 2]))
+            phys_vectors = regularGridTransform(grid, i_pts_vec, k_pts_vec)
+            @test phys_matrix ≈ phys_vectors
+        end
+
         # ── RRR regularGridTransform ──────────────────────────────────────
         @testset "RRR getRegularGridpoints" begin
             gp = SpringsteelGridParameters(

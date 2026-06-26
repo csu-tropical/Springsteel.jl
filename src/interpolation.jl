@@ -2128,3 +2128,42 @@ function set_boundary_values!(grid::RZ_Grid, side::Symbol, var::String,
                                     bc_spectral[1,k], bc_spectral[2,k], bc_spectral[3,k], side)
     end
 end
+
+"""
+    set_boundary_values!(grid::RiRk_Grid, side::Symbol, var::String,
+                         u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)
+
+Set inhomogeneous R3X boundary conditions on a 2D RiRk grid (Spline×Spline-in-k,
+i-dim only). Mirrors the RZ method, but the k-direction is a cubic B-spline, so
+the boundary arrays are transformed to k-spline spectral space with
+`SBtransform!`/`SAtransform!` rather than the Chebyshev transforms.
+
+# Arguments
+- `grid`: 2D RiRk grid with R3X boundary condition on the i-dimension
+- `side`: `:left` or `:right` (i-dimension boundary)
+- `var`: Variable name
+- `u0, u1, u2`: Vectors of length `kDim` with boundary values along the k-direction
+
+See also: `CubicBSpline.R3X`
+"""
+function set_boundary_values!(grid::RiRk_Grid, side::Symbol, var::String,
+                              u0::AbstractVector, u1::AbstractVector, u2::AbstractVector)
+    v = grid.params.vars[var]
+    b_kDim = size(grid.ibasis.data, 1)  # number of k-spline spectral modes
+    kspl = grid.kbasis.data[v]
+
+    # Transform each BC array (u0, u1, u2) to k-spline spectral space
+    bc_spectral = zeros(3, b_kDim)
+    for (idx, bc_phys) in enumerate([u0, u1, u2])
+        kspl.uMish .= bc_phys
+        CubicBSpline.SBtransform!(kspl)
+        CubicBSpline.SAtransform!(kspl)
+        bc_spectral[idx, :] .= kspl.a[1:b_kDim]
+    end
+
+    # Set per-mode ahat on each i-spline
+    for k in 1:b_kDim
+        CubicBSpline.set_ahat_r3x!(grid.ibasis.data[k, v],
+                                    bc_spectral[1,k], bc_spectral[2,k], bc_spectral[3,k], side)
+    end
+end
