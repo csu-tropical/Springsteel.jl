@@ -411,6 +411,55 @@ using Springsteel.Chebyshev
         @test target.physical[:, 1, 1] ≈ result[:, 1] atol=1e-12
     end
 
+    @testset "interpolate_to_grid 3D RRR→RRR" begin
+        # Source: regular grid with f(x,y,z) = x + y + z (linear, exact)
+        Nx, Ny, Nz = 9, 9, 9
+        Lx, Ly, Lz = 3.0, 3.0, 3.0
+        hx, hy, hz = Lx / Nx, Ly / Ny, Lz / Nz
+        x = [(i - 0.5) * hx for i in 1:Nx]
+        y = [(j - 0.5) * hy for j in 1:Ny]
+        z = [(k - 0.5) * hz for k in 1:Nz]
+
+        data = zeros(Nx * Ny * Nz, 1)
+        idx = 1
+        for i in 1:Nx
+            for j in 1:Ny
+                for k in 1:Nz
+                    data[idx, 1] = x[i] + y[j] + z[k]
+                    idx += 1
+                end
+            end
+        end
+
+        source = grid_from_regular_data(x, y, z, data; mubar=3, vars=["u"])
+        spectralTransform!(source)
+
+        # Target: Gauss-Legendre RRR grid (exercises the same-geometry 3D path,
+        # _interpolate_3d!)
+        tgp = SpringsteelGridParameters(
+            geometry  = "RRR",
+            iMin = 0.0, iMax = Lx, num_cells = 3, mubar = 3,
+            jMin = 0.0, jMax = Ly, jDim = 9,
+            kMin = 0.0, kMax = Lz, kDim = 9,
+            BCL = Dict("u" => CubicBSpline.R0), BCR = Dict("u" => CubicBSpline.R0),
+            BCU = Dict("u" => CubicBSpline.R0), BCD = Dict("u" => CubicBSpline.R0),
+            BCB = Dict("u" => CubicBSpline.R0), BCT = Dict("u" => CubicBSpline.R0),
+            vars = Dict("u" => 1))
+        target = createGrid(tgp)
+
+        result = interpolate_to_grid(source, target)
+        @test size(result, 1) == target.params.iDim * target.params.jDim * target.params.kDim
+
+        # Linear function should interpolate accurately
+        t_pts = getGridpoints(target)
+        f_exact = t_pts[:, 1] .+ t_pts[:, 2] .+ t_pts[:, 3]
+        @test result[:, 1] ≈ f_exact atol=0.1
+
+        # Mutating version agrees
+        interpolate_to_grid!(source, target)
+        @test target.physical[:, 1, 1] ≈ result[:, 1] atol=1e-12
+    end
+
     # ════════════════════════════════════════════════════════════════════════
     # Layer 2: interpolate_to_grid — roundtrip accuracy
     # ════════════════════════════════════════════════════════════════════════
