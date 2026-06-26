@@ -28,6 +28,53 @@ function make_rl(nc::Int)
     return g
 end
 
+function make_rr(nc::Int)
+    gp = SpringsteelGridParameters(geometry="RR", iMin=0.0, iMax=Float64(nc),
+        num_cells=nc, jMin=0.0, jMax=Float64(nc), jDim=3*nc, vars=Dict("u"=>1),
+        BCL=Dict("u"=>CubicBSpline.R0), BCR=Dict("u"=>CubicBSpline.R0),
+        BCU=Dict("u"=>CubicBSpline.R0), BCD=Dict("u"=>CubicBSpline.R0))
+    g = createGrid(gp)
+    pts = getGridpoints(g)
+    for i in 1:size(pts, 1)
+        g.physical[i, 1, 1] = exp(-(pts[i, 1]^2 + pts[i, 2]^2) / 16.0)
+    end
+    spectralTransform!(g)
+    gridTransform!(g)
+    return g
+end
+
+function make_rz(nc::Int)
+    gp = SpringsteelGridParameters(geometry="RZ", iMin=0.0, iMax=Float64(nc),
+        num_cells=nc, kMin=0.0, kMax=10.0, kDim=2*nc, vars=Dict("u"=>1),
+        BCL=Dict("u"=>CubicBSpline.R0), BCR=Dict("u"=>CubicBSpline.R0),
+        BCB=Dict("u"=>Chebyshev.R0), BCT=Dict("u"=>Chebyshev.R0))
+    g = createGrid(gp)
+    pts = getGridpoints(g)
+    for i in 1:size(pts, 1)
+        g.physical[i, 1, 1] = exp(-pts[i, 1]^2 / 16.0) * cos(π * pts[i, 2] / 10.0)
+    end
+    spectralTransform!(g)
+    gridTransform!(g)
+    return g
+end
+
+function make_rrr(nc::Int)
+    gp = SpringsteelGridParameters(geometry="RRR", iMin=0.0, iMax=Float64(nc),
+        num_cells=nc, jMin=0.0, jMax=Float64(nc), jDim=3*nc,
+        kMin=0.0, kMax=Float64(nc), kDim=3*nc, vars=Dict("u"=>1),
+        BCL=Dict("u"=>CubicBSpline.R0), BCR=Dict("u"=>CubicBSpline.R0),
+        BCU=Dict("u"=>CubicBSpline.R0), BCD=Dict("u"=>CubicBSpline.R0),
+        BCB=Dict("u"=>CubicBSpline.R0), BCT=Dict("u"=>CubicBSpline.R0))
+    g = createGrid(gp)
+    pts = getGridpoints(g)
+    for i in 1:size(pts, 1)
+        g.physical[i, 1, 1] = exp(-(pts[i, 1]^2 + pts[i, 2]^2 + pts[i, 3]^2) / 16.0)
+    end
+    spectralTransform!(g)
+    gridTransform!(g)
+    return g
+end
+
 function make_rlz(nc::Int, kDim::Int)
     gp = SpringsteelGridParameters(geometry="RLZ", iMin=0.0, iMax=Float64(nc),
         kMin=0.0, kMax=10.0, num_cells=nc, kDim=kDim,
@@ -53,6 +100,37 @@ function record(name::String, op::String, size::Int, b)
 end
 
 println("── evaluate_unstructured ─────────────────────")
+for nc in [10, 30]
+    g = make_rr(nc)
+    for npts in [100, 1000]
+        pts = hcat(0.5 .+ (nc-1) .* rand(npts), 0.5 .+ (nc-1) .* rand(npts))
+        evaluate_unstructured(g, pts)  # warmup
+        b = @benchmark evaluate_unstructured($g, $pts)
+        record("RR", "evaluate_unstructured", npts, b)
+    end
+end
+
+for nc in [10, 30]
+    g = make_rz(nc)
+    for npts in [100, 1000]
+        pts = hcat(0.5 .+ (nc-1) .* rand(npts), 0.5 .+ 9.0 .* rand(npts))
+        evaluate_unstructured(g, pts)  # warmup
+        b = @benchmark evaluate_unstructured($g, $pts)
+        record("RZ", "evaluate_unstructured", npts, b)
+    end
+end
+
+for nc in [10, 20]
+    g = make_rrr(nc)
+    for npts in [100, 1000]
+        pts = hcat(0.5 .+ (nc-1) .* rand(npts), 0.5 .+ (nc-1) .* rand(npts),
+                   0.5 .+ (nc-1) .* rand(npts))
+        evaluate_unstructured(g, pts)  # warmup
+        b = @benchmark evaluate_unstructured($g, $pts)
+        record("RRR", "evaluate_unstructured", npts, b)
+    end
+end
+
 for nc in [10, 30]
     g = make_rl(nc)
     for npts in [100, 1000]

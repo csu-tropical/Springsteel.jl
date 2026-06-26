@@ -829,10 +829,10 @@ function _interpolate_3d!(result::Matrix{Float64},
         # Step 2: j-direction evaluation → jbuf[n_i, n_j, b_kDim]
         jbuf = zeros(Float64, n_i, n_j, b_kDim)
         tmp_j = zeros(Float64, n_j)
+        j_coeffs = zeros(Float64, b_jDim)
         for xi in 1:n_i
             for kz in 1:b_kDim
                 # Extract j-direction coefficients for this (i-point, k-mode)
-                j_coeffs = zeros(Float64, b_jDim)
                 for jl in 1:b_jDim
                     jk = (kz - 1) * b_jDim + jl  # spectral layout: k-outer, j-inner
                     j_coeffs[jl] = ibuf[xi, jk]
@@ -1374,6 +1374,23 @@ function _eval_unstructured_1d_spline(source::SpringsteelGrid, pts_i::Vector{Flo
     return u
 end
 
+# ── Per-call structure for the Cartesian spline/Chebyshev unstructured paths ──
+#
+# The i-direction `SAtransform!` (γ-fold + banded solve) of each i-stripe depends
+# only on the spectral column, NOT on the output point, so it is hoisted out of
+# the per-point loop: do `n_stripes` solves once, batch-evaluate the i-spline at
+# all `npts` points into an `[npts, n_stripes]` buffer, then combine the outer
+# dimension(s) per point. This drops the solve count from `npts × n_stripes` to
+# `n_stripes` and the allocations from ~`npts` to a small constant, with no change
+# to the computed values. Same shape as `_interpolate_2d_ij!` and the RL/RLZ
+# unstructured helpers.
+#
+# These use per-CALL buffers (not the objectid-keyed `_AHAT_CACHE` /
+# `_INTERP_SCRATCH_*` registries that RL/RLZ share with `relocation.jl`): an
+# unstructured eval is typically a one-off on a fresh grid, where a cross-call
+# registry keyed by grid would grow unbounded. The asymmetry is intentional; see
+# `agent_files/unstructured_eval_unification_assessment.md`.
+
 """Evaluate 2D (i,j) Cartesian grid at unstructured points. Spectral layout: j-major."""
 function _eval_unstructured_2d_ij(source::SpringsteelGrid, pts::AbstractMatrix{Float64}, sv::Int)
     sgp = source.params
@@ -1381,22 +1398,25 @@ function _eval_unstructured_2d_ij(source::SpringsteelGrid, pts::AbstractMatrix{F
     b_jDim = sgp.b_jDim
     npts = size(pts, 1)
     result = zeros(Float64, npts)
+    ibuf = zeros(Float64, npts, b_jDim)
+    xi_pts = view(pts, :, 1)
 
+    # Step 1: one i-spline SAtransform per j-mode, batch-evaluated at all points
+    for l in 1:b_jDim
+        r1 = (l - 1) * b_iDim + 1
+        sp = source.ibasis.data[l, sv]
+        sp.b .= view(source.spectral, r1:r1 + b_iDim - 1, sv)
+        SAtransform!(sp)
+        CubicBSpline.SItransform(sp.params, sp.a, xi_pts, view(ibuf, :, l))
+    end
+
+    # Step 2: per-point j-direction combination
+    j_coeffs = zeros(Float64, b_jDim)
     for n in 1:npts
-        xi = pts[n, 1]
-        yj = pts[n, 2]
-
-        # Evaluate i-spline at xi for each j-mode
-        j_coeffs = zeros(Float64, b_jDim)
         for l in 1:b_jDim
-            r1 = (l - 1) * b_iDim + 1
-            sp = source.ibasis.data[_ibasis_index(source, l, sv)...]
-            sp.b .= view(source.spectral, r1:r1 + b_iDim - 1, sv)
-            SAtransform!(sp)
-            j_coeffs[l] = CubicBSpline.SItransform(sp.params, sp.a, xi, 0)
+            j_coeffs[l] = ibuf[n, l]
         end
-
-        result[n] = _eval_single_jdim(source, j_coeffs, sv, yj)
+        result[n] = _eval_single_jdim(source, j_coeffs, sv, pts[n, 2])
     end
     return result
 end
@@ -1408,22 +1428,25 @@ function _eval_unstructured_2d_ik(source::SpringsteelGrid, pts::AbstractMatrix{F
     b_kDim = sgp.b_kDim
     npts = size(pts, 1)
     result = zeros(Float64, npts)
+    ibuf = zeros(Float64, npts, b_kDim)
+    xi_pts = view(pts, :, 1)
 
+    # Step 1: one i-spline SAtransform per k-mode, batch-evaluated at all points
+    for z in 1:b_kDim
+        r1 = (z - 1) * b_iDim + 1
+        sp = source.ibasis.data[z, sv]
+        sp.b .= view(source.spectral, r1:r1 + b_iDim - 1, sv)
+        SAtransform!(sp)
+        CubicBSpline.SItransform(sp.params, sp.a, xi_pts, view(ibuf, :, z))
+    end
+
+    # Step 2: per-point k-direction combination
+    k_coeffs = zeros(Float64, b_kDim)
     for n in 1:npts
-        xi = pts[n, 1]
-        zk = pts[n, 2]
-
-        # Evaluate i-spline at xi for each k-mode
-        k_coeffs = zeros(Float64, b_kDim)
         for z in 1:b_kDim
-            r1 = (z - 1) * b_iDim + 1
-            sp = source.ibasis.data[_ibasis_index(source, z, sv)...]
-            sp.b .= view(source.spectral, r1:r1 + b_iDim - 1, sv)
-            SAtransform!(sp)
-            k_coeffs[z] = CubicBSpline.SItransform(sp.params, sp.a, xi, 0)
+            k_coeffs[z] = ibuf[n, z]
         end
-
-        result[n] = _eval_single_kdim(source, k_coeffs, sv, zk)
+        result[n] = _eval_single_kdim(source, k_coeffs, sv, pts[n, 2])
     end
     return result
 end
@@ -1437,36 +1460,31 @@ function _eval_unstructured_3d_ijk(source::SpringsteelGrid, pts::AbstractMatrix{
     b_kDim = sgp.b_kDim
     npts = size(pts, 1)
     result = zeros(Float64, npts)
+    ibuf = zeros(Float64, npts, b_jDim, b_kDim)
+    j_coeffs = zeros(Float64, b_jDim)
+    k_coeffs = zeros(Float64, b_kDim)
+    xi_pts = view(pts, :, 1)
 
+    # Step 1: one i-spline SAtransform per (j,k) mode, batch-evaluated at all points
+    for z in 1:b_kDim
+        for l in 1:b_jDim
+            r1 = (z - 1) * b_jDim * b_iDim + (l - 1) * b_iDim + 1
+            sp = _get_ibasis_3d(source, (l - 1) * b_kDim + z, sv)
+            sp.b .= view(source.spectral, r1:r1 + b_iDim - 1, sv)
+            SAtransform!(sp)
+            CubicBSpline.SItransform(sp.params, sp.a, xi_pts, view(ibuf, :, l, z))
+        end
+    end
+
+    # Step 2: per-point j-then-k combination
     for n in 1:npts
-        xi = pts[n, 1]
-        yj = pts[n, 2]
-        zk = pts[n, 3]
-
-        # Step 1: evaluate i-spline at xi for each (j,k) mode
-        ibuf = zeros(Float64, b_jDim, b_kDim)
         for z in 1:b_kDim
             for l in 1:b_jDim
-                r1 = (z - 1) * b_jDim * b_iDim + (l - 1) * b_iDim + 1
-                sp = _get_ibasis_3d(source, (l - 1) * b_kDim + z, sv)
-                sp.b .= view(source.spectral, r1:r1 + b_iDim - 1, sv)
-                SAtransform!(sp)
-                ibuf[l, z] = CubicBSpline.SItransform(sp.params, sp.a, xi, 0)
+                j_coeffs[l] = ibuf[n, l, z]
             end
+            k_coeffs[z] = _eval_single_jdim(source, j_coeffs, sv, pts[n, 2])
         end
-
-        # Step 2: evaluate j-basis at yj for each k-mode
-        k_coeffs = zeros(Float64, b_kDim)
-        j_coeffs = zeros(Float64, b_jDim)
-        for z in 1:b_kDim
-            for l in 1:b_jDim
-                j_coeffs[l] = ibuf[l, z]
-            end
-            k_coeffs[z] = _eval_single_jdim(source, j_coeffs, sv, yj)
-        end
-
-        # Step 3: evaluate k-basis at zk
-        result[n] = _eval_single_kdim(source, k_coeffs, sv, zk)
+        result[n] = _eval_single_kdim(source, k_coeffs, sv, pts[n, 3])
     end
     return result
 end
