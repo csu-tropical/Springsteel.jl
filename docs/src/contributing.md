@@ -29,8 +29,8 @@ Run the full test suite once to verify your environment:
 julia --project -e 'using Pkg; Pkg.test()'
 ```
 
-The suite takes ~90 seconds cold, ~60 seconds warm, and passes 12,000+
-tests. If anything fails on a clean clone, that's a bug worth filing.
+The suite takes ~2.5 minutes warm and passes 34,000+ tests. If anything
+fails on a clean clone, that's a bug worth filing.
 
 ## Running tests
 
@@ -56,7 +56,7 @@ basis            banded_cholesky  grids            transforms
 tiling           io               solver           mubar
 interpolation    filtering        r3x              bc
 multipatch       tile_multipatch  operator_algebra solver_problem
-basis_cache      relocation
+basis_cache      relocation       thermodynamics   reference_state
 ```
 
 Each group corresponds to one file under `test/`. The top-level
@@ -173,6 +173,7 @@ formulas; see TRAP-1 below.
 |:-----|:-------|:-----------|
 | `RR` / `LL` | row-major: `r1 = (l-1)*b_iDim + 1` | `b_jDim * b_iDim` |
 | `RZ`        | z-major: `r1 = (z-1)*b_iDim + 1`  | `b_kDim * b_iDim` |
+| `RiRk`      | z-major: `r1 = (z-1)*b_iDim + 1` (same as RZ, k-spline) | `b_kDim * b_iDim` |
 | `RL`        | wavenumber-interleaved flat: `[k=0 | k=1 real | k=1 imag | …]` | `b_iDim * (1 + 2*kDim)` |
 | `SL`        | same as RL                         | `b_iDim * (1 + 2*kDim)` |
 
@@ -242,6 +243,7 @@ a simple product formula.
 | `RL`  | running: `l1 = l2+1; l2 = l1+3+4*ri` | variable rings |
 | `RR`  | `flat = (r-1)*jDim + l`             | regular |
 | `RZ`  | `flat = (r-1)*kDim + z`             | regular |
+| `RiRk`| `flat = (r-1)*kDim + z`             | regular (same as RZ) |
 | `RLZ` | running: accumulate `lpoints * b_kDim` per ring | variable rings |
 | `RRR` | `flat = (r-1)*jDim*kDim + (l-1)*kDim + z` | regular |
 
@@ -305,6 +307,7 @@ produces wrong results.
 | `RL`  | FBtransform per ring → SBtransform per wavenumber |
 | `RR`  | SBtransform in j (per i) → SBtransform in i (per j) |
 | `RZ`  | CBtransform per column → SBtransform per z-coefficient |
+| `RiRk`| SBtransform in k per column → SBtransform in i per k-coefficient |
 | `RLZ` | CBtransform per column → FBtransform per ring×z → SBtransform per wavenumber×z |
 | `RRR` | SBtransform k → SBtransform j → SBtransform i |
 | `SL`  | FBtransform per sin(θ) ring → SBtransform per wavenumber |
@@ -342,8 +345,8 @@ Multi-D tiling for pure-spline Cartesian grids is implemented in
 Transform and interpolation allocation expectations after the v1.0
 refactor (`bench/bench_grids.jl`, `bench/bench_interpolation.jl`):
 
-- Every multi-D grid (`R`, `RR`, `RZ`, `RL`, `SL`, `RRR`, `RLZ`, `SLZ`)
-  has **zero allocations per call** for `gridTransform!` and
+- Every multi-D grid (`R`, `RR`, `RZ`, `RiRk`, `RL`, `SL`, `RRR`, `RLZ`,
+  `SLZ`) has **zero allocations per call** for `gridTransform!` and
   `spectralTransform!` at steady state.
 - `SAtransform!` pipelines scale O(Mdim) via the structured GammaBC
   operator.
@@ -359,6 +362,14 @@ refactor (`bench/bench_grids.jl`, `bench/bench_interpolation.jl`):
   (`_AHAT_CACHE`) and per-grid scratch registries
   (`_ScratchInterpRL` / `_ScratchInterpRLZ`). `RL` unstructured
   evaluation dropped 24.8 MB → 494 kB; `RLZ` dropped 27 MB → 75 kB.
+- `evaluate_unstructured` on the Cartesian spline paths (`RR`, `RZ`,
+  `RiRk`, `RRR`) hoists the per-stripe `SAtransform!` out of the
+  per-point loop and batch-evaluates into a per-call buffer, so
+  allocation count is constant in the number of query points (was
+  ~2/point). `RR`/`RZ` are ~17–21× faster at 1000 points, `RRR` ~12×.
+  These paths use per-call buffers rather than the objectid-keyed
+  registries above (an unstructured eval is typically one-off on a fresh
+  grid, where a cross-call registry would grow unbounded).
 
 Don't regress these. `bench/bench_grids.jl` runs in ~30 s and
 `bench/bench_interpolation.jl` in ~2 min. Any non-zero allocation on a
@@ -369,6 +380,13 @@ transform or >20 % slowdown is a bug.
 Items deferred from the v1.0 perf and feature arc, parked as candidates
 for future releases. All of these are scoped and have no API-breaking
 implications in v1.0.
+
+**Landed since the initial v1.0 cut** (no longer roadmap items): the
+`RiRk` geometry (Spline × Spline-in-k, B-spline vertical) with full
+transform, tiling, regular-grid output, NetCDF/CSV IO, and R3X boundary
+support; the shared `Thermodynamics` and `reference_state` submodules;
+and the batched Cartesian `evaluate_unstructured` rewrite (see
+*Performance notes*).
 
 - **Multi-threading outer transform loops** — requires per-thread
   scratch restructure in `_solve_*` paths and the grid transforms.
@@ -390,15 +408,22 @@ implications in v1.0.
   risk refactor that reorders the physical array for better cache
   locality on wide multi-var grids. Would need a clear downstream
   workload driving it.
-- **Additional grid types are "available but untested"**: `Z`, `ZZ`,
-  `ZZZ`, `L`, `LL`, `LLZ`. They build and transform, but coverage is
-  thin compared to the RR / RL / RLZ production paths. Filling in test
-  suites for these is a good v1.1 contribution that won't break any
-  existing API. Part of this work: cross-validate the unified solver
-  on Chebyshev (`Z`) grids against the legacy `Chebyshev.bvp`
-  reference implementation — once that parity test is solid, the
-  `Chebyshev.bvp` / `bvp_modified_basis` / `bvp_basis` reference
-  functions become candidates for deprecation in v1.2+.
+- **Additional grid types lack grid-transform methods**: `Z`, `ZZ`,
+  `ZZZ`, `L`, `LL`, `LLZ` have factory entries and type aliases and are
+  usable through the *solver assembly* path, but they have **no**
+  `spectralTransform!` / `gridTransform!` / `getGridpoints` /
+  `regularGridTransform` methods — only the Cartesian spline grids
+  (`R`, `RR`, `RZ`, `RiRk`, `RRR`) and the cyl./sph. families do.
+  Implementing those transforms following the `RiRk` pattern is the work
+  that would make them first-class, and it won't break any existing API.
+  Solver-path coverage is also uneven: `Z` is the de-facto 1D Chebyshev
+  solver test grid (well covered) and `ZZ` is moderate, but `ZZZ`/`L`
+  are thin and `LL`/`LLZ` have no tests at all.
+- **Chebyshev solver ↔ legacy `bvp` parity test**: cross-validate the
+  unified solver on Chebyshev (`Z`) grids against the legacy
+  `Chebyshev.bvp` reference (a TODO already sits in `test/solver.jl`).
+  Once that parity is solid, `Chebyshev.bvp` / `bvp_modified_basis` /
+  `bvp_basis` become candidates for deprecation in v1.2+.
 - **Implement the missing Chebyshev BC types**: the constants
   `Chebyshev.R1T2`, `Chebyshev.R2T10`, `Chebyshev.R2T20`, and
   `Chebyshev.R3` are exported for symmetry with `CubicBSpline` but

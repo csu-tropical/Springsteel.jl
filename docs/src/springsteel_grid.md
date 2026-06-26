@@ -131,7 +131,8 @@ canonical `geometry` string, descriptive alias strings, and the corresponding
 | `"R"` | Spline | `R_Grid` | `Spline1D_Grid` |
 | `"RZ"` | Spline × Chebyshev | `RZ_Grid` | — |
 | `"RL"` | Spline × Fourier (cyl.) | `RL_Grid` | `Polar_Grid` |
-| `"RR"` | Spline × Spline | `RR_Grid` | `Spline2D_Grid` |
+| `"RR"` | Spline × Spline | `RR_Grid` | `Spline2D_Grid`, `RiRj` |
+| `"RiRk"` | Spline × Spline (vertical in k) | `RiRk_Grid` | — |
 | `"RLZ"` | Spline × Fourier × Chebyshev (cyl.) | `RLZ_Grid` | `Cylindrical_Grid` |
 | `"RRR"` | Spline × Spline × Spline | `RRR_Grid` | `Spline3D_Grid`, `Samurai_Grid` |
 | `"SL"` | Spline × Fourier (sph.) | `SL_Grid` | `SphericalShell_Grid` |
