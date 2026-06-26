@@ -167,6 +167,13 @@ include("Fourier.jl")
 include("Chebyshev.jl")
 using .CubicBSpline, .Fourier, .Chebyshev
 
+# Basis-agnostic atmospheric thermodynamics, shared by Springsteel-grid clients
+# (Scythe, Daisho, …). Submodule to keep its many generic names (entropy,
+# temperature, pressure, …) out of the top-level `using Springsteel` namespace;
+# consumers import explicitly, e.g. `using Springsteel.Thermodynamics: entropy`.
+include("thermodynamics.jl")
+export Thermodynamics
+
 include("basis_cache.jl")
 export clear_basis_caches!, basis_cache_sizes
 

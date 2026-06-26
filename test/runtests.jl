@@ -10,6 +10,7 @@ using DataFrames
 const TEST_GROUP = get(ENV, "TEST_GROUP", "all")
 
 @testset "Springsteel.jl" begin
+    TEST_GROUP in ("all", "thermodynamics") && include("thermodynamics.jl")
     TEST_GROUP in ("all", "basis")      && include("basis.jl")
     TEST_GROUP in ("all", "banded_cholesky") && include("banded_cholesky.jl")
     TEST_GROUP in ("all", "grids")      && include("grids.jl")
