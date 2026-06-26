@@ -64,6 +64,8 @@ jobs:
           - tile_multipatch
           - basis_cache
           - relocation
+          - reference_state
+          - thermodynamics
     steps:
       - uses: actions/checkout@v4
 
