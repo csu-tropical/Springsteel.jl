@@ -39,7 +39,7 @@ export Rd, Rv, Eps, Cvd, Cvv, Cpd, Cpv, Cl, Ci, gravity, L_v0, rho_l, rho_i,
 export sat_pressure_liquid, sat_pressure_ice, sat_pressure_liquid_buck,
     sat_pressure_liquid_buck_dT, sat_pressure_ice_buck, q_sat_liquid, q_sat_ice,
     L_v, dewpoint, entropy, vapor_entropy, temperature, pressure, vapor_pressure,
-    mixing_ratio, dry_density, log_dry_density, P_s,
+    mixing_ratio, dry_density, log_dry_density, P_s, P_xi, P_qv, P_rhod, P_rhov,
     potential_temperature, reversible_theta_e, theta_rho
 
 # Constants from Emanuel (1994)
@@ -338,6 +338,53 @@ function P_s(Tk::Float64, rho_d::Float64, q_v::Float64)
     Cfactor = Cvd + (q_v * Cvv)
     return Tk * ((rho_d * Rd) + (q_v * rho_d * Rv)) / Cfactor
 end
+
+"""
+    P_xi(Tk, rho_d, q_v)
+
+Partial derivative of pressure with respect to the log-density `ξ = ln(rho_d/rho_d0)`,
+`∂p/∂ξ`, at constant entropy and vapor mixing ratio [Pa]. (`ξ` is a physical change of
+variable here, independent of any prognostic-variable transform.)
+"""
+function P_xi(Tk::Float64, rho_d::Float64, q_v::Float64)
+
+    return (Rd + (q_v * rho_d * Rv)) * ((rho_d * Tk) + P_s(Tk, rho_d, q_v))
+end
+
+"""
+    P_qv(Tk, rho_d, q_v)
+
+Partial derivative of pressure with respect to water vapor mixing ratio, `∂p/∂q_v`, at
+constant entropy and dry-air density [Pa]. Zero when `q_v` is zero.
+"""
+function P_qv(Tk::Float64, rho_d::Float64, q_v::Float64)
+
+    if (q_v != 0.0)
+        rho_v = q_v * rho_d
+        qfactor = Rv * (1 + log(rho_v/rho_v0)) - (Cvv * log(Tk/T_0)) - L_v(T_0)/T_0
+        qfactor *= P_s(Tk, rho_d, q_v)
+        return (rho_d * Rv * Tk) + qfactor
+    else
+        return 0.0
+    end
+end
+
+"""
+    P_rhod(Tk, rho_d, q_v)
+
+Partial derivative of pressure with respect to dry-air density at constant entropy and
+vapor mixing ratio, `∂p/∂rho_d = P_xi/rho_d` [Pa/(kg/m³)].
+"""
+P_rhod(Tk::Float64, rho_d::Float64, q_v::Float64) = P_xi(Tk, rho_d, q_v) / rho_d
+
+"""
+    P_rhov(Tk, rho_d, q_v)
+
+Partial derivative of pressure with respect to the vapor partial density
+`rho_v = q_v·rho_d` at constant entropy and dry-air density, `∂p/∂rho_v = P_qv/rho_d`
+[Pa/(kg/m³)].
+"""
+P_rhov(Tk::Float64, rho_d::Float64, q_v::Float64) = P_qv(Tk, rho_d, q_v) / rho_d
 
 """
     potential_temperature(s, rho_d, q_v)

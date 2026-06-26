@@ -583,5 +583,11 @@ include("relocation_multigrid.jl")
 # I/O routines
 include("io.jl")
 
+# Hydrostatic reference (base) state: physical-density types + builders, shared by
+# Springsteel-grid clients (Scythe dynamics, Daisho data assimilation).
+include("reference_state.jl")
+export AbstractReferenceState, DryReferenceState, MoistReferenceState,
+    CondensateReferenceState
+
 # Module end
 end
