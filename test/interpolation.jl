@@ -956,6 +956,70 @@ using Springsteel.Chebyshev
             end
         end
 
+        @testset "allocation does not scale with npts" begin
+            # Regression guard: the Cartesian spline/Chebyshev unstructured paths
+            # used to allocate per output point (j_coeffs/k_coeffs/ibuf inside the
+            # point loop), so allocation COUNT grew ~linearly with npts. After
+            # hoisting the i-direction SAtransform + batched eval out of the loop,
+            # the count is a small constant independent of npts. We assert the
+            # 10×-larger point set does not add per-point allocations.
+
+            # Function barrier so @allocations measures the call, not global boxing.
+            eval_allocs(g, pts) = (Springsteel.evaluate_unstructured(g, pts);  # warmup
+                                   @allocations Springsteel.evaluate_unstructured(g, pts))
+
+            # RR grid (2D i,j spline)
+            gp_rr = SpringsteelGridParameters(
+                geometry = "RR", iMin = 0.0, iMax = 4.0, num_cells = 6, mubar = 3,
+                jMin = 0.0, jMax = 4.0, jDim = 18, vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0), BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0), BCD = Dict("u" => CubicBSpline.R0))
+            grr = createGrid(gp_rr)
+            mp = getGridpoints(grr)
+            grr.physical[:, 1, 1] .= sin.(π .* mp[:, 1] ./ 4) .* sin.(π .* mp[:, 2] ./ 4)
+            spectralTransform!(grr)
+
+            # RZ grid (2D i,k spline×Chebyshev)
+            gp_rz = SpringsteelGridParameters(
+                geometry = "RZ", iMin = 1.0, iMax = 5.0, num_cells = 6, mubar = 3,
+                kMin = 0.0, kMax = 10.0, kDim = 12, vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0), BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => Chebyshev.R0), BCT = Dict("u" => Chebyshev.R0))
+            grz = createGrid(gp_rz)
+            mp = getGridpoints(grz)
+            grz.physical[:, 1, 1] .= mp[:, 1] .* mp[:, 2]
+            spectralTransform!(grz)
+
+            # RRR grid (3D spline³)
+            gp_rrr = SpringsteelGridParameters(
+                geometry = "RRR", iMin = 0.0, iMax = 4.0, num_cells = 6, mubar = 3,
+                jMin = 0.0, jMax = 4.0, jDim = 12,
+                kMin = 0.0, kMax = 4.0, kDim = 12, vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0), BCR = Dict("u" => CubicBSpline.R0),
+                BCU = Dict("u" => CubicBSpline.R0), BCD = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0), BCT = Dict("u" => CubicBSpline.R0))
+            grrr = createGrid(gp_rrr)
+            mp = getGridpoints(grrr)
+            grrr.physical[:, 1, 1] .= sin.(π .* mp[:, 1] ./ 4)
+            spectralTransform!(grrr)
+
+            for (g, dom) in ((grr,  ((0.3, 3.7), (0.3, 3.7))),
+                             (grz,  ((1.3, 4.7), (0.5, 9.5))),
+                             (grrr, ((0.3, 3.7), (0.3, 3.7), (0.3, 3.7))))
+                ndim = length(dom)
+                mkpts(n) = hcat((dom[d][1] .+ (dom[d][2] - dom[d][1]) .* rand(n)
+                                 for d in 1:ndim)...)
+                a_small = eval_allocs(g, mkpts(50))
+                a_big   = eval_allocs(g, mkpts(500))
+                # Count must not grow per-point with the 10× larger point set.
+                # The dispatch wrapper adds a few sub-linear allocations (findall,
+                # the pts_ib copy), so allow a small margin; pre-fix the gap was
+                # ~450 (one j_coeffs/k_coeffs per output point).
+                @test a_big - a_small <= 20
+                @test a_big < 100
+            end
+        end
+
     end  # "evaluate_unstructured"
 
     # ════════════════════════════════════════════════════════════════════════
