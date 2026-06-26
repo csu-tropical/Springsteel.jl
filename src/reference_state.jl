@@ -298,7 +298,7 @@ function calculate_reference_state(ref_state_file::AbstractString, z::Array{Floa
     s_new = entropy.(Tk_new, rho_d_new, q_v_new)
     column.uMish[:] .= s_new
     Btransform!(column); Atransform!(column)
-    s_new = Itransform!(column)
+    s_new = copy(Itransform!(column))   # copy: Itransform! returns a reused buffer
     s_new_z = Ixtransform(column)
     Tk_new = temperature.(s_new, rho_d_new, q_v_new)
 
@@ -326,7 +326,11 @@ function calculate_reference_state(ref_state_file::AbstractString, z::Array{Floa
     end
 
     rho_vbar = _profile(column, rho_d_new .* q_v_new)
-    q_sat = q_sat_liquid.(Tk_new, p_new)
+    # Saturation ratio q_v/q_sat from the post-refinement consistent pressure (rho_d
+    # changed during the hydrostatic iteration, so recompute p rather than reuse the
+    # pre-loop Exner pressure).
+    p_final = pressure.(s_new, rho_d_new, q_v_new)
+    q_sat = q_sat_liquid.(Tk_new, p_final)
     satbar = _profile(column, q_v_new ./ q_sat)
     return MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound)
 end
