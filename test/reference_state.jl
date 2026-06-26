@@ -87,6 +87,29 @@
         @test sound_speed_sq(rs) > 0.0
     end
 
+    @testset "exact_reference_state (physical format)" begin
+        # Write a pre-balanced physical file (z s rho_d rho_v rho_c) with nonzero
+        # condensate, read it back, and confirm the profiles and condensate carry through.
+        exact_file = tempname()
+        s_in = [entropy(300.0 - 5e-3 * zi, 1.1, 0.01) for zi in z]
+        rho_d_in = [1.15 - 5e-5 * zi for zi in z]
+        rho_v_in = 0.01 .* rho_d_in
+        rho_c_in = 0.001 .* rho_d_in        # uniform saturated cloud loading
+        open(exact_file, "w") do io
+            for i in eachindex(z)
+                println(io, "$(z[i]) $(s_in[i]) $(rho_d_in[i]) $(rho_v_in[i]) $(rho_c_in[i])")
+            end
+        end
+        rs = Springsteel.exact_reference_state(exact_file, z, column)
+        @test rs isa CondensateReferenceState
+        @test ref_rho_c(rs) isa Matrix{Float64}
+        @test isapprox(ref_rho_d(rs)[:, 1], rho_d_in; rtol=1e-10)
+        @test isapprox(ref_rho_v(rs)[:, 1], rho_v_in; rtol=1e-10)
+        @test isapprox(ref_rho_c(rs)[:, 1], rho_c_in; rtol=1e-10)
+        @test all(ref_rho_c(rs)[:, 1] .> 0.0)
+        rm(exact_file; force=true)
+    end
+
     @testset "reference_column dispatch" begin
         # natural_column on a Chebyshev column returns an R0 Chebyshev1D
         nc = Springsteel.natural_column(column, (kMin=0.0, kMax=10000.0, kDim=64, b_kDim=64))

@@ -384,6 +384,48 @@ function interpolate_reference_state(ref_state_file::AbstractString, z::Array{Fl
     return MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound)
 end
 
+"""
+    exact_reference_state(ref_state_file, z, column) -> CondensateReferenceState
+
+Read a pre-balanced reference state from a physical-density file with one line per model
+level: `z s rho_d rho_v rho_c` (moist entropy, dry-air, vapor, and condensate partial
+densities). Vertical derivatives and the saturation-ratio profile are computed on
+`column`. Used for highly idealized, already-balanced base states (e.g. the saturated
+Bryan & Fritsch 2002 benchmark, where a nonzero `rho_c` makes the base neutrally
+buoyant). The `z` values must match the model levels (compared as written by
+`string`).
+"""
+function exact_reference_state(ref_state_file::AbstractString, z::Array{Float64}, column)
+    n = length(z)
+    s = zeros(Float64, n); rho_d = zeros(Float64, n)
+    rho_v = zeros(Float64, n); rho_c = zeros(Float64, n)
+    open(ref_state_file, "r") do f
+        for i in 1:n
+            parts = split(readline(f))
+            parts[1] == string(z[i]) ||
+                throw(DomainError(i, "Model level does not match reference level"))
+            s[i] = parse(Float64, parts[2])
+            rho_d[i] = parse(Float64, parts[3])
+            rho_v[i] = parse(Float64, parts[4])
+            rho_c[i] = parse(Float64, parts[5])
+        end
+    end
+
+    sbar = _profile(column, s)
+    rho_dbar = _profile(column, rho_d)
+    rho_vbar = _profile(column, rho_v)
+    rho_cbar = _profile(column, rho_c)
+
+    q_v = rho_v ./ rho_d
+    Tk = temperature.(s, rho_d, q_v)
+    p = pressure.(s, rho_d, q_v)
+    q_sat = q_sat_liquid.(Tk, p)
+    satbar = _profile(column, q_v ./ q_sat)
+    sound = _mean_sound_speed_sq(Tk, rho_d, q_v)
+
+    return CondensateReferenceState(sbar, rho_dbar, rho_vbar, rho_cbar, satbar, sound)
+end
+
 # Domain-mean speed of sound squared, c^2 = (dp/drho)|_s ~ P_xi / rho_t, averaged.
 function _mean_sound_speed_sq(Tk, rho_d, q_v)
     c2 = P_xi.(Tk, rho_d, q_v) ./ (rho_d .* (1.0 .+ q_v))
