@@ -990,6 +990,18 @@ using Springsteel.Chebyshev
             grz.physical[:, 1, 1] .= mp[:, 1] .* mp[:, 2]
             spectralTransform!(grz)
 
+            # RiRk grid (2D i,k spline×spline — shares _eval_unstructured_2d_ik
+            # with RZ but exercises the spline-k branch of _eval_single_kdim)
+            gp_rirk = SpringsteelGridParameters(
+                geometry = "RiRk", iMin = 1.0, iMax = 5.0, num_cells = 6, mubar = 3,
+                kMin = 0.0, kMax = 8.0, kDim = 12, vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0), BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0), BCT = Dict("u" => CubicBSpline.R0))
+            grirk = createGrid(gp_rirk)
+            mp = getGridpoints(grirk)
+            grirk.physical[:, 1, 1] .= mp[:, 1] .* mp[:, 2]
+            spectralTransform!(grirk)
+
             # RRR grid (3D spline³)
             gp_rrr = SpringsteelGridParameters(
                 geometry = "RRR", iMin = 0.0, iMax = 4.0, num_cells = 6, mubar = 3,
@@ -1003,9 +1015,10 @@ using Springsteel.Chebyshev
             grrr.physical[:, 1, 1] .= sin.(π .* mp[:, 1] ./ 4)
             spectralTransform!(grrr)
 
-            for (g, dom) in ((grr,  ((0.3, 3.7), (0.3, 3.7))),
-                             (grz,  ((1.3, 4.7), (0.5, 9.5))),
-                             (grrr, ((0.3, 3.7), (0.3, 3.7), (0.3, 3.7))))
+            for (g, dom) in ((grr,   ((0.3, 3.7), (0.3, 3.7))),
+                             (grz,   ((1.3, 4.7), (0.5, 9.5))),
+                             (grirk, ((1.3, 4.7), (0.5, 7.5))),
+                             (grrr,  ((0.3, 3.7), (0.3, 3.7), (0.3, 3.7))))
                 ndim = length(dom)
                 mkpts(n) = hcat((dom[d][1] .+ (dom[d][2] - dom[d][1]) .* rand(n)
                                  for d in 1:ndim)...)
