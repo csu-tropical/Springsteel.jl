@@ -1807,6 +1807,780 @@ function regularGridTransform(grid::_3DCartesianRRR, gridpoints::AbstractMatrix{
 end
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Pure-Chebyshev Cartesian transforms (Z / ZZ / ZZZ)
+#
+# These mirror the spline-based 1D / RZ / RRR transforms above, substituting the
+# Chebyshev primitives (CBtransform!/CAtransform!/CItransform!/CIxtransform/
+# CIxxtransform) for the spline ones. Index/slot conventions are identical:
+#   • physical ordering is k-fastest (then j, then i)
+#   • derivative slots: 1D→3 [f,∂i,∂²i]; 2D→5 [f,∂i,∂²i,∂j,∂²j];
+#     3D→7 [f,∂i,∂²i,∂j,∂²j,∂k,∂²k]
+#
+# Structural note: unlike RRR (which carries per-physical-radius j/k basis
+# objects), the ZZ/ZZZ factories build a nested *spectral* basis layout — the
+# second/third bases are shared scratch columns (jbasis.data[z,v], kbasis.data[v]),
+# one per spectral mode rather than per gridpoint. The transforms below index
+# accordingly.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Type aliases ────────────────────────────────────────────────────────────
+const _1DCartesianZ = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray{1}, NoBasisArray, NoBasisArray}
+const _2DCartesianZZ = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray{2}, ChebyshevBasisArray{1}, NoBasisArray}
+const _3DCartesianZZZ = SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray{3}, ChebyshevBasisArray{2}, ChebyshevBasisArray{1}}
+
+# Evaluate a Chebyshev column (whose A-coefficients are already populated via
+# CAtransform!) and its derivatives at arbitrary points. Parallels `_spline_eval!`.
+@inline function _cheb_eval!(col, pts, deriv, out)
+    if deriv == 0
+        _cheb_eval_pts!(col, pts, out)
+    elseif deriv == 1
+        _cheb_dz_pts!(col, pts, out)
+    else
+        _cheb_dzz_pts!(col, pts, out)
+    end
+end
+
+# ───────────────────────────────────────────────────────────────────────────
+# Z — 1D Cartesian Chebyshev
+# ───────────────────────────────────────────────────────────────────────────
+
+"""
+    getGridpoints(grid::SpringsteelGrid{CartesianGeometry, ChebyshevBasisArray, NoBasisArray, NoBasisArray}) -> Vector{Float64}
+
+Return the Chebyshev–Gauss–Lobatto mish points for a 1-D Cartesian Chebyshev grid
+(`Z_Grid` / `Column1D_Grid`). All variables share the same domain, so the first
+variable's column is canonical.
+"""
+function getGridpoints(grid::_1DCartesianZ)
+    return grid.ibasis.data[1].mishPoints
+end
+
+"""
+    getRegularGridpoints(grid::_1DCartesianZ) -> Vector{Float64}
+
+Return `i_regular_out` uniformly-spaced output locations spanning `[iMin, iMax]`.
+"""
+function getRegularGridpoints(grid::_1DCartesianZ)
+    n  = grid.params.i_regular_out
+    x0 = grid.params.iMin
+    x1 = grid.params.iMax
+    dx = (x1 - x0) / (n - 1)
+    return [min(x0 + (i - 1) * dx, x1) for i in 1:n]
+end
+
+"""
+    spectralTransform(grid::_1DCartesianZ, physical, spectral)
+
+Explicit-array forward transform for a 1-D Cartesian Chebyshev grid. Applies
+`CBtransform!` per variable, writing B-coefficients into `spectral`.
+"""
+function spectralTransform(
+        grid     :: _1DCartesianZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    nvars = size(spectral, 2)
+    for v in 1:nvars
+        col = grid.ibasis.data[v]
+        @inbounds for i in eachindex(col.uMish)
+            col.uMish[i] = physical[i, v, 1]
+        end
+        CBtransform!(col)
+        @inbounds for i in eachindex(col.b)
+            spectral[i, v] = col.b[i]
+        end
+    end
+    return spectral
+end
+
+"""
+    spectralTransform!(grid::_1DCartesianZ)
+
+In-place forward transform for a 1-D Cartesian Chebyshev grid.
+"""
+function spectralTransform!(grid::_1DCartesianZ)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+"""
+    gridTransform(grid::_1DCartesianZ, physical, spectral)
+
+Explicit-array inverse transform. For each variable: `CAtransform!` (B→A), then
+`CItransform!` / `CIxtransform` / `CIxxtransform` at the mish points, writing the
+value and first/second derivatives into slots 1/2/3.
+"""
+function gridTransform(
+        grid     :: _1DCartesianZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    nvars = size(spectral, 2)
+    for v in 1:nvars
+        col = grid.ibasis.data[v]
+        copyto!(col.b, view(spectral, :, v))
+        CAtransform!(col)
+        CItransform!(col)
+        @inbounds for i in eachindex(col.uMish)
+            physical[i, v, 1] = col.uMish[i]
+        end
+        CIxtransform(col, view(physical, :, v, 2))
+        CIxxtransform(col, view(physical, :, v, 3))
+    end
+    return physical
+end
+
+"""
+    gridTransform!(grid::_1DCartesianZ)
+
+In-place inverse transform for a 1-D Cartesian Chebyshev grid (slots 1/2/3).
+"""
+function gridTransform!(grid::_1DCartesianZ)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
+"""
+    regularGridTransform(grid::_1DCartesianZ, gridpoints::AbstractVector{Float64}) -> Array{Float64}
+
+Evaluate the Chebyshev representation (and first/second derivatives) at arbitrary
+output locations. `grid.spectral` must be populated.
+"""
+function regularGridTransform(grid::_1DCartesianZ, gridpoints::AbstractVector{Float64})
+    nvars    = length(grid.params.vars)
+    gpts     = collect(Float64, gridpoints)
+    physical = zeros(Float64, length(gpts), nvars, 3)
+    for v in 1:nvars
+        col = grid.ibasis.data[v]
+        col.b .= view(grid.spectral, :, v)
+        CAtransform!(col)
+        _cheb_eval_pts!(col, gpts, view(physical, :, v, 1))
+        _cheb_dz_pts!(col,  gpts, view(physical, :, v, 2))
+        _cheb_dzz_pts!(col, gpts, view(physical, :, v, 3))
+    end
+    return physical
+end
+
+# ───────────────────────────────────────────────────────────────────────────
+# ZZ — 2D Cartesian Chebyshev×Chebyshev (i, j active)
+# Structurally the RZ transform with the second axis in the j-slot and the
+# i-axis Chebyshev instead of spline.
+# ───────────────────────────────────────────────────────────────────────────
+
+"""
+    getGridpoints(grid::_2DCartesianZZ) -> Matrix{Float64}
+
+Return a `(iDim*jDim, 2)` matrix of `(x, y)` mish coordinates; j varies fastest,
+flat index `(r-1)*jDim + l`.
+"""
+function getGridpoints(grid::_2DCartesianZZ)
+    iDim = grid.params.iDim
+    jDim = grid.params.jDim
+    pts  = zeros(Float64, iDim * jDim, 2)
+    g = 1
+    for r in 1:iDim
+        xi = grid.ibasis.data[1, 1].mishPoints[r]
+        for l in 1:jDim
+            pts[g, 1] = xi
+            pts[g, 2] = grid.jbasis.data[1].mishPoints[l]
+            g += 1
+        end
+    end
+    return pts
+end
+
+"""
+    spectralTransform(grid::_2DCartesianZZ, physical, spectral)
+
+Forward transform. Step 1: j-direction `CBtransform!` per i gridpoint. Step 2:
+i-direction `CBtransform!` per j-mode. Spectral layout: consecutive `b_iDim`
+blocks per j-mode at `(l-1)*b_iDim+1`. Physical layout `(r-1)*jDim + l`.
+"""
+function spectralTransform(
+        grid     :: _2DCartesianZZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    nvars  = size(spectral, 2)
+    tempcb = zeros(Float64, b_jDim, iDim)
+
+    for v in 1:nvars
+        # Step 1: j-direction (Chebyshev) transform for each i gridpoint
+        jcol = grid.jbasis.data[v]
+        for r in 1:iDim
+            @inbounds for l in 1:jDim
+                jcol.uMish[l] = physical[(r-1)*jDim + l, v, 1]
+            end
+            CBtransform!(jcol)
+            @inbounds for k in 1:b_jDim
+                tempcb[k, r] = jcol.b[k]
+            end
+        end
+
+        # Step 2: i-direction (Chebyshev) transform for each j spectral mode
+        for l in 1:b_jDim
+            isp = grid.ibasis.data[l, v]
+            @inbounds for r in 1:iDim
+                isp.uMish[r] = tempcb[l, r]
+            end
+            CBtransform!(isp)
+            r1 = (l-1)*b_iDim + 1
+            @inbounds for k in 0:(b_iDim - 1)
+                spectral[r1 + k, v] = isp.b[k + 1]
+            end
+        end
+    end
+    return spectral
+end
+
+"""
+    spectralTransform!(grid::_2DCartesianZZ)
+
+In-place forward transform for a 2-D Cartesian Chebyshev×Chebyshev grid.
+"""
+function spectralTransform!(grid::_2DCartesianZZ)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+"""
+    gridTransform(grid::_2DCartesianZZ, physical, spectral)
+
+Inverse transform. Step 1: i-direction `CAtransform!` → `CItransform!` /
+`CIxtransform` / `CIxxtransform` per j-mode into `splineBuffer[iDim, b_jDim]`.
+Step 2: j-direction inverse per i gridpoint into the 5 physical slots
+([f, ∂i, ∂²i, ∂j, ∂²j]).
+"""
+function gridTransform(
+        grid     :: _2DCartesianZZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    nvars  = size(spectral, 2)
+    splineBuffer = zeros(Float64, iDim, b_jDim)
+    scratch_i    = zeros(Float64, iDim)
+
+    for v in 1:nvars
+        for dr in 0:2
+            # i-direction inverse transform per j-spectral mode
+            for l in 1:b_jDim
+                r1 = (l-1)*b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                isp = grid.ibasis.data[l, v]
+                copyto!(isp.b, view(spectral, r1:r2, v))
+                CAtransform!(isp)
+                if dr == 0
+                    CItransform!(isp)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, l] = isp.uMish[r]
+                    end
+                elseif dr == 1
+                    CIxtransform(isp, scratch_i)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, l] = scratch_i[r]
+                    end
+                else
+                    CIxxtransform(isp, scratch_i)
+                    @inbounds for r in 1:iDim
+                        splineBuffer[r, l] = scratch_i[r]
+                    end
+                end
+            end
+
+            # j-direction inverse transform per i gridpoint
+            jcol = grid.jbasis.data[v]
+            for r in 1:iDim
+                @inbounds for l in 1:b_jDim
+                    jcol.b[l] = splineBuffer[r, l]
+                end
+                CAtransform!(jcol)
+                CItransform!(jcol)
+                l1 = (r-1)*jDim + 1
+                l2 = l1 + jDim - 1
+                if dr == 0
+                    copyto!(view(physical, l1:l2, v, 1), jcol.uMish)
+                    # Reuse jcol.uMish as scratch — its prior content was just copied.
+                    CIxtransform(jcol, jcol.uMish)
+                    copyto!(view(physical, l1:l2, v, 4), jcol.uMish)
+                    CIxxtransform(jcol, jcol.uMish)
+                    copyto!(view(physical, l1:l2, v, 5), jcol.uMish)
+                elseif dr == 1
+                    copyto!(view(physical, l1:l2, v, 2), jcol.uMish)
+                else
+                    copyto!(view(physical, l1:l2, v, 3), jcol.uMish)
+                end
+            end
+        end
+    end
+    return physical
+end
+
+"""
+    gridTransform!(grid::_2DCartesianZZ)
+
+In-place inverse transform for a 2-D Cartesian Chebyshev×Chebyshev grid (5 slots).
+"""
+function gridTransform!(grid::_2DCartesianZZ)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
+"""
+    getRegularGridpoints(grid::_2DCartesianZZ) -> Matrix{Float64}
+
+Return an `(i_regular_out × j_regular_out, 2)` matrix of uniformly-spaced `(x, y)`
+coordinates; y varies fastest.
+"""
+function getRegularGridpoints(grid::_2DCartesianZZ)
+    n_i   = grid.params.i_regular_out
+    n_j   = grid.params.j_regular_out
+    i_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_i))
+    j_pts = collect(LinRange(grid.params.jMin, grid.params.jMax, n_j))
+    pts   = zeros(Float64, n_i * n_j, 2)
+    idx   = 1
+    for i in 1:n_i
+        for j in 1:n_j
+            pts[idx, 1] = i_pts[i]
+            pts[idx, 2] = j_pts[j]
+            idx += 1
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_2DCartesianZZ, i_pts, j_pts) -> Array{Float64}
+    regularGridTransform(grid::_2DCartesianZZ, gridpoints)   -> Array{Float64}
+
+Evaluate the spectral representation on a regular `x × y` grid, returning values
+and all five derivatives. Output shape `(n_i × n_j, nvars, 5)`, y varies fastest.
+"""
+function regularGridTransform(grid::_2DCartesianZZ,
+                               i_pts::AbstractVector{Float64},
+                               j_pts::AbstractVector{Float64})
+    gp     = grid.params
+    b_iDim = gp.b_iDim
+    b_jDim = gp.b_jDim
+    nvars  = length(gp.vars)
+    n_i    = length(i_pts)
+    n_j    = length(j_pts)
+    i_vec  = collect(Float64, i_pts)
+    j_vec  = collect(Float64, j_pts)
+
+    physical = zeros(Float64, n_i * n_j, nvars, 5)
+
+    for v in 1:length(gp.vars)
+        ibuf = zeros(Float64, n_i, b_jDim)
+        jcol = grid.jbasis.data[v]
+        for dr in 0:2
+            # Step 1: i-direction Chebyshev evaluation at i_pts for each j-mode
+            for l in 1:b_jDim
+                r1 = (l - 1) * b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                sp = grid.ibasis.data[l, v]
+                sp.b .= view(grid.spectral, r1:r2, v)
+                CAtransform!(sp)
+                _cheb_eval!(sp, i_vec, dr, view(ibuf, :, l))
+            end
+
+            # Step 2: j-direction Chebyshev evaluation at j_pts for each i output
+            dj_range = (dr == 0) ? (0:2) : (0:0)
+            for dj in dj_range
+                slot = _rz_slot(dr, dj)
+                slot == 0 && continue
+                for xi in 1:n_i
+                    for l in 1:b_jDim
+                        jcol.b[l] = ibuf[xi, l]
+                    end
+                    CAtransform!(jcol)
+                    flat = (xi - 1) * n_j + 1
+                    out  = view(physical, flat:flat + n_j - 1, v, slot)
+                    if dj == 0
+                        _cheb_eval_pts!(jcol, j_vec, out)
+                    elseif dj == 1
+                        _cheb_dz_pts!(jcol, j_vec, out)
+                    else
+                        _cheb_dzz_pts!(jcol, j_vec, out)
+                    end
+                end
+            end
+        end
+    end
+    return physical
+end
+
+function regularGridTransform(grid::_2DCartesianZZ, gridpoints::AbstractMatrix{Float64})
+    i_pts = sort(unique(gridpoints[:, 1]))
+    j_pts = sort(unique(gridpoints[:, 2]))
+    return regularGridTransform(grid, i_pts, j_pts)
+end
+
+# ───────────────────────────────────────────────────────────────────────────
+# ZZZ — 3D Cartesian Chebyshev×Chebyshev×Chebyshev
+# Mirrors RRR (including the BUG-2/BUG-3 inverse-transform structure), with the
+# j/k bases as shared spectral-mode columns rather than per-radius objects.
+# ───────────────────────────────────────────────────────────────────────────
+
+"""
+    getGridpoints(grid::_3DCartesianZZZ) -> Matrix{Float64}
+
+Return a `(iDim*jDim*kDim, 3)` matrix of `(x, y, z)` mish coordinates; k varies
+fastest, then j, then i: `(r-1)*jDim*kDim + (l-1)*kDim + z`.
+"""
+function getGridpoints(grid::_3DCartesianZZZ)
+    iDim = grid.params.iDim
+    jDim = grid.params.jDim
+    kDim = grid.params.kDim
+    pts  = zeros(Float64, iDim * jDim * kDim, 3)
+    g = 1
+    for r in 1:iDim
+        xi = grid.ibasis.data[1, 1, 1].mishPoints[r]
+        for l in 1:jDim
+            yj = grid.jbasis.data[1, 1].mishPoints[l]
+            for z in 1:kDim
+                zk = grid.kbasis.data[1].mishPoints[z]
+                pts[g, 1] = xi
+                pts[g, 2] = yj
+                pts[g, 3] = zk
+                g += 1
+            end
+        end
+    end
+    return pts
+end
+
+"""
+    spectralTransform(grid::_3DCartesianZZZ, physical, spectral)
+
+Forward transform: k-direction `CBtransform!` first, then j, then i. Spectral
+layout z-major: `(z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1`.
+"""
+function spectralTransform(
+        grid     :: _3DCartesianZZZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    kDim   = grid.params.kDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    b_kDim = grid.params.b_kDim
+    tempcb_z = zeros(Float64, b_kDim, iDim, jDim)
+    tempcb_l = zeros(Float64, b_jDim, b_kDim, iDim)
+
+    for v in 1:size(spectral, 2)
+        # Step 1: k-direction transform for each (r, l) gridpoint
+        kcol = grid.kbasis.data[v]
+        for r in 1:iDim
+            for l in 1:jDim
+                @inbounds for z in 1:kDim
+                    kcol.uMish[z] = physical[(r-1)*jDim*kDim + (l-1)*kDim + z, v, 1]
+                end
+                CBtransform!(kcol)
+                @inbounds for k in 1:b_kDim
+                    tempcb_z[k, r, l] = kcol.b[k]
+                end
+            end
+        end
+
+        # Step 2: j-direction transform for each (r, z_coeff)
+        for z in 1:b_kDim
+            jcol = grid.jbasis.data[z, v]
+            for r in 1:iDim
+                @inbounds for l in 1:jDim
+                    jcol.uMish[l] = tempcb_z[z, r, l]
+                end
+                CBtransform!(jcol)
+                @inbounds for k in 1:b_jDim
+                    tempcb_l[k, z, r] = jcol.b[k]
+                end
+            end
+        end
+
+        # Step 3: i-direction transform for each (l_coeff, z_coeff)
+        for z in 1:b_kDim
+            for l in 1:b_jDim
+                isp = grid.ibasis.data[l, z, v]
+                @inbounds for r in 1:iDim
+                    isp.uMish[r] = tempcb_l[l, z, r]
+                end
+                CBtransform!(isp)
+                idx = (z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1
+                @inbounds for k in 0:(b_iDim - 1)
+                    spectral[idx + k, v] = isp.b[k + 1]
+                end
+            end
+        end
+    end
+    return spectral
+end
+
+"""
+    spectralTransform!(grid::_3DCartesianZZZ)
+
+In-place forward transform for a 3-D Cartesian Chebyshev³ grid.
+"""
+function spectralTransform!(grid::_3DCartesianZZZ)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+"""
+    gridTransform(grid::_3DCartesianZZZ, physical, spectral)
+
+Inverse transform (7 slots): i-direction first, then j, then k. The k-transform
+is nested inside the r-loop (BUG-3 fix) and the j-derivative slots are computed
+via a separate k-inverse pass on the j-derivative coefficients (BUG-2 fix).
+"""
+function gridTransform(
+        grid     :: _3DCartesianZZZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    kDim   = grid.params.kDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    b_kDim = grid.params.b_kDim
+
+    splineBuffer_r     = zeros(Float64, iDim, b_jDim, b_kDim)
+    splineBuffer_l     = zeros(Float64, jDim, b_kDim)
+    splineBuffer_l_1st = zeros(Float64, jDim, b_kDim)
+    splineBuffer_l_2nd = zeros(Float64, jDim, b_kDim)
+    scratch_i          = zeros(Float64, iDim)
+    scratch_j          = zeros(Float64, jDim)
+
+    for v in 1:size(spectral, 2)
+        for dr in 0:2
+            # ── Step 1: i-direction inverse transform ─────────────────────────
+            for z in 1:b_kDim
+                for l in 1:b_jDim
+                    idx = (z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1
+                    isp = grid.ibasis.data[l, z, v]
+                    copyto!(isp.b, view(spectral, idx:idx+b_iDim-1, v))
+                    CAtransform!(isp)
+                    if dr == 0
+                        CItransform!(isp)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = isp.uMish[r]
+                        end
+                    elseif dr == 1
+                        CIxtransform(isp, scratch_i)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = scratch_i[r]
+                        end
+                    else
+                        CIxxtransform(isp, scratch_i)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = scratch_i[r]
+                        end
+                    end
+                end
+            end
+
+            # ── Steps 2+3: j and k direction transforms (k nested in r-loop) ──
+            for r in 1:iDim
+                # j-direction transform per z_coeff
+                for z in 1:b_kDim
+                    jcol = grid.jbasis.data[z, v]
+                    @inbounds for l in 1:b_jDim
+                        jcol.b[l] = splineBuffer_r[r, l, z]
+                    end
+                    CAtransform!(jcol)
+                    CItransform!(jcol)
+                    @inbounds for l in 1:jDim
+                        splineBuffer_l[l, z] = jcol.uMish[l]
+                    end
+
+                    if dr == 0
+                        CIxtransform(jcol, scratch_j)
+                        @inbounds for l in 1:jDim
+                            splineBuffer_l_1st[l, z] = scratch_j[l]
+                        end
+                        CIxxtransform(jcol, scratch_j)
+                        @inbounds for l in 1:jDim
+                            splineBuffer_l_2nd[l, z] = scratch_j[l]
+                        end
+                    end
+                end
+
+                # k-direction transform per (r, l) gridpoint
+                for l in 1:jDim
+                    kcol = grid.kbasis.data[v]
+                    @inbounds for zb in 1:b_kDim
+                        kcol.b[zb] = splineBuffer_l[l, zb]
+                    end
+                    CAtransform!(kcol)
+                    CItransform!(kcol)
+
+                    i_flat     = (r-1)*jDim*kDim + (l-1)*kDim + 1
+                    i_flat_end = i_flat + kDim - 1
+                    if dr == 0
+                        copyto!(view(physical, i_flat:i_flat_end, v, 1), kcol.uMish)
+                        # Reuse kcol.uMish — its prior content was just copied above.
+                        CIxtransform(kcol, kcol.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 6), kcol.uMish)
+                        CIxxtransform(kcol, kcol.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 7), kcol.uMish)
+
+                        # BUG-2 fix: j-derivative slots via k-inverse of j-deriv coeffs
+                        @inbounds for zb in 1:b_kDim
+                            kcol.b[zb] = splineBuffer_l_1st[l, zb]
+                        end
+                        CAtransform!(kcol)
+                        CItransform!(kcol)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 4), kcol.uMish)
+
+                        @inbounds for zb in 1:b_kDim
+                            kcol.b[zb] = splineBuffer_l_2nd[l, zb]
+                        end
+                        CAtransform!(kcol)
+                        CItransform!(kcol)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 5), kcol.uMish)
+                    elseif dr == 1
+                        copyto!(view(physical, i_flat:i_flat_end, v, 2), kcol.uMish)
+                    else
+                        copyto!(view(physical, i_flat:i_flat_end, v, 3), kcol.uMish)
+                    end
+                end
+            end  # for r
+        end  # for dr
+    end  # for v
+    return physical
+end
+
+"""
+    gridTransform!(grid::_3DCartesianZZZ)
+
+In-place inverse transform for a 3-D Cartesian Chebyshev³ grid (7 slots).
+"""
+function gridTransform!(grid::_3DCartesianZZZ)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
+"""
+    getRegularGridpoints(grid::_3DCartesianZZZ) -> Matrix{Float64}
+
+Return an `(i_regular_out × j_regular_out × k_regular_out, 3)` matrix of
+uniformly-spaced `(x, y, z)` coordinates; z varies fastest, then y, then x.
+"""
+function getRegularGridpoints(grid::_3DCartesianZZZ)
+    n_x   = grid.params.i_regular_out
+    n_y   = grid.params.j_regular_out
+    n_z   = grid.params.k_regular_out
+    x_pts = collect(LinRange(grid.params.iMin, grid.params.iMax, n_x))
+    y_pts = collect(LinRange(grid.params.jMin, grid.params.jMax, n_y))
+    z_pts = collect(LinRange(grid.params.kMin, grid.params.kMax, n_z))
+    pts   = zeros(Float64, n_x * n_y * n_z, 3)
+    idx   = 1
+    for i in 1:n_x
+        for j in 1:n_y
+            for k in 1:n_z
+                pts[idx, 1] = x_pts[i]
+                pts[idx, 2] = y_pts[j]
+                pts[idx, 3] = z_pts[k]
+                idx += 1
+            end
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_3DCartesianZZZ, x_pts, y_pts, z_pts) -> Array{Float64}
+    regularGridTransform(grid::_3DCartesianZZZ, gridpoints)           -> Array{Float64}
+
+Evaluate the spectral representation on a regular `x × y × z` grid. Output shape
+`(n_x × n_y × n_z, nvars, 7)`, z varies fastest. Slots follow the RRR convention.
+"""
+function regularGridTransform(grid::_3DCartesianZZZ,
+                               x_pts::AbstractVector{Float64},
+                               y_pts::AbstractVector{Float64},
+                               z_pts::AbstractVector{Float64})
+    gp     = grid.params
+    b_iDim = gp.b_iDim
+    b_jDim = gp.b_jDim
+    b_kDim = gp.b_kDim
+    nvars  = length(gp.vars)
+    n_x    = length(x_pts)
+    n_y    = length(y_pts)
+    n_z    = length(z_pts)
+    x_vec  = collect(Float64, x_pts)
+    y_vec  = collect(Float64, y_pts)
+    z_vec  = collect(Float64, z_pts)
+
+    physical = zeros(Float64, n_x * n_y * n_z, nvars, 7)
+
+    for v in 1:length(gp.vars)
+        for dr in 0:2
+            # ── Step 1: i-direction Chebyshev evaluation at x_pts ────────────
+            ibuf = zeros(Float64, n_x, b_jDim, b_kDim)
+            for l in 1:b_jDim
+                for z_b in 1:b_kDim
+                    idx = (z_b - 1) * b_jDim * b_iDim + (l - 1) * b_iDim + 1
+                    sp = grid.ibasis.data[l, z_b, v]
+                    sp.b .= view(grid.spectral, idx:idx + b_iDim - 1, v)
+                    CAtransform!(sp)
+                    _cheb_eval!(sp, x_vec, dr, view(ibuf, :, l, z_b))
+                end
+            end
+
+            # ── Steps 2 & 3: j and k evaluations ─────────────────────────────
+            dl_range = (dr == 0) ? (0:2) : (0:0)
+            for dl in dl_range
+                jbuf = zeros(Float64, n_x, n_y, b_kDim)
+                jsp  = grid.jbasis.data[1, v]   # scratch column (shared params)
+                for xi in 1:n_x
+                    for z_b in 1:b_kDim
+                        for l in 1:b_jDim
+                            jsp.b[l] = ibuf[xi, l, z_b]
+                        end
+                        CAtransform!(jsp)
+                        _cheb_eval!(jsp, y_vec, dl, view(jbuf, xi, :, z_b))
+                    end
+                end
+
+                dk_range = (dr == 0 && dl == 0) ? (0:2) : (0:0)
+                for dk in dk_range
+                    slot = _rrr_regular_slot(dr, dl, dk)
+                    slot == 0 && continue
+                    ksp = grid.kbasis.data[v]   # scratch column
+                    for xi in 1:n_x
+                        for yj in 1:n_y
+                            for z_b in 1:b_kDim
+                                ksp.b[z_b] = jbuf[xi, yj, z_b]
+                            end
+                            CAtransform!(ksp)
+                            flat = (xi - 1) * n_y * n_z + (yj - 1) * n_z + 1
+                            _cheb_eval!(ksp, z_vec, dk, view(physical, flat:flat + n_z - 1, v, slot))
+                        end
+                    end
+                end
+            end
+        end   # dr
+    end   # v
+    return physical
+end
+
+function regularGridTransform(grid::_3DCartesianZZZ, gridpoints::AbstractMatrix{Float64})
+    x_pts = sort(unique(gridpoints[:, 1]))
+    y_pts = sort(unique(gridpoints[:, 2]))
+    z_pts = sort(unique(gridpoints[:, 3]))
+    return regularGridTransform(grid, x_pts, y_pts, z_pts)
+end
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Fourier Cartesian transforms (L / LL / LLZ)
 #
 # These mirror the spline/Chebyshev Cartesian transforms above, substituting the
