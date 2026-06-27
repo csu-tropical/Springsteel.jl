@@ -193,10 +193,9 @@ using LinearAlgebra
         end
 
         @testset "solve() 1D Chebyshev BVP: u'' + u' + u = f" begin
-            # General 2nd-order ODE: u'' + u' + u = f
-            # TODO (v1.1 Z-grid coverage): add a companion test that
-            # calls Chebyshev.bvp on the same operator and cross-checks
-            # the two against each other.
+            # General 2nd-order ODE: u'' + u' + u = f, cross-checked against
+            # the legacy Boyd (2000) Chebyshev.bvp reference solver on the
+            # same operator (v1.1 Z-grid coverage).
             N = 25
             gp = SpringsteelGridParameters(
                 geometry = "Z",
@@ -218,6 +217,37 @@ using LinearAlgebra
             u_analytic = sin.(π .* pts)
             @test sol.converged == true
             @test maximum(abs.(sol.physical .- u_analytic)) < 1e-3
+
+            # ── Parity with the legacy Chebyshev.bvp reference ───────────────
+            # bvp solves d2·u'' + d1·u' + d0·u = f on the canonical [-1,1]
+            # interior CGL points scaled to the physical domain (scale =
+            # half-width; α/β are the Dirichlet values at the x=∓1 ends). Its
+            # full point set coincides with the Z grid's collocation points,
+            # so the two solvers can be compared directly.
+            nbasis = N - 2
+            scale  = (gp.iMax - gp.iMin) / 2
+            mid    = (gp.iMin + gp.iMax) / 2
+            xi     = [cos(π * i / (nbasis + 1)) for i in 1:nbasis]
+            # bvp returns u ordered [x=+1, interior xi…, x=-1] in canonical space
+            bvp_x  = vcat(gp.iMax, [mid + scale * xi[i] for i in 1:nbasis], gp.iMin)
+            f_bvp  = zeros(N)
+            for i in 1:nbasis
+                xp = bvp_x[i + 1]
+                f_bvp[i + 1] = -π^2 * sin(π*xp) + π * cos(π*xp) + sin(π*xp)
+            end
+            u_bvp = zeros(N); ux_bvp = zeros(N); uxx_bvp = zeros(N)
+            Chebyshev.bvp(N, u_bvp, ux_bvp, uxx_bvp, f_bvp,
+                          ones(N), ones(N), ones(N), scale, 0.0, 0.0)
+
+            # Reference reproduces the analytic solution to spectral accuracy
+            @test maximum(abs.(u_bvp .- sin.(π .* bvp_x))) < 1e-9
+
+            # Direct cross-check: same collocation points (match by coordinate),
+            # so the two independent solvers must agree.
+            su = vec(sol.physical)
+            pu = sortperm(pts); pb = sortperm(bvp_x)
+            @test maximum(abs.(pts[pu] .- bvp_x[pb])) < 1e-12     # identical grid
+            @test maximum(abs.(su[pu] .- u_bvp[pb])) < 1e-3       # solvers agree
         end
 
         @testset "solve() 1D CubicBSpline BVP" begin
@@ -461,7 +491,7 @@ using LinearAlgebra
             @test L_eq ≈ L_manual
         end
 
-        @testset "d_jk matches manual OperatorTerm on ZZ grid" begin
+        @testset "d_jk matches manual OperatorTerm on ZZZ grid" begin
             # Use ZZZ to have all 3 dims active, but ZZ only has i and j.
             # For d_jk we need j and k active. Use a 3D grid.
             Ni = 6; Nj = 5; Nk = 4
