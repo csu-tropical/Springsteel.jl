@@ -172,6 +172,7 @@ formulas; see TRAP-1 below.
 | Grid | Layout | Total rows |
 |:-----|:-------|:-----------|
 | `RR` / `LL` | row-major: `r1 = (l-1)*b_iDim + 1` | `b_jDim * b_iDim` |
+| `ZZ`        | j-major: `r1 = (l-1)*b_iDim + 1`  | `b_jDim * b_iDim` |
 | `RZ`        | z-major: `r1 = (z-1)*b_iDim + 1`  | `b_kDim * b_iDim` |
 | `RL`        | wavenumber-interleaved flat: `[k=0 | k=1 real | k=1 imag | …]` | `b_iDim * (1 + 2*kDim)` |
 | `SL`        | same as RL                         | `b_iDim * (1 + 2*kDim)` |
@@ -241,9 +242,10 @@ a simple product formula.
 | `R`   | `physical[r, v, d]`               | direct |
 | `RL`  | running: `l1 = l2+1; l2 = l1+3+4*ri` | variable rings |
 | `RR`  | `flat = (r-1)*jDim + l`             | regular |
+| `ZZ`  | `flat = (r-1)*jDim + l`             | regular |
 | `RZ`  | `flat = (r-1)*kDim + z`             | regular |
 | `RLZ` | running: accumulate `lpoints * b_kDim` per ring | variable rings |
-| `RRR` | `flat = (r-1)*jDim*kDim + (l-1)*kDim + z` | regular |
+| `RRR` / `ZZZ` | `flat = (r-1)*jDim*kDim + (l-1)*kDim + z` | regular |
 
 Don't generalise these.
 
@@ -304,7 +306,9 @@ produces wrong results.
 | `R`   | SBtransform |
 | `RL`  | FBtransform per ring → SBtransform per wavenumber |
 | `RR`  | SBtransform in j (per i) → SBtransform in i (per j) |
+| `ZZ`  | CBtransform in j (per i) → CBtransform in i (per j) |
 | `RZ`  | CBtransform per column → SBtransform per z-coefficient |
+| `ZZZ` | CBtransform k → CBtransform j → CBtransform i |
 | `RLZ` | CBtransform per column → FBtransform per ring×z → SBtransform per wavenumber×z |
 | `RRR` | SBtransform k → SBtransform j → SBtransform i |
 | `SL`  | FBtransform per sin(θ) ring → SBtransform per wavenumber |
