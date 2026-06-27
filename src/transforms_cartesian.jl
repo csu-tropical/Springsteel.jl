@@ -1805,3 +1805,782 @@ function regularGridTransform(grid::_3DCartesianRRR, gridpoints::AbstractMatrix{
     z_pts = sort(unique(gridpoints[:, 3]))
     return regularGridTransform(grid, x_pts, y_pts, z_pts)
 end
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fourier Cartesian transforms (L / LL / LLZ)
+#
+# These mirror the spline/Chebyshev Cartesian transforms above, substituting the
+# Fourier primitives (FBtransform!/FAtransform!/FItransform!/FIxtransform/
+# FIxxtransform) for the periodic axes. LLZ keeps a Chebyshev k-axis (reusing the
+# Chebyshev primitives). Index/slot conventions are identical to the other
+# families: k-fastest physical ordering, z-major spectral layout, and the 3/5/7
+# derivative-slot layout.
+#
+# Structural note: each Fourier dimension carries a single `Fourier1D` ring per
+# variable (ibasis.data[v]/jbasis.data[v]); the periodic domain is `[ymin, ymin+2π)`
+# (period 2π, independent of iMax). The grid's own inverse FFT plan evaluates at
+# the ring mish points; arbitrary-point (regular-grid) evaluation uses the analytic
+# half-complex series, with the angle measured from the ring's `ymin`.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Type aliases ────────────────────────────────────────────────────────────
+const _1DCartesianL = SpringsteelGrid{CartesianGeometry, FourierBasisArray{1}, NoBasisArray, NoBasisArray}
+const _2DCartesianLL = SpringsteelGrid{CartesianGeometry, FourierBasisArray{1}, FourierBasisArray{1}, NoBasisArray}
+const _3DCartesianLLZ = SpringsteelGrid{CartesianGeometry, FourierBasisArray{1}, FourierBasisArray{1}, ChebyshevBasisArray{1}}
+
+# Evaluate a Fourier ring's half-complex series (from its b-coefficients) and its
+# derivatives at arbitrary points. The forward phase filter references `b` to the
+# absolute angle (it rotates by -k·ymin), so points are used directly — no offset.
+# Matches `FItransform_matrix` exactly, allocation-free.
+@inline function _fourier_eval!(ring, pts, deriv, out)
+    fp = ring.params
+    b  = ring.b
+    @inbounds for i in eachindex(pts)
+        θ = pts[i]
+        val = 0.0
+        if deriv == 0
+            val = b[1]
+            for k in 1:fp.kmax
+                val += 2.0 * b[k+1] * cos(k*θ) - 2.0 * b[fp.bDim-k+1] * sin(k*θ)
+            end
+        elseif deriv == 1
+            for k in 1:fp.kmax
+                val += -2.0 * k * b[k+1] * sin(k*θ) - 2.0 * k * b[fp.bDim-k+1] * cos(k*θ)
+            end
+        else
+            for k in 1:fp.kmax
+                val += -2.0 * k^2 * b[k+1] * cos(k*θ) + 2.0 * k^2 * b[fp.bDim-k+1] * sin(k*θ)
+            end
+        end
+        out[i] = val
+    end
+    return out
+end
+
+# ───────────────────────────────────────────────────────────────────────────
+# L — 1D Cartesian Fourier
+# ───────────────────────────────────────────────────────────────────────────
+
+"""
+    getGridpoints(grid::SpringsteelGrid{CartesianGeometry, FourierBasisArray, NoBasisArray, NoBasisArray}) -> Vector{Float64}
+
+Return the evenly-spaced ring mish points for a 1-D Cartesian Fourier grid
+(`L_Grid` / `Ring1D_Grid`), spanning `[iMin, iMin+2π)`.
+"""
+function getGridpoints(grid::_1DCartesianL)
+    return grid.ibasis.data[1].mishPoints
+end
+
+"""
+    getRegularGridpoints(grid::_1DCartesianL) -> Vector{Float64}
+
+Return `i_regular_out` evenly-spaced output locations across the periodic domain
+`[iMin, iMin+2π)`.
+"""
+function getRegularGridpoints(grid::_1DCartesianL)
+    n  = grid.params.i_regular_out
+    x0 = grid.params.iMin
+    return [x0 + 2π * (i - 1) / n for i in 1:n]
+end
+
+"""
+    spectralTransform(grid::_1DCartesianL, physical, spectral)
+
+Explicit-array forward transform for a 1-D Cartesian Fourier grid. Applies
+`FBtransform!` per variable, writing half-complex coefficients into `spectral`.
+"""
+function spectralTransform(
+        grid     :: _1DCartesianL,
+        physical :: Array{real},
+        spectral :: Array{real})
+    nvars = size(spectral, 2)
+    for v in 1:nvars
+        ring = grid.ibasis.data[v]
+        @inbounds for i in eachindex(ring.uMish)
+            ring.uMish[i] = physical[i, v, 1]
+        end
+        FBtransform!(ring)
+        @inbounds for i in eachindex(ring.b)
+            spectral[i, v] = ring.b[i]
+        end
+    end
+    return spectral
+end
+
+"""
+    spectralTransform!(grid::_1DCartesianL)
+
+In-place forward transform for a 1-D Cartesian Fourier grid.
+"""
+function spectralTransform!(grid::_1DCartesianL)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+"""
+    gridTransform(grid::_1DCartesianL, physical, spectral)
+
+Explicit-array inverse transform. For each variable: `FAtransform!` (B→A), then
+`FItransform!` / `FIxtransform` / `FIxxtransform` at the ring mish points, writing
+value and first/second derivatives into slots 1/2/3.
+"""
+function gridTransform(
+        grid     :: _1DCartesianL,
+        physical :: Array{real},
+        spectral :: Array{real})
+    nvars = size(spectral, 2)
+    for v in 1:nvars
+        ring = grid.ibasis.data[v]
+        copyto!(ring.b, view(spectral, :, v))
+        FAtransform!(ring)
+        FItransform!(ring)
+        @inbounds for i in eachindex(ring.uMish)
+            physical[i, v, 1] = ring.uMish[i]
+        end
+        FIxtransform(ring, view(physical, :, v, 2))
+        FIxxtransform(ring, view(physical, :, v, 3))
+    end
+    return physical
+end
+
+"""
+    gridTransform!(grid::_1DCartesianL)
+
+In-place inverse transform for a 1-D Cartesian Fourier grid (slots 1/2/3).
+"""
+function gridTransform!(grid::_1DCartesianL)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
+"""
+    regularGridTransform(grid::_1DCartesianL, gridpoints::AbstractVector{Float64}) -> Array{Float64}
+
+Evaluate the Fourier representation (and first/second derivatives) at arbitrary
+output locations. `grid.spectral` must be populated.
+"""
+function regularGridTransform(grid::_1DCartesianL, gridpoints::AbstractVector{Float64})
+    nvars    = length(grid.params.vars)
+    gpts     = collect(Float64, gridpoints)
+    physical = zeros(Float64, length(gpts), nvars, 3)
+    for v in 1:nvars
+        ring = grid.ibasis.data[v]
+        ring.b .= view(grid.spectral, :, v)
+        _fourier_eval!(ring, gpts, 0, view(physical, :, v, 1))
+        _fourier_eval!(ring, gpts, 1, view(physical, :, v, 2))
+        _fourier_eval!(ring, gpts, 2, view(physical, :, v, 3))
+    end
+    return physical
+end
+
+# ───────────────────────────────────────────────────────────────────────────
+# LL — 2D Cartesian Fourier×Fourier (i, j active)
+# ───────────────────────────────────────────────────────────────────────────
+
+"""
+    getGridpoints(grid::_2DCartesianLL) -> Matrix{Float64}
+
+Return a `(iDim*jDim, 2)` matrix of `(x, y)` ring coordinates; j varies fastest,
+flat index `(r-1)*jDim + l`.
+"""
+function getGridpoints(grid::_2DCartesianLL)
+    iDim = grid.params.iDim
+    jDim = grid.params.jDim
+    pts  = zeros(Float64, iDim * jDim, 2)
+    g = 1
+    for r in 1:iDim
+        xi = grid.ibasis.data[1].mishPoints[r]
+        for l in 1:jDim
+            pts[g, 1] = xi
+            pts[g, 2] = grid.jbasis.data[1].mishPoints[l]
+            g += 1
+        end
+    end
+    return pts
+end
+
+"""
+    spectralTransform(grid::_2DCartesianLL, physical, spectral)
+
+Forward transform. Step 1: j-direction `FBtransform!` per i gridpoint. Step 2:
+i-direction `FBtransform!` per j-mode. Spectral layout: consecutive `b_iDim`
+blocks per j-mode at `(l-1)*b_iDim+1`. Physical layout `(r-1)*jDim + l`.
+"""
+function spectralTransform(
+        grid     :: _2DCartesianLL,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    nvars  = size(spectral, 2)
+    tempjb = zeros(Float64, b_jDim, iDim)
+
+    for v in 1:nvars
+        jring = grid.jbasis.data[v]
+        for r in 1:iDim
+            @inbounds for l in 1:jDim
+                jring.uMish[l] = physical[(r-1)*jDim + l, v, 1]
+            end
+            FBtransform!(jring)
+            @inbounds for k in 1:b_jDim
+                tempjb[k, r] = jring.b[k]
+            end
+        end
+
+        iring = grid.ibasis.data[v]
+        for l in 1:b_jDim
+            @inbounds for r in 1:iDim
+                iring.uMish[r] = tempjb[l, r]
+            end
+            FBtransform!(iring)
+            r1 = (l-1)*b_iDim + 1
+            @inbounds for k in 0:(b_iDim - 1)
+                spectral[r1 + k, v] = iring.b[k + 1]
+            end
+        end
+    end
+    return spectral
+end
+
+"""
+    spectralTransform!(grid::_2DCartesianLL)
+
+In-place forward transform for a 2-D Cartesian Fourier×Fourier grid.
+"""
+function spectralTransform!(grid::_2DCartesianLL)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+"""
+    gridTransform(grid::_2DCartesianLL, physical, spectral)
+
+Inverse transform (5 slots [f, ∂i, ∂²i, ∂j, ∂²j]). Step 1: i-direction inverse
+per j-mode into `buffer[iDim, b_jDim]`. Step 2: j-direction inverse per i
+gridpoint into the physical slots.
+"""
+function gridTransform(
+        grid     :: _2DCartesianLL,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    nvars  = size(spectral, 2)
+    buffer    = zeros(Float64, iDim, b_jDim)
+    scratch_i = zeros(Float64, iDim)
+
+    for v in 1:nvars
+        for dr in 0:2
+            iring = grid.ibasis.data[v]
+            for l in 1:b_jDim
+                r1 = (l-1)*b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                copyto!(iring.b, view(spectral, r1:r2, v))
+                FAtransform!(iring)
+                if dr == 0
+                    FItransform!(iring)
+                    @inbounds for r in 1:iDim
+                        buffer[r, l] = iring.uMish[r]
+                    end
+                elseif dr == 1
+                    FIxtransform(iring, scratch_i)
+                    @inbounds for r in 1:iDim
+                        buffer[r, l] = scratch_i[r]
+                    end
+                else
+                    FIxxtransform(iring, scratch_i)
+                    @inbounds for r in 1:iDim
+                        buffer[r, l] = scratch_i[r]
+                    end
+                end
+            end
+
+            jring = grid.jbasis.data[v]
+            for r in 1:iDim
+                @inbounds for l in 1:b_jDim
+                    jring.b[l] = buffer[r, l]
+                end
+                FAtransform!(jring)
+                FItransform!(jring)
+                l1 = (r-1)*jDim + 1
+                l2 = l1 + jDim - 1
+                if dr == 0
+                    copyto!(view(physical, l1:l2, v, 1), jring.uMish)
+                    # Reuse jring.uMish as scratch — its prior content was just copied.
+                    FIxtransform(jring, jring.uMish)
+                    copyto!(view(physical, l1:l2, v, 4), jring.uMish)
+                    FIxxtransform(jring, jring.uMish)
+                    copyto!(view(physical, l1:l2, v, 5), jring.uMish)
+                elseif dr == 1
+                    copyto!(view(physical, l1:l2, v, 2), jring.uMish)
+                else
+                    copyto!(view(physical, l1:l2, v, 3), jring.uMish)
+                end
+            end
+        end
+    end
+    return physical
+end
+
+"""
+    gridTransform!(grid::_2DCartesianLL)
+
+In-place inverse transform for a 2-D Cartesian Fourier×Fourier grid (5 slots).
+"""
+function gridTransform!(grid::_2DCartesianLL)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
+"""
+    getRegularGridpoints(grid::_2DCartesianLL) -> Matrix{Float64}
+
+Return an `(i_regular_out × j_regular_out, 2)` matrix of evenly-spaced `(x, y)`
+coordinates across the doubly-periodic domain; y varies fastest.
+"""
+function getRegularGridpoints(grid::_2DCartesianLL)
+    n_i   = grid.params.i_regular_out
+    n_j   = grid.params.j_regular_out
+    x0    = grid.params.iMin
+    y0    = grid.params.jMin
+    i_pts = [x0 + 2π * (i - 1) / n_i for i in 1:n_i]
+    j_pts = [y0 + 2π * (j - 1) / n_j for j in 1:n_j]
+    pts   = zeros(Float64, n_i * n_j, 2)
+    idx   = 1
+    for i in 1:n_i
+        for j in 1:n_j
+            pts[idx, 1] = i_pts[i]
+            pts[idx, 2] = j_pts[j]
+            idx += 1
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_2DCartesianLL, i_pts, j_pts) -> Array{Float64}
+    regularGridTransform(grid::_2DCartesianLL, gridpoints)   -> Array{Float64}
+
+Evaluate the spectral representation on a regular `x × y` grid, returning values
+and all five derivatives. Output shape `(n_i × n_j, nvars, 5)`, y varies fastest.
+"""
+function regularGridTransform(grid::_2DCartesianLL,
+                               i_pts::AbstractVector{Float64},
+                               j_pts::AbstractVector{Float64})
+    gp     = grid.params
+    b_iDim = gp.b_iDim
+    b_jDim = gp.b_jDim
+    nvars  = length(gp.vars)
+    n_i    = length(i_pts)
+    n_j    = length(j_pts)
+    i_vec  = collect(Float64, i_pts)
+    j_vec  = collect(Float64, j_pts)
+
+    physical = zeros(Float64, n_i * n_j, nvars, 5)
+
+    for v in 1:length(gp.vars)
+        ibuf  = zeros(Float64, n_i, b_jDim)
+        iring = grid.ibasis.data[v]
+        jring = grid.jbasis.data[v]
+        for dr in 0:2
+            for l in 1:b_jDim
+                r1 = (l - 1) * b_iDim + 1
+                r2 = r1 + b_iDim - 1
+                iring.b .= view(grid.spectral, r1:r2, v)
+                _fourier_eval!(iring, i_vec, dr, view(ibuf, :, l))
+            end
+
+            dj_range = (dr == 0) ? (0:2) : (0:0)
+            for dj in dj_range
+                slot = _rz_slot(dr, dj)
+                slot == 0 && continue
+                for xi in 1:n_i
+                    for l in 1:b_jDim
+                        jring.b[l] = ibuf[xi, l]
+                    end
+                    flat = (xi - 1) * n_j + 1
+                    _fourier_eval!(jring, j_vec, dj,
+                                   view(physical, flat:flat + n_j - 1, v, slot))
+                end
+            end
+        end
+    end
+    return physical
+end
+
+function regularGridTransform(grid::_2DCartesianLL, gridpoints::AbstractMatrix{Float64})
+    i_pts = sort(unique(gridpoints[:, 1]))
+    j_pts = sort(unique(gridpoints[:, 2]))
+    return regularGridTransform(grid, i_pts, j_pts)
+end
+
+# ───────────────────────────────────────────────────────────────────────────
+# LLZ — 3D Cartesian Fourier×Fourier×Chebyshev (doubly-periodic + vertical)
+# Mirrors the ZZZ/RRR inverse structure (BUG-2/BUG-3 fixes) with i,j Fourier and
+# the k-axis Chebyshev.
+# ───────────────────────────────────────────────────────────────────────────
+
+"""
+    getGridpoints(grid::_3DCartesianLLZ) -> Matrix{Float64}
+
+Return a `(iDim*jDim*kDim, 3)` matrix of `(x, y, z)` coordinates; k varies fastest,
+then j, then i: `(r-1)*jDim*kDim + (l-1)*kDim + z`.
+"""
+function getGridpoints(grid::_3DCartesianLLZ)
+    iDim = grid.params.iDim
+    jDim = grid.params.jDim
+    kDim = grid.params.kDim
+    pts  = zeros(Float64, iDim * jDim * kDim, 3)
+    g = 1
+    for r in 1:iDim
+        xi = grid.ibasis.data[1].mishPoints[r]
+        for l in 1:jDim
+            yj = grid.jbasis.data[1].mishPoints[l]
+            for z in 1:kDim
+                zk = grid.kbasis.data[1].mishPoints[z]
+                pts[g, 1] = xi
+                pts[g, 2] = yj
+                pts[g, 3] = zk
+                g += 1
+            end
+        end
+    end
+    return pts
+end
+
+"""
+    spectralTransform(grid::_3DCartesianLLZ, physical, spectral)
+
+Forward transform: k-direction `CBtransform!` first, then j (`FBtransform!`), then
+i (`FBtransform!`). Spectral layout z-major: `(z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1`.
+"""
+function spectralTransform(
+        grid     :: _3DCartesianLLZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    kDim   = grid.params.kDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    b_kDim = grid.params.b_kDim
+    tempck = zeros(Float64, b_kDim, iDim, jDim)
+    tempjb = zeros(Float64, b_jDim, b_kDim, iDim)
+
+    for v in 1:size(spectral, 2)
+        # Step 1: k-direction (Chebyshev) transform for each (r, l) gridpoint
+        kcol = grid.kbasis.data[v]
+        for r in 1:iDim
+            for l in 1:jDim
+                @inbounds for z in 1:kDim
+                    kcol.uMish[z] = physical[(r-1)*jDim*kDim + (l-1)*kDim + z, v, 1]
+                end
+                CBtransform!(kcol)
+                @inbounds for k in 1:b_kDim
+                    tempck[k, r, l] = kcol.b[k]
+                end
+            end
+        end
+
+        # Step 2: j-direction (Fourier) transform for each (r, z_coeff)
+        jring = grid.jbasis.data[v]
+        for z in 1:b_kDim
+            for r in 1:iDim
+                @inbounds for l in 1:jDim
+                    jring.uMish[l] = tempck[z, r, l]
+                end
+                FBtransform!(jring)
+                @inbounds for k in 1:b_jDim
+                    tempjb[k, z, r] = jring.b[k]
+                end
+            end
+        end
+
+        # Step 3: i-direction (Fourier) transform for each (l_coeff, z_coeff)
+        iring = grid.ibasis.data[v]
+        for z in 1:b_kDim
+            for l in 1:b_jDim
+                @inbounds for r in 1:iDim
+                    iring.uMish[r] = tempjb[l, z, r]
+                end
+                FBtransform!(iring)
+                idx = (z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1
+                @inbounds for k in 0:(b_iDim - 1)
+                    spectral[idx + k, v] = iring.b[k + 1]
+                end
+            end
+        end
+    end
+    return spectral
+end
+
+"""
+    spectralTransform!(grid::_3DCartesianLLZ)
+
+In-place forward transform for a 3-D Cartesian Fourier×Fourier×Chebyshev grid.
+"""
+function spectralTransform!(grid::_3DCartesianLLZ)
+    _filter_mish!(grid)
+    spectralTransform(grid, grid.physical, grid.spectral)
+    applyFilter!(grid)
+    return grid.spectral
+end
+
+"""
+    gridTransform(grid::_3DCartesianLLZ, physical, spectral)
+
+Inverse transform (7 slots): i-direction (Fourier) first, then j (Fourier), then k
+(Chebyshev). The k-transform is nested inside the r-loop (BUG-3 fix) and the
+j-derivative slots are computed via a separate k-inverse pass (BUG-2 fix).
+"""
+function gridTransform(
+        grid     :: _3DCartesianLLZ,
+        physical :: Array{real},
+        spectral :: Array{real})
+    iDim   = grid.params.iDim
+    jDim   = grid.params.jDim
+    kDim   = grid.params.kDim
+    b_iDim = grid.params.b_iDim
+    b_jDim = grid.params.b_jDim
+    b_kDim = grid.params.b_kDim
+
+    buffer_r     = zeros(Float64, iDim, b_jDim, b_kDim)
+    buffer_l     = zeros(Float64, jDim, b_kDim)
+    buffer_l_1st = zeros(Float64, jDim, b_kDim)
+    buffer_l_2nd = zeros(Float64, jDim, b_kDim)
+    scratch_i    = zeros(Float64, iDim)
+    scratch_j    = zeros(Float64, jDim)
+
+    for v in 1:size(spectral, 2)
+        for dr in 0:2
+            # ── Step 1: i-direction (Fourier) inverse transform ───────────────
+            iring = grid.ibasis.data[v]
+            for z in 1:b_kDim
+                for l in 1:b_jDim
+                    idx = (z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1
+                    copyto!(iring.b, view(spectral, idx:idx+b_iDim-1, v))
+                    FAtransform!(iring)
+                    if dr == 0
+                        FItransform!(iring)
+                        @inbounds for r in 1:iDim
+                            buffer_r[r, l, z] = iring.uMish[r]
+                        end
+                    elseif dr == 1
+                        FIxtransform(iring, scratch_i)
+                        @inbounds for r in 1:iDim
+                            buffer_r[r, l, z] = scratch_i[r]
+                        end
+                    else
+                        FIxxtransform(iring, scratch_i)
+                        @inbounds for r in 1:iDim
+                            buffer_r[r, l, z] = scratch_i[r]
+                        end
+                    end
+                end
+            end
+
+            # ── Steps 2+3: j (Fourier) and k (Chebyshev), k nested in r-loop ──
+            for r in 1:iDim
+                jring = grid.jbasis.data[v]
+                for z in 1:b_kDim
+                    @inbounds for l in 1:b_jDim
+                        jring.b[l] = buffer_r[r, l, z]
+                    end
+                    FAtransform!(jring)
+                    FItransform!(jring)
+                    @inbounds for l in 1:jDim
+                        buffer_l[l, z] = jring.uMish[l]
+                    end
+
+                    if dr == 0
+                        FIxtransform(jring, scratch_j)
+                        @inbounds for l in 1:jDim
+                            buffer_l_1st[l, z] = scratch_j[l]
+                        end
+                        FIxxtransform(jring, scratch_j)
+                        @inbounds for l in 1:jDim
+                            buffer_l_2nd[l, z] = scratch_j[l]
+                        end
+                    end
+                end
+
+                kcol = grid.kbasis.data[v]
+                for l in 1:jDim
+                    @inbounds for zb in 1:b_kDim
+                        kcol.b[zb] = buffer_l[l, zb]
+                    end
+                    CAtransform!(kcol)
+                    CItransform!(kcol)
+
+                    i_flat     = (r-1)*jDim*kDim + (l-1)*kDim + 1
+                    i_flat_end = i_flat + kDim - 1
+                    if dr == 0
+                        copyto!(view(physical, i_flat:i_flat_end, v, 1), kcol.uMish)
+                        # Reuse kcol.uMish — its prior content was just copied above.
+                        CIxtransform(kcol, kcol.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 6), kcol.uMish)
+                        CIxxtransform(kcol, kcol.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 7), kcol.uMish)
+
+                        # BUG-2 fix: j-derivative slots via k-inverse of j-deriv coeffs
+                        @inbounds for zb in 1:b_kDim
+                            kcol.b[zb] = buffer_l_1st[l, zb]
+                        end
+                        CAtransform!(kcol)
+                        CItransform!(kcol)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 4), kcol.uMish)
+
+                        @inbounds for zb in 1:b_kDim
+                            kcol.b[zb] = buffer_l_2nd[l, zb]
+                        end
+                        CAtransform!(kcol)
+                        CItransform!(kcol)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 5), kcol.uMish)
+                    elseif dr == 1
+                        copyto!(view(physical, i_flat:i_flat_end, v, 2), kcol.uMish)
+                    else
+                        copyto!(view(physical, i_flat:i_flat_end, v, 3), kcol.uMish)
+                    end
+                end
+            end  # for r
+        end  # for dr
+    end  # for v
+    return physical
+end
+
+"""
+    gridTransform!(grid::_3DCartesianLLZ)
+
+In-place inverse transform for a 3-D Cartesian Fourier×Fourier×Chebyshev grid (7 slots).
+"""
+function gridTransform!(grid::_3DCartesianLLZ)
+    gridTransform(grid, grid.physical, grid.spectral)
+    return grid.physical
+end
+
+"""
+    getRegularGridpoints(grid::_3DCartesianLLZ) -> Matrix{Float64}
+
+Return an `(i_regular_out × j_regular_out × k_regular_out, 3)` matrix of `(x, y, z)`
+coordinates: x, y evenly spaced across the periodic domain, z uniform in `[kMin, kMax]`;
+z varies fastest, then y, then x.
+"""
+function getRegularGridpoints(grid::_3DCartesianLLZ)
+    n_x   = grid.params.i_regular_out
+    n_y   = grid.params.j_regular_out
+    n_z   = grid.params.k_regular_out
+    x0    = grid.params.iMin
+    y0    = grid.params.jMin
+    x_pts = [x0 + 2π * (i - 1) / n_x for i in 1:n_x]
+    y_pts = [y0 + 2π * (j - 1) / n_y for j in 1:n_y]
+    z_pts = collect(LinRange(grid.params.kMin, grid.params.kMax, n_z))
+    pts   = zeros(Float64, n_x * n_y * n_z, 3)
+    idx   = 1
+    for i in 1:n_x
+        for j in 1:n_y
+            for k in 1:n_z
+                pts[idx, 1] = x_pts[i]
+                pts[idx, 2] = y_pts[j]
+                pts[idx, 3] = z_pts[k]
+                idx += 1
+            end
+        end
+    end
+    return pts
+end
+
+"""
+    regularGridTransform(grid::_3DCartesianLLZ, x_pts, y_pts, z_pts) -> Array{Float64}
+    regularGridTransform(grid::_3DCartesianLLZ, gridpoints)           -> Array{Float64}
+
+Evaluate the spectral representation on a regular `x × y × z` grid. Output shape
+`(n_x × n_y × n_z, nvars, 7)`, z varies fastest. Slots follow the RRR convention.
+"""
+function regularGridTransform(grid::_3DCartesianLLZ,
+                               x_pts::AbstractVector{Float64},
+                               y_pts::AbstractVector{Float64},
+                               z_pts::AbstractVector{Float64})
+    gp     = grid.params
+    b_iDim = gp.b_iDim
+    b_jDim = gp.b_jDim
+    b_kDim = gp.b_kDim
+    nvars  = length(gp.vars)
+    n_x    = length(x_pts)
+    n_y    = length(y_pts)
+    n_z    = length(z_pts)
+    x_vec  = collect(Float64, x_pts)
+    y_vec  = collect(Float64, y_pts)
+    z_vec  = collect(Float64, z_pts)
+
+    physical = zeros(Float64, n_x * n_y * n_z, nvars, 7)
+
+    for v in 1:length(gp.vars)
+        iring = grid.ibasis.data[v]
+        jring = grid.jbasis.data[v]
+        for dr in 0:2
+            # ── Step 1: i-direction Fourier evaluation at x_pts ──────────────
+            ibuf = zeros(Float64, n_x, b_jDim, b_kDim)
+            for l in 1:b_jDim
+                for z_b in 1:b_kDim
+                    idx = (z_b - 1) * b_jDim * b_iDim + (l - 1) * b_iDim + 1
+                    iring.b .= view(grid.spectral, idx:idx + b_iDim - 1, v)
+                    _fourier_eval!(iring, x_vec, dr, view(ibuf, :, l, z_b))
+                end
+            end
+
+            # ── Steps 2 & 3: j (Fourier) and k (Chebyshev) evaluations ───────
+            dl_range = (dr == 0) ? (0:2) : (0:0)
+            for dl in dl_range
+                jbuf = zeros(Float64, n_x, n_y, b_kDim)
+                for xi in 1:n_x
+                    for z_b in 1:b_kDim
+                        for l in 1:b_jDim
+                            jring.b[l] = ibuf[xi, l, z_b]
+                        end
+                        _fourier_eval!(jring, y_vec, dl, view(jbuf, xi, :, z_b))
+                    end
+                end
+
+                dk_range = (dr == 0 && dl == 0) ? (0:2) : (0:0)
+                for dk in dk_range
+                    slot = _rrr_regular_slot(dr, dl, dk)
+                    slot == 0 && continue
+                    kcol = grid.kbasis.data[v]
+                    for xi in 1:n_x
+                        for yj in 1:n_y
+                            for z_b in 1:b_kDim
+                                kcol.b[z_b] = jbuf[xi, yj, z_b]
+                            end
+                            CAtransform!(kcol)
+                            flat = (xi - 1) * n_y * n_z + (yj - 1) * n_z + 1
+                            out  = view(physical, flat:flat + n_z - 1, v, slot)
+                            if dk == 0
+                                _cheb_eval_pts!(kcol, z_vec, out)
+                            elseif dk == 1
+                                _cheb_dz_pts!(kcol, z_vec, out)
+                            else
+                                _cheb_dzz_pts!(kcol, z_vec, out)
+                            end
+                        end
+                    end
+                end
+            end
+        end   # dr
+    end   # v
+    return physical
+end
+
+function regularGridTransform(grid::_3DCartesianLLZ, gridpoints::AbstractMatrix{Float64})
+    x_pts = sort(unique(gridpoints[:, 1]))
+    y_pts = sort(unique(gridpoints[:, 2]))
+    z_pts = sort(unique(gridpoints[:, 3]))
+    return regularGridTransform(grid, x_pts, y_pts, z_pts)
+end

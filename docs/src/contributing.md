@@ -240,10 +240,10 @@ a simple product formula.
 |:-----|:-----------------------|:------|
 | `R`   | `physical[r, v, d]`               | direct |
 | `RL`  | running: `l1 = l2+1; l2 = l1+3+4*ri` | variable rings |
-| `RR`  | `flat = (r-1)*jDim + l`             | regular |
+| `RR` / `LL` | `flat = (r-1)*jDim + l`        | regular |
 | `RZ`  | `flat = (r-1)*kDim + z`             | regular |
 | `RLZ` | running: accumulate `lpoints * b_kDim` per ring | variable rings |
-| `RRR` | `flat = (r-1)*jDim*kDim + (l-1)*kDim + z` | regular |
+| `RRR` / `LLZ` | `flat = (r-1)*jDim*kDim + (l-1)*kDim + z` | regular |
 
 Don't generalise these.
 
@@ -302,11 +302,14 @@ produces wrong results.
 | Grid  | Stage order |
 |:------|:------------|
 | `R`   | SBtransform |
+| `L`   | FBtransform |
 | `RL`  | FBtransform per ring → SBtransform per wavenumber |
 | `RR`  | SBtransform in j (per i) → SBtransform in i (per j) |
+| `LL`  | FBtransform in j (per i) → FBtransform in i (per j) |
 | `RZ`  | CBtransform per column → SBtransform per z-coefficient |
 | `RLZ` | CBtransform per column → FBtransform per ring×z → SBtransform per wavenumber×z |
 | `RRR` | SBtransform k → SBtransform j → SBtransform i |
+| `LLZ` | CBtransform k → FBtransform j → FBtransform i |
 | `SL`  | FBtransform per sin(θ) ring → SBtransform per wavenumber |
 | `SLZ` | CBtransform per column → FBtransform per ring×z → SBtransform per wavenumber×z |
 
