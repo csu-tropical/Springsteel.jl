@@ -2723,6 +2723,211 @@
     end  # Pure-Chebyshev Cartesian Transforms
 
     # ────────────────────────────────────────────────────────────────────────
+    # Fourier Cartesian Transforms (L / LL / LLZ)
+    # ────────────────────────────────────────────────────────────────────────
+
+    @testset "Fourier Cartesian Transforms" begin
+
+        @testset "L getGridpoints" begin
+            gp = SpringsteelGridParameters(
+                geometry = "L",
+                iMin = 0.0, iMax = 2π, iDim = 32, b_iDim = 13,
+                BCL = Dict("u" => Fourier.PERIODIC), BCR = Dict("u" => Fourier.PERIODIC),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            pts = getGridpoints(grid)
+            @test length(pts) == gp.iDim
+            @test pts[1] ≈ gp.iMin
+            @test all(diff(pts) .> 0)
+        end
+
+        @testset "L roundtrip + derivatives (band-limited)" begin
+            gp = SpringsteelGridParameters(
+                geometry = "L",
+                iMin = 0.0, iMax = 2π, iDim = 32, b_iDim = 13,
+                BCL = Dict("u" => Fourier.PERIODIC), BCR = Dict("u" => Fourier.PERIODIC),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            pts = getGridpoints(grid)
+            f(x)   = cos(2x) + sin(3x)
+            fx(x)  = -2sin(2x) + 3cos(3x)
+            fxx(x) = -4cos(2x) - 9sin(3x)
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = f(pts[i])
+            end
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-8
+            gridTransform!(grid)
+            @test maximum(abs.(grid.physical[:, 1, 1] .- f.(pts)))   < 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 2] .- fx.(pts)))  < 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 3] .- fxx.(pts))) < 1e-10
+        end
+
+        @testset "L regular grid (with iMin offset)" begin
+            # iMin ≠ 0 exercises the absolute-angle convention in regular-grid eval.
+            gp = SpringsteelGridParameters(
+                geometry = "L",
+                iMin = 1.0, iMax = 1.0 + 2π, iDim = 32, b_iDim = 13,
+                BCL = Dict("u" => Fourier.PERIODIC), BCR = Dict("u" => Fourier.PERIODIC),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            pts = getGridpoints(grid)
+            f(x)  = cos(2x) + sin(3x)
+            fx(x) = -2sin(2x) + 3cos(3x)
+            for i in eachindex(pts)
+                grid.physical[i, 1, 1] = f(pts[i])
+            end
+            spectralTransform!(grid)
+            rpts = getRegularGridpoints(grid)
+            @test length(rpts) == grid.params.i_regular_out
+            @test rpts[1] ≈ gp.iMin
+            rphys = regularGridTransform(grid, rpts)
+            @test size(rphys) == (length(rpts), 1, 3)
+            @test maximum(abs.(rphys[:, 1, 1] .- f.(rpts)))  < 1e-9
+            @test maximum(abs.(rphys[:, 1, 2] .- fx.(rpts))) < 1e-9
+        end
+
+        @testset "LL roundtrip + derivative slots" begin
+            gp = SpringsteelGridParameters(
+                geometry = "LL",
+                iMin = 0.0, iMax = 2π, iDim = 24, b_iDim = 11,
+                jMin = 0.0, jMax = 2π, jDim = 20, b_jDim = 9,
+                BCL = Dict("u" => Fourier.PERIODIC), BCR = Dict("u" => Fourier.PERIODIC),
+                BCD = Dict("u" => Fourier.PERIODIC), BCU = Dict("u" => Fourier.PERIODIC),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            iDim, jDim = gp.iDim, gp.jDim
+            f(x, y)   = cos(2x) * sin(y)
+            fx(x, y)  = -2sin(2x) * sin(y)
+            fxx(x, y) = -4cos(2x) * sin(y)
+            fy(x, y)  = cos(2x) * cos(y)
+            fyy(x, y) = -cos(2x) * sin(y)
+            xi = grid.ibasis.data[1].mishPoints
+            yj = grid.jbasis.data[1].mishPoints
+            for r in 1:iDim, l in 1:jDim
+                grid.physical[(r-1)*jDim + l, 1, 1] = f(xi[r], yj[l])
+            end
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-8
+            gridTransform!(grid)
+            @test size(grid.physical, 3) == 5
+            mk(g) = [g(xi[r], yj[l]) for r in 1:iDim for l in 1:jDim]
+            @test maximum(abs.(grid.physical[:, 1, 1] .- mk(f)))   < 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 2] .- mk(fx)))  < 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 3] .- mk(fxx))) < 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 4] .- mk(fy)))  < 1e-10
+            @test maximum(abs.(grid.physical[:, 1, 5] .- mk(fyy))) < 1e-10
+        end
+
+        @testset "LL getGridpoints + regular grid" begin
+            gp = SpringsteelGridParameters(
+                geometry = "LL",
+                iMin = 0.0, iMax = 2π, iDim = 20, b_iDim = 9,
+                jMin = 0.0, jMax = 2π, jDim = 18, b_jDim = 9,
+                BCL = Dict("u" => Fourier.PERIODIC), BCR = Dict("u" => Fourier.PERIODIC),
+                BCD = Dict("u" => Fourier.PERIODIC), BCU = Dict("u" => Fourier.PERIODIC),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            iDim, jDim = gp.iDim, gp.jDim
+            f(x, y)  = sin(x) * cos(2y)
+            fy(x, y) = -2 * sin(x) * sin(2y)
+            xi = grid.ibasis.data[1].mishPoints
+            yj = grid.jbasis.data[1].mishPoints
+            pts = getGridpoints(grid)
+            @test size(pts) == (iDim * jDim, 2)
+            for r in 1:iDim, l in 1:jDim
+                grid.physical[(r-1)*jDim + l, 1, 1] = f(xi[r], yj[l])
+            end
+            spectralTransform!(grid)
+            rpts = getRegularGridpoints(grid)
+            @test size(rpts) == (grid.params.i_regular_out * grid.params.j_regular_out, 2)
+            rphys = regularGridTransform(grid, rpts)
+            @test size(rphys) == (size(rpts, 1), 1, 5)
+            rval = [f(rpts[i, 1], rpts[i, 2]) for i in 1:size(rpts, 1)]
+            rdy  = [fy(rpts[i, 1], rpts[i, 2]) for i in 1:size(rpts, 1)]
+            @test maximum(abs.(rphys[:, 1, 1] .- rval)) < 1e-9
+            @test maximum(abs.(rphys[:, 1, 4] .- rdy))  < 1e-9
+            rphys_mat = regularGridTransform(grid, rpts)
+            @test maximum(abs.(rphys_mat[:, 1, 1] .- rphys[:, 1, 1])) < 1e-12
+        end
+
+        @testset "LLZ roundtrip + derivative slots" begin
+            gp = SpringsteelGridParameters(
+                geometry = "LLZ",
+                iMin = 0.0, iMax = 2π, iDim = 20, b_iDim = 9,
+                jMin = 0.0, jMax = 2π, jDim = 18, b_jDim = 9,
+                kMin = 0.0, kMax = 2.0, kDim = 6, b_kDim = 6,
+                BCL = Dict("u" => Fourier.PERIODIC), BCR = Dict("u" => Fourier.PERIODIC),
+                BCD = Dict("u" => Fourier.PERIODIC), BCU = Dict("u" => Fourier.PERIODIC),
+                BCB = Dict("u" => Chebyshev.R0), BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            iDim, jDim, kDim = gp.iDim, gp.jDim, gp.kDim
+            f(x, y, z)   = cos(2x) * sin(y) + z^2
+            fx(x, y, z)  = -2sin(2x) * sin(y)
+            fxx(x, y, z) = -4cos(2x) * sin(y)
+            fy(x, y, z)  = cos(2x) * cos(y)
+            fyy(x, y, z) = -cos(2x) * sin(y)
+            fz(x, y, z)  = 2z
+            fzz(x, y, z) = 2.0
+            xi = grid.ibasis.data[1].mishPoints
+            yj = grid.jbasis.data[1].mishPoints
+            zk = grid.kbasis.data[1].mishPoints
+            flat(r, l, z) = (r-1)*jDim*kDim + (l-1)*kDim + z
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                grid.physical[flat(r, l, z), 1, 1] = f(xi[r], yj[l], zk[z])
+            end
+            spectralTransform!(grid)
+            @test maximum(abs.(grid.spectral[:, 1])) > 1e-8
+            gridTransform!(grid)
+            @test size(grid.physical, 3) == 7
+            mk(g) = [g(xi[r], yj[l], zk[z]) for r in 1:iDim for l in 1:jDim for z in 1:kDim]
+            @test maximum(abs.(grid.physical[:, 1, 1] .- mk(f)))   < 1e-8
+            @test maximum(abs.(grid.physical[:, 1, 2] .- mk(fx)))  < 1e-8
+            @test maximum(abs.(grid.physical[:, 1, 3] .- mk(fxx))) < 1e-8
+            @test maximum(abs.(grid.physical[:, 1, 4] .- mk(fy)))  < 1e-8
+            @test maximum(abs.(grid.physical[:, 1, 5] .- mk(fyy))) < 1e-8
+            @test maximum(abs.(grid.physical[:, 1, 6] .- mk(fz)))  < 1e-8
+            @test maximum(abs.(grid.physical[:, 1, 7] .- mk(fzz))) < 1e-8
+        end
+
+        @testset "LLZ getGridpoints + regular grid" begin
+            gp = SpringsteelGridParameters(
+                geometry = "LLZ",
+                iMin = 0.0, iMax = 2π, iDim = 16, b_iDim = 9,
+                jMin = 0.0, jMax = 2π, jDim = 16, b_jDim = 9,
+                kMin = 0.0, kMax = 2.0, kDim = 6, b_kDim = 6,
+                BCL = Dict("u" => Fourier.PERIODIC), BCR = Dict("u" => Fourier.PERIODIC),
+                BCD = Dict("u" => Fourier.PERIODIC), BCU = Dict("u" => Fourier.PERIODIC),
+                BCB = Dict("u" => Chebyshev.R0), BCT = Dict("u" => Chebyshev.R0),
+                vars = Dict("u" => 1))
+            grid = createGrid(gp)
+            iDim, jDim, kDim = gp.iDim, gp.jDim, gp.kDim
+            f(x, y, z)  = cos(x) * cos(y) + z^2
+            fz(x, y, z) = 2z
+            xi = grid.ibasis.data[1].mishPoints
+            yj = grid.jbasis.data[1].mishPoints
+            zk = grid.kbasis.data[1].mishPoints
+            flat(r, l, z) = (r-1)*jDim*kDim + (l-1)*kDim + z
+            pts = getGridpoints(grid)
+            @test size(pts) == (iDim * jDim * kDim, 3)
+            for r in 1:iDim, l in 1:jDim, z in 1:kDim
+                grid.physical[flat(r, l, z), 1, 1] = f(xi[r], yj[l], zk[z])
+            end
+            spectralTransform!(grid)
+            rpts = getRegularGridpoints(grid)
+            @test size(rpts) == (grid.params.i_regular_out * grid.params.j_regular_out * grid.params.k_regular_out, 3)
+            rphys = regularGridTransform(grid, rpts)
+            @test size(rphys) == (size(rpts, 1), 1, 7)
+            rval = [f(rpts[i, 1], rpts[i, 2], rpts[i, 3]) for i in 1:size(rpts, 1)]
+            rdz  = [fz(rpts[i, 1], rpts[i, 2], rpts[i, 3]) for i in 1:size(rpts, 1)]
+            @test maximum(abs.(rphys[:, 1, 1] .- rval)) < 1e-8
+            @test maximum(abs.(rphys[:, 1, 6] .- rdz))  < 1e-7
+        end
+
+    end  # Fourier Cartesian Transforms
+
+    # ────────────────────────────────────────────────────────────────────────
     # SpringsteelGrid Tiling
     # ────────────────────────────────────────────────────────────────────────
 
