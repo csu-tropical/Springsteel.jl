@@ -40,7 +40,8 @@ export sat_pressure_liquid, sat_pressure_ice, sat_pressure_liquid_buck,
     sat_pressure_liquid_buck_dT, sat_pressure_ice_buck, q_sat_liquid, q_sat_ice,
     L_v, dewpoint, entropy, vapor_entropy, temperature, pressure, vapor_pressure,
     mixing_ratio, dry_density, log_dry_density, P_s, P_xi, P_qv, P_rhod, P_rhov,
-    potential_temperature, reversible_theta_e, theta_rho
+    potential_temperature, reversible_theta_e, theta_rho,
+    rho_v_sat, internal_energy_bf02
 
 # Constants from Emanuel (1994)
 const Rd = 287.04
@@ -302,6 +303,31 @@ function q_sat_ice(Tk::Float64, phPa::Float64)
     ei = sat_pressure_ice_buck(Tk,phPa)
     q_sat = Eps * ei / (phPa - ei)
     return q_sat
+end
+
+"""
+    rho_v_sat(Tk, phPa)
+
+Saturation vapor density over liquid water [kg/m³], ρ_v* = e*/(R_v T) with the Buck
+(1981) saturation vapor pressure (pressure-enhanced, e* converted from hPa to Pa).
+For saturated air this equals `rho_d * q_sat_liquid(Tk, phPa)` identically.
+"""
+function rho_v_sat(Tk::Float64, phPa::Float64)
+
+    return 100.0 * sat_pressure_liquid_buck(Tk, phPa) / (Rv * Tk)
+end
+
+"""
+    internal_energy_bf02(Tk, q_v, q_l)
+
+Moist internal energy per unit mass of dry air [J/kg] in the Bryan & Fritsch (2002)
+convention: e_i = (C_vd + q_v C_vv + q_l C_pv) T − L_v(T) q_l. Energies are referenced
+to vapor, so liquid carries u_l = C_pv T − L_v(T) (negative); the internal energy of
+vaporization is u_v − u_l = L_v − R_v T.
+"""
+function internal_energy_bf02(Tk::Float64, q_v::Float64, q_l::Float64)
+
+    return ((Cvd + (q_v * Cvv) + (q_l * Cpv)) * Tk) - (L_v(Tk) * q_l)
 end
 
 """

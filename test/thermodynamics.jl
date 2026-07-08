@@ -83,4 +83,20 @@
         @test isfinite(reversible_theta_e(s, rho_d, q_v, 0.0))
         @test reversible_theta_e(s, rho_d, q_v, 0.0) > 0.0
     end
+
+    @testset "rho_v_sat and internal_energy_bf02" begin
+        # Saturated air: rho_d*q_sat == rho_v_sat identically (algebra of the Buck forms)
+        for (Tk, p) in ((300.0, 1000.0), (270.0, 700.0), (240.0, 400.0))
+            ew = sat_pressure_liquid_buck(Tk, p)
+            rho_d = 100.0 * (p - ew) / (Rd * Tk)
+            @test rho_d * q_sat_liquid(Tk, p) ≈ rho_v_sat(Tk, p) rtol = 1e-14
+        end
+        # Dry limit: e_i = Cvd*T
+        @test internal_energy_bf02(280.0, 0.0, 0.0) ≈ Cvd * 280.0
+        # Internal energy of vaporization: ∂e_i/∂q_v − ∂e_i/∂q_l = L_v − Rv*T
+        Tk = 285.0
+        dv = internal_energy_bf02(Tk, 1.0, 0.0) - internal_energy_bf02(Tk, 0.0, 0.0)
+        dl = internal_energy_bf02(Tk, 0.0, 1.0) - internal_energy_bf02(Tk, 0.0, 0.0)
+        @test dv - dl ≈ L_v(Tk) - Rv * Tk rtol = 1e-12
+    end
 end

@@ -116,6 +116,74 @@
         @test nc isa Chebyshev.Chebyshev1D
     end
 
+    @testset "PressureReferenceState" begin
+        import Springsteel: ref_pressure, ref_rho_t, ref_total_energy, ref_qss
+
+        # -- exact builder: dry neutral column (analytic Exner hydrostatic) --
+        theta0 = 300.0
+        exner = @. 1.0 - gravity * z / (Cpd * theta0)
+        Tk_dry = theta0 .* exner
+        p_dry = @. 100000.0 * exner^(Cpd / Rd)          # Pa
+        rho_d_dry = p_dry ./ (Rd .* Tk_dry)
+        pfile = tempname()
+        open(pfile, "w") do io
+            for i in eachindex(z)
+                println(io, "$(z[i]) $(p_dry[i]) $(rho_d_dry[i]) 0.0 0.0")
+            end
+        end
+        rs = Springsteel.exact_pressure_reference_state(pfile, z, column)
+        @test rs isa PressureReferenceState
+        @test ref_pressure(rs) isa Matrix{Float64}
+        @test isapprox(ref_pressure(rs)[:, 1], p_dry; rtol=1e-8)
+        @test isapprox(ref_rho_t(rs)[:, 1], rho_d_dry; rtol=1e-8)
+        @test isapprox(reference_temperature(rs), Tk_dry; rtol=1e-8)   # EOS temperature
+        # Hydrostatic: dp/dz = -g*rho_t (interior; construction is analytic)
+        n = length(z); interior = 4:(n - 3)
+        res = ref_pressure(rs)[:, 2] .+ gravity .* ref_rho_t(rs)[:, 1]
+        @test maximum(abs.(res[interior])) / (gravity * maximum(rho_d_dry)) < 1e-6
+        # Dry air: Q_ssbar = -rho_v_sat < 0; E_t = rho_d*Cvd*T + rho_t*g*z
+        @test all(ref_qss(rs)[:, 1] .< 0.0)
+        E_expected = rho_d_dry .* (Cvd .* Tk_dry .+ gravity .* z)
+        @test isapprox(ref_total_energy(rs)[:, 1], E_expected; rtol=1e-8)
+        @test 250.0 < sqrt(sound_speed_sq(rs)) < 400.0
+        rm(pfile; force=true)
+
+        # -- exact builder: saturated cloudy column (Q_ssbar = 0 identically) --
+        Tk_m = @. 290.0 - 0.005 * z
+        p_m = @. 90000.0 * exp(-z / 8000.0)             # Pa (need not be hydrostatic here)
+        rho_v_m = rho_v_sat.(Tk_m, p_m ./ 100.0)
+        rho_d_m = (p_m .- (Rv .* Tk_m .* rho_v_m)) ./ (Rd .* Tk_m)
+        rho_c_m = 1.0e-3 .* rho_d_m
+        pfile2 = tempname()
+        open(pfile2, "w") do io
+            for i in eachindex(z)
+                println(io, "$(z[i]) $(p_m[i]) $(rho_d_m[i]) $(rho_v_m[i]) $(rho_c_m[i])")
+            end
+        end
+        rs2 = Springsteel.exact_pressure_reference_state(pfile2, z, column)
+        @test isapprox(reference_temperature(rs2), Tk_m; rtol=1e-8)
+        @test maximum(abs.(ref_qss(rs2)[:, 1])) < 1e-10    # saturated: Q_ss = 0 pointwise
+        @test isapprox(ref_rho_c(rs2)[:, 1], rho_c_m; rtol=1e-6)
+        q_v_m = rho_v_m ./ rho_d_m; q_l_m = rho_c_m ./ rho_d_m
+        E2 = rho_d_m .* internal_energy_bf02.(Tk_m, q_v_m, q_l_m) .+
+             (rho_d_m .+ rho_v_m .+ rho_c_m) .* gravity .* z
+        @test isapprox(ref_total_energy(rs2)[:, 1], E2; rtol=1e-8)
+        rm(pfile2; force=true)
+
+        # -- sounding builder: hydrostatic + monotone p --
+        rs3 = Springsteel.calculate_pressure_reference_state(moist_file, z, column)
+        @test rs3 isa PressureReferenceState
+        p3 = ref_pressure(rs3)[:, 1]
+        @test all(diff(p3) .< 0.0)                       # monotone decreasing
+        res3 = ref_pressure(rs3)[:, 2] .+ gravity .* ref_rho_t(rs3)[:, 1]
+        @test maximum(abs.(res3[interior])) / (gravity * maximum(ref_rho_t(rs3)[:, 1])) < 1e-3
+        # 10 g/kg is subsaturated at low levels but supersaturated in the cold upper
+        # column (constant-q_v fixture sounding), so only check the lowest levels
+        @test all(ref_qss(rs3)[1:8, 1] .< 0.0)
+        T3 = reference_temperature(rs3)
+        @test T3[1] > T3[end]
+    end
+
     rm(dry_file; force=true)
     rm(moist_file; force=true)
 end
