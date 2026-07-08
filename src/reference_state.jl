@@ -28,24 +28,26 @@ be added without changing the interface.
 abstract type AbstractReferenceState end
 
 """
-    DryReferenceState(sbar, rho_dbar, sound_speed_sq)
+    DryReferenceState(sbar, sigmabar, rho_dbar, sound_speed_sq)
 
-Dry hydrostatic reference: moist entropy and dry-air density profiles only.
+Dry hydrostatic reference: moist entropy, entropy density (σ̂ = ρ̂_d·ŝ), and dry-air density.
 """
 struct DryReferenceState <: AbstractReferenceState
     sbar::Matrix{Float64}        # moist entropy (q_v = 0) [J/(kg K)]
+    sigmabar::Matrix{Float64}    # entropy density rho_d*s [J/(K m^3)]
     rho_dbar::Matrix{Float64}    # dry-air density [kg/m^3]
     sound_speed_sq::Float64      # domain-mean speed of sound squared [m^2/s^2]
 end
 
 """
-    MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound_speed_sq)
+    MoistReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, satbar, sound_speed_sq)
 
 Moist (vapor-bearing, condensate-free) hydrostatic reference: adds the vapor partial
 density `rho_vbar` and the saturation-ratio profile `satbar` (`q_v / q_sat`, physical).
 """
 struct MoistReferenceState <: AbstractReferenceState
     sbar::Matrix{Float64}
+    sigmabar::Matrix{Float64}    # entropy density rho_d*s [J/(K m^3)]
     rho_dbar::Matrix{Float64}
     rho_vbar::Matrix{Float64}    # vapor partial density [kg/m^3]
     satbar::Matrix{Float64}      # saturation ratio q_v/q_sat
@@ -53,7 +55,7 @@ struct MoistReferenceState <: AbstractReferenceState
 end
 
 """
-    CondensateReferenceState(sbar, rho_dbar, rho_vbar, rho_cbar, satbar, sound_speed_sq)
+    CondensateReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, rho_cbar, satbar, sound_speed_sq)
 
 Condensate-bearing hydrostatic reference: adds the condensate partial density
 `rho_cbar`. Used for idealized saturated base states (e.g. the Bryan & Fritsch 2002
@@ -62,6 +64,7 @@ buoyant and the prognostic perturbation zero outside the disturbance.
 """
 struct CondensateReferenceState <: AbstractReferenceState
     sbar::Matrix{Float64}
+    sigmabar::Matrix{Float64}    # entropy density rho_d*s [J/(K m^3)]
     rho_dbar::Matrix{Float64}
     rho_vbar::Matrix{Float64}
     rho_cbar::Matrix{Float64}    # condensate partial density [kg/m^3]
@@ -80,6 +83,10 @@ ref_entropy(rs::AbstractReferenceState) = rs.sbar
 
 """Dry-air density reference profile `(nlevels, 3)` [kg/m^3]."""
 ref_rho_d(rs::AbstractReferenceState) = rs.rho_dbar
+
+"""Entropy-density reference profile `(nlevels, 3)` [J/(K m^3)], σ̂ = ρ̂_d·ŝ with the vertical
+derivative computed on the reference basis (spectrally consistent — do NOT product-rule it)."""
+ref_sigma(rs::AbstractReferenceState) = rs.sigmabar
 
 """Domain-mean speed of sound squared [m^2/s^2]."""
 sound_speed_sq(rs::AbstractReferenceState) = rs.sound_speed_sq
@@ -318,11 +325,12 @@ function calculate_reference_state(ref_state_file::AbstractString, z::Array{Floa
 
     # Assemble physical profiles with spectrally consistent derivatives
     sbar = _profile(column, s_new)
+    sigmabar = _profile(column, rho_d_new .* s_new)   # entropy density on the reference basis
     rho_dbar = _profile(column, rho_d_new)
     sound = _mean_sound_speed_sq(Tk_new, rho_d_new, q_v_new)
 
     if !moisture
-        return DryReferenceState(sbar, rho_dbar, sound)
+        return DryReferenceState(sbar, sigmabar, rho_dbar, sound)
     end
 
     rho_vbar = _profile(column, rho_d_new .* q_v_new)
@@ -332,7 +340,7 @@ function calculate_reference_state(ref_state_file::AbstractString, z::Array{Floa
     p_final = pressure.(s_new, rho_d_new, q_v_new)
     q_sat = q_sat_liquid.(Tk_new, p_final)
     satbar = _profile(column, q_v_new ./ q_sat)
-    return MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound)
+    return MoistReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, satbar, sound)
 end
 
 """
@@ -370,18 +378,20 @@ function interpolate_reference_state(ref_state_file::AbstractString, z::Array{Fl
         dlnpdz = -gravity * rho_t / (p[i] * 100.0)
     end
 
-    sbar = _profile(column, entropy.(Tk, rho_d, q_v))
+    s = entropy.(Tk, rho_d, q_v)
+    sbar = _profile(column, s)
+    sigmabar = _profile(column, rho_d .* s)
     rho_dbar = _profile(column, rho_d)
     sound = _mean_sound_speed_sq(Tk, rho_d, q_v)
 
     if !moisture
-        return DryReferenceState(sbar, rho_dbar, sound)
+        return DryReferenceState(sbar, sigmabar, rho_dbar, sound)
     end
 
     rho_vbar = _profile(column, rho_d .* q_v)
     q_sat = q_sat_liquid.(Tk, p)
     satbar = _profile(column, q_v ./ q_sat)
-    return MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound)
+    return MoistReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, satbar, sound)
 end
 
 """
@@ -412,6 +422,7 @@ function exact_reference_state(ref_state_file::AbstractString, z::Array{Float64}
     end
 
     sbar = _profile(column, s)
+    sigmabar = _profile(column, rho_d .* s)
     rho_dbar = _profile(column, rho_d)
     rho_vbar = _profile(column, rho_v)
     rho_cbar = _profile(column, rho_c)
@@ -423,7 +434,7 @@ function exact_reference_state(ref_state_file::AbstractString, z::Array{Float64}
     satbar = _profile(column, q_v ./ q_sat)
     sound = _mean_sound_speed_sq(Tk, rho_d, q_v)
 
-    return CondensateReferenceState(sbar, rho_dbar, rho_vbar, rho_cbar, satbar, sound)
+    return CondensateReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, rho_cbar, satbar, sound)
 end
 
 # Domain-mean speed of sound squared, c^2 = (dp/drho)|_s ~ P_xi / rho_t, averaged.
