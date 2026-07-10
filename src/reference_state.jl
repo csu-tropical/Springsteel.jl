@@ -188,7 +188,7 @@ function natural_column(column::Spline1D, grid_params)
     sp = SplineParameters(
         xmin = grid_params.kMin,
         xmax = grid_params.kMax,
-        num_cells = grid_params.kDim ÷ grid_params.mubar,
+        num_cells = grid_params.num_cells_k,
         mubar = grid_params.mubar,
         quadrature = grid_params.quadrature,
         BCL = CubicBSpline.R0,

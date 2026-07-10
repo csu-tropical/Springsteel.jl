@@ -229,7 +229,7 @@ function _compute_snap_quantum(outer_grid::SpringsteelGrid)
     ogp = outer_grid.params
     if outer_grid.ibasis isa SplineBasisArray && outer_grid.jbasis isa SplineBasisArray
         dx = (ogp.iMax - ogp.iMin) / ogp.num_cells
-        dy = (ogp.jMax - ogp.jMin) / (ogp.jDim > 0 ? Int(ogp.jDim / ogp.mubar) : ogp.num_cells)
+        dy = (ogp.jMax - ogp.jMin) / (ogp.num_cells_j > 0 ? ogp.num_cells_j : ogp.num_cells)
         return (dx, dy)
     else
         dr = (ogp.iMax - ogp.iMin) / ogp.num_cells

@@ -156,6 +156,41 @@ using DataFrames
                 _jld2_roundtrip_test(createGrid(gp))
             end
 
+            @testset "load pre-1.1 archive (added params fields)" begin
+                # Fixture written before SpringsteelGridParameters gained
+                # num_cells_i/j/k. JLD2 cannot reconstruct the struct and hands
+                # back a ReconstructedStatic; load_grid must upgrade it.
+                fixture = joinpath(@__DIR__, "fixtures", "legacy_grid_v1_rr.jld2")
+                @test isfile(fixture)
+
+                raw = jldopen(fixture, "r") do f; f["params"]; end
+                @test !(raw isa SpringsteelGridParameters)   # genuinely legacy
+                @test jldopen(fixture, "r") do f; f["format_version"]; end == "1.0"
+
+                grid = load_grid(fixture)
+                @test grid isa RR_Grid
+                # Dimensions re-resolve to exactly what the old code derived
+                @test grid.params.num_cells == 6
+                @test grid.params.num_cells_i == 6
+                @test grid.params.num_cells_j == 6
+                @test grid.params.jDim == 18
+                @test grid.params.b_jDim == 9
+                # ... and the archived coefficients survive untouched
+                @test sum(abs, grid.spectral) ≈ 278.57593577400144
+                @test !any(isnan, grid.physical)
+
+                # A fresh round-trip preserves the new fields
+                mktempdir() do dir
+                    f2 = joinpath(dir, "new.jld2")
+                    save_grid(f2, grid)
+                    @test jldopen(f2, "r") do f; f["format_version"]; end == "1.1"
+                    g2 = load_grid(f2)
+                    @test g2.params.num_cells_j == grid.params.num_cells_j
+                    @test g2.params.num_cells_k == grid.params.num_cells_k
+                    @test g2.spectral == grid.spectral
+                end
+            end
+
             @testset "save/load roundtrip RL" begin
                 gp = SpringsteelGridParameters(
                     geometry="RL", num_cells=5,

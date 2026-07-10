@@ -211,27 +211,28 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
         "data must have $(Nx*Ny) rows (length(x)*length(y)), got $(size(data, 1))"))
 
     num_cells_i = Nx ÷ mubar
+    num_cells_j = Ny ÷ mubar
     xmin, xmax = _infer_domain_bounds(x, hx)
     ymin, ymax = _infer_domain_bounds(y, hy)
     var_dict = _make_var_dict(vars, nvars)
     l_q_dict = _make_l_q_dict(l_q)
 
     gp = SpringsteelGridParameters(
-        geometry   = "RR",
-        iMin       = xmin,
-        iMax       = xmax,
-        num_cells  = num_cells_i,
-        mubar      = mubar,
-        quadrature = :regular,
-        BCL        = _expand_bc(BCL, var_dict),
-        BCR        = _expand_bc(BCR, var_dict),
-        jMin       = ymin,
-        jMax       = ymax,
-        jDim       = Ny,
-        BCU        = _expand_bc(BCU, var_dict),
-        BCD        = _expand_bc(BCD, var_dict),
-        l_q        = l_q_dict,
-        vars       = var_dict,
+        geometry    = "RR",
+        iMin        = xmin,
+        iMax        = xmax,
+        num_cells_i = num_cells_i,
+        mubar       = mubar,
+        quadrature  = :regular,
+        BCL         = _expand_bc(BCL, var_dict),
+        BCR         = _expand_bc(BCR, var_dict),
+        jMin        = ymin,
+        jMax        = ymax,
+        num_cells_j = num_cells_j,
+        BCU         = _expand_bc(BCU, var_dict),
+        BCD         = _expand_bc(BCD, var_dict),
+        l_q         = l_q_dict,
+        vars        = var_dict,
     )
 
     grid = createGrid(gp)
@@ -267,6 +268,8 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
         "data must have $(Nx*Ny*Nz) rows, got $(size(data, 1))"))
 
     num_cells_i = Nx ÷ mubar
+    num_cells_j = Ny ÷ mubar
+    num_cells_k = Nz ÷ mubar
     xmin, xmax = _infer_domain_bounds(x, hx)
     ymin, ymax = _infer_domain_bounds(y, hy)
     zmin, zmax = _infer_domain_bounds(z, hz)
@@ -274,26 +277,26 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
     l_q_dict = _make_l_q_dict(l_q)
 
     gp = SpringsteelGridParameters(
-        geometry   = "RRR",
-        iMin       = xmin,
-        iMax       = xmax,
-        num_cells  = num_cells_i,
-        mubar      = mubar,
-        quadrature = :regular,
-        BCL        = _expand_bc(BCL, var_dict),
-        BCR        = _expand_bc(BCR, var_dict),
-        jMin       = ymin,
-        jMax       = ymax,
-        jDim       = Ny,
-        BCU        = _expand_bc(BCU, var_dict),
-        BCD        = _expand_bc(BCD, var_dict),
-        kMin       = zmin,
-        kMax       = zmax,
-        kDim       = Nz,
-        BCB        = _expand_bc(BCB, var_dict),
-        BCT        = _expand_bc(BCT, var_dict),
-        l_q        = l_q_dict,
-        vars       = var_dict,
+        geometry    = "RRR",
+        iMin        = xmin,
+        iMax        = xmax,
+        num_cells_i = num_cells_i,
+        mubar       = mubar,
+        quadrature  = :regular,
+        BCL         = _expand_bc(BCL, var_dict),
+        BCR         = _expand_bc(BCR, var_dict),
+        jMin        = ymin,
+        jMax        = ymax,
+        num_cells_j = num_cells_j,
+        BCU         = _expand_bc(BCU, var_dict),
+        BCD         = _expand_bc(BCD, var_dict),
+        kMin        = zmin,
+        kMax        = zmax,
+        num_cells_k = num_cells_k,
+        BCB         = _expand_bc(BCB, var_dict),
+        BCT         = _expand_bc(BCT, var_dict),
+        l_q         = l_q_dict,
+        vars        = var_dict,
     )
 
     grid = createGrid(gp)

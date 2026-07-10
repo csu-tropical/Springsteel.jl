@@ -712,5 +712,44 @@
 
         end  # Multi-dim tiling
 
+        @testset "spline j/k cell counts survive i-tiling" begin
+            # An explicit num_cells_j must be inherited by every tile. Without
+            # forwarding, a tile re-derives it from its own (narrower) i-domain
+            # via the aspect default and lands on a different cell count.
+            gp = SpringsteelGridParameters(
+                geometry = "RR",
+                iMin = 0.0, iMax = 100.0, num_cells = 12,
+                jMin = 0.0, jMax = 40.0, num_cells_j = 7,   # deliberately != aspect default
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            patch = createGrid(gp)
+            @test patch.params.num_cells_j == 7
+
+            tiles = calcTileSizes(patch, 3)
+            @test length(tiles) == 3
+            for tile in tiles
+                @test tile.params.num_cells_j == 7
+                @test tile.params.jDim == patch.params.jDim
+                @test tile.params.b_jDim == patch.params.b_jDim
+                @test size(tile.jbasis.data, 2) == size(patch.jbasis.data, 2)
+            end
+
+            # The aspect default is itself tile-invariant (this is what let
+            # _create_tile_from_patch omit jDim in the first place).
+            gp2 = SpringsteelGridParameters(
+                geometry = "RR",
+                iMin = 0.0, iMax = 100.0, num_cells = 12,
+                jMin = 0.0, jMax = 50.0,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0))
+            patch2 = createGrid(gp2)
+            tiles2 = calcTileSizes(patch2, 3)
+            for tile in tiles2
+                @test tile.params.num_cells_j == patch2.params.num_cells_j
+            end
+        end
+
     end  # SpringsteelGrid Tiling
 

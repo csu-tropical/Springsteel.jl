@@ -409,7 +409,7 @@ See also: [`createGrid`](@ref), [`write_grid`](@ref), [`gridTransform!`](@ref)
 """
 function save_grid(filename::String, grid::SpringsteelGrid; compress::Bool=true)
     jldopen(filename, "w"; compress=compress) do f
-        f["format_version"] = "1.0"
+        f["format_version"] = "1.1"
         f["params"]         = grid.params
         f["spectral"]       = grid.spectral
         f["physical"]       = grid.physical
@@ -428,11 +428,21 @@ then copies the archived arrays into the fresh grid.
 The returned grid is fully functional — transforms, interpolation, and
 the solver can all be applied to it immediately.
 """
+
+# `save_grid` serialises the whole `params` struct. When SpringsteelGridParameters
+# gains a field, JLD2 can no longer reconstruct archives written before it and
+# hands back a `JLD2.ReconstructedStatic` instead. Its fields are still readable
+# by name, so rebuild through the @kwdef constructor and let the new fields take
+# their defaults — `createGrid` then re-derives them.
+_upgrade_params(p::SpringsteelGridParameters) = p
+_upgrade_params(p) = SpringsteelGridParameters(;
+    (name => getproperty(p, name) for name in propertynames(p))...)
+
 function load_grid(filename::String)
     params, spectral, physical = jldopen(filename, "r") do f
         f["params"], f["spectral"], f["physical"]
     end
-    grid = createGrid(params)
+    grid = createGrid(_upgrade_params(params))
     grid.spectral .= spectral
     grid.physical .= physical
     return grid
