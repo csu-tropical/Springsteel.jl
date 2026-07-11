@@ -316,13 +316,42 @@ primary parameters (marked *auto* below).
   `"RR"`, `"RLZ"`, `"RRR"`, `"SL"`, `"SLZ"`, `"Z"`, `"ZZ"`, `"ZZZ"`, `"L"`,
   `"LL"`, `"LLZ"`
 
+# Sizing a cubic B-spline axis
+
+A cubic B-spline direction is defined by its **cell count**, not its gridpoint count.
+For a spline axis with `n` cells and `mubar` quadrature points per cell:
+
+    physical gridpoints  Dim  = n * mubar
+    spectral coefficients bDim = n + 3        (independent of mubar and of the BC type)
+
+Consequently a spline `iDim`/`jDim`/`kDim` **must** be an exact multiple of `mubar`;
+a value that is not throws an `ArgumentError` naming the nearest valid cell counts.
+
+Each spline axis accepts its cell count directly — `num_cells_i` (equivalently
+`num_cells`), `num_cells_j`, `num_cells_k` — which is the recommended form.  Passing the
+gridpoint count (`iDim`/`jDim`/`kDim`) instead still works and back-derives the cell count.
+Passing both is fine when they agree and an `ArgumentError` when they do not.
+
+If a Cartesian spline j- or k-axis is left unspecified (`num_cells_j == 0` **and**
+`jDim == 0`), its cell count defaults to **uniform nodal spacing**: the number of cells
+that makes the j cell width match the i cell width, rounded up —
+
+    num_cells_j = ceil((jMax - jMin) / DX_i),   DX_i = (iMax - iMin) / num_cells
+
+Because this is a ratio it is invariant under i-direction tiling.  When the division is
+not exact the rounding leaves `DX_j != DX_i`, and a warning is emitted; set `num_cells_j`
+explicitly to control the resolution and silence it.
+
 ## i-Dimension (CubicBSpline, Chebyshev, or Fourier depending on geometry)
 - `iMin::Float64 = 0.0`: Minimum i-coordinate
 - `iMax::Float64 = 0.0`: Maximum i-coordinate
-- `num_cells::Int64 = 0`: Number of cubic B-spline cells (spline geometries)
+- `num_cells::Int64 = 0`: Number of cubic B-spline cells in i (spline geometries)
+- `num_cells_i::Int64 = 0`: Alias for `num_cells` (`0` = unset). Supplying both with
+  different values is an error.
 - `mubar::Int64 = 3`: Quadrature points per cell (1–5 for Gauss; any ≥1 for regular)
 - `quadrature::Symbol = :gauss`: Quadrature type (`:gauss` or `:regular`)
-- `iDim::Int64`: Physical gridpoints (*auto*: `num_cells * mubar`)
+- `iDim::Int64`: Physical gridpoints (*auto*: `num_cells * mubar`). May be supplied
+  instead of a cell count, in which case `num_cells = iDim ÷ mubar`.
 - `b_iDim::Int64`: Spectral coefficients (*auto*: `num_cells + 3`)
 - `l_q::Dict = Dict("default" => 2.0)`: Spline filter length (per variable)
 - `BCL::Dict = CubicBSpline.R0`: Left boundary condition (per variable)
@@ -332,7 +361,11 @@ primary parameters (marked *auto* below).
 - `jMin::Float64 = 0.0`: Minimum j-coordinate
 - `jMax::Float64 = 2π`: Maximum j-coordinate
 - `max_wavenumber::Dict = Dict("default" => -1)`: Max Fourier wavenumber (-1 = ring-specific)
-- `jDim::Int64 = 0`: Physical gridpoints
+- `num_cells_j::Int64 = 0`: Number of cubic B-spline cells in j, for Cartesian spline-j
+  geometries (`RR`, `RRR`). `0` = *auto* (uniform nodal spacing, see above).  Remains `0`
+  for Fourier-j geometries, where `jDim` is a derived ring-point total.
+- `jDim::Int64 = 0`: Physical gridpoints. Derived for Fourier j; for spline j it is
+  `num_cells_j * mubar` and may be supplied instead of `num_cells_j`.
 - `b_jDim::Int64 = 0`: Spectral modes/coefficients
 - `BCU::Dict = Fourier.PERIODIC`: j-left/upper boundary condition (per variable)
 - `BCD::Dict = Fourier.PERIODIC`: j-right/lower boundary condition (per variable)
@@ -340,8 +373,13 @@ primary parameters (marked *auto* below).
 ## k-Dimension (Chebyshev or CubicBSpline depending on geometry)
 - `kMin::Float64 = 0.0`: Minimum k-coordinate
 - `kMax::Float64 = 0.0`: Maximum k-coordinate
-- `kDim::Int64 = 0`: Physical gridpoints
-- `b_kDim::Int64`: Spectral coefficients (*auto*: anti-aliased from `kDim`)
+- `num_cells_k::Int64 = 0`: Number of cubic B-spline cells in k, for spline-k geometries
+  (`RRR`, `RiRk`, `RLR`, `SLR`). `0` = *auto* (uniform nodal spacing, see above).  Remains
+  `0` for Chebyshev-k geometries (`RZ`, `RLZ`, `SLZ`).
+- `kDim::Int64 = 0`: Physical gridpoints. For spline k it is `num_cells_k * mubar` and may
+  be supplied instead of `num_cells_k`.
+- `b_kDim::Int64`: Spectral coefficients (*auto*: anti-aliased from `kDim` for Chebyshev k,
+  `num_cells_k + 3` for spline k)
 - `BCB::Dict = Chebyshev.R0`: k-bottom boundary condition (per variable)
 - `BCT::Dict = Chebyshev.R0`: k-top boundary condition (per variable)
 
@@ -447,6 +485,16 @@ gp = SpringsteelGridParameters(
     vars = Dict("v" => 1))
 ```
 
+# Example: 3D Spline × Spline × Spline (RRR, explicit cell counts)
+```julia
+gp = SpringsteelGridParameters(
+    geometry = "RRR",
+    iMin = 0.0, iMax = 10.0, num_cells_i = 10,   # DX_i = 1.0, iDim = 30
+    jMin = 0.0, jMax = 20.0, num_cells_j = 20,   # DX_j = 1.0, jDim = 60
+    kMin = 0.0, kMax =  2.5, num_cells_k = 5,    # DX_k = 0.5, kDim = 15
+    vars = Dict("u" => 1))
+```
+
 See also: [`createGrid`](@ref), [`R_Grid`](@ref)
 """
 Base.@kwdef struct SpringsteelGridParameters
@@ -454,6 +502,7 @@ Base.@kwdef struct SpringsteelGridParameters
     iMin::real = 0.0
     iMax::real = 0.0
     num_cells::int = 0
+    num_cells_i::int = 0
     mubar::int = 3
     quadrature::Symbol = :gauss
     iDim::int = num_cells * mubar
@@ -464,12 +513,14 @@ Base.@kwdef struct SpringsteelGridParameters
     jMin::real = 0.0
     jMax::real = 2 * π
     max_wavenumber::Dict = Dict("default" => -1) # Default is -1 to indicate ring specific
+    num_cells_j::int = 0
     jDim::int = 0
     b_jDim::int = 0
     BCU::Dict = Dict("default" => Fourier.PERIODIC)
     BCD::Dict = Dict("default" => Fourier.PERIODIC)
     kMin::real = 0.0
     kMax::real = 0.0
+    num_cells_k::int = 0
     kDim::int = 0
     b_kDim::int = min(kDim, floor(((2 * kDim) - 1) / 3) + 1)
     BCB::Dict = Dict("default" => Chebyshev.R0)
@@ -587,7 +638,7 @@ include("io.jl")
 # Springsteel-grid clients (Scythe dynamics, Daisho data assimilation).
 include("reference_state.jl")
 export AbstractReferenceState, DryReferenceState, MoistReferenceState,
-    CondensateReferenceState
+    CondensateReferenceState, PressureReferenceState
 
 # Module end
 end

@@ -40,6 +40,53 @@ Field values are sampled at $\mu = 3$ **Gauss–Legendre quadrature points per c
 (the "mish"), using the $\sqrt{3/5}$ abscissae with weights $w = [5/18, 8/18, 5/18]$.
 The total number of physical points is `iDim = num_cells × 3`.
 
+### Sizing a Spline Direction in 2-D and 3-D
+
+A spline axis is defined by its **cell count**, not its gridpoint count. For `n` cells
+and `mubar` quadrature points per cell:
+
+| quantity | formula |
+|:-- |:-- |
+| physical gridpoints | `Dim = n * mubar` |
+| spectral coefficients | `bDim = n + 3` |
+| cell width | `DX = (max - min) / n` |
+
+`bDim` depends on neither `mubar` nor the boundary-condition type. It follows that a
+spline `iDim`/`jDim`/`kDim` must be an exact multiple of `mubar`; a value that is not
+raises an `ArgumentError` naming the nearest valid cell counts.
+
+Each spline direction therefore takes its cell count directly, which is the recommended
+spelling:
+
+```julia
+gp = SpringsteelGridParameters(
+    geometry    = "RRR",
+    iMin = 0.0, iMax = 10.0, num_cells_i = 10,   # DX_i = 1.0, iDim = 30
+    jMin = 0.0, jMax = 20.0, num_cells_j = 20,   # DX_j = 1.0, jDim = 60
+    kMin = 0.0, kMax =  2.5, num_cells_k = 5,    # DX_k = 0.5, kDim = 15
+    vars = Dict("u" => 1))
+```
+
+`num_cells_i` is an alias for `num_cells`. Supplying the gridpoint count
+(`iDim`/`jDim`/`kDim`) instead also works and back-derives the cell count; supplying both
+is fine when they agree and an error when they do not.
+
+#### The default when a j/k axis is unspecified
+
+If a Cartesian spline j- or k-axis gives neither a cell count nor a gridpoint count, its
+cell count defaults to **uniform nodal spacing** — the number of cells that matches its
+cell width to the i-direction cell width, rounded up:
+
+```math
+\texttt{num\_cells\_j} = \left\lceil \frac{j_{max} - j_{min}}{\Delta x_i} \right\rceil,
+\qquad \Delta x_i = \frac{i_{max} - i_{min}}{\texttt{num\_cells}}
+```
+
+Because this is a ratio it is invariant under i-direction tiling, which is what lets a
+tile inherit its parent patch's j-resolution. When the division is not exact, the
+rounding leaves $\Delta x_j \neq \Delta x_i$ and a warning is emitted; set `num_cells_j`
+explicitly to choose the resolution yourself and silence it.
+
 ### The Three-Step Transform Pipeline
 
 **Forward transform (physical → spectral):**

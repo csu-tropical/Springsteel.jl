@@ -28,24 +28,26 @@ be added without changing the interface.
 abstract type AbstractReferenceState end
 
 """
-    DryReferenceState(sbar, rho_dbar, sound_speed_sq)
+    DryReferenceState(sbar, sigmabar, rho_dbar, sound_speed_sq)
 
-Dry hydrostatic reference: moist entropy and dry-air density profiles only.
+Dry hydrostatic reference: moist entropy, entropy density (σ̂ = ρ̂_d·ŝ), and dry-air density.
 """
 struct DryReferenceState <: AbstractReferenceState
     sbar::Matrix{Float64}        # moist entropy (q_v = 0) [J/(kg K)]
+    sigmabar::Matrix{Float64}    # entropy density rho_d*s [J/(K m^3)]
     rho_dbar::Matrix{Float64}    # dry-air density [kg/m^3]
     sound_speed_sq::Float64      # domain-mean speed of sound squared [m^2/s^2]
 end
 
 """
-    MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound_speed_sq)
+    MoistReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, satbar, sound_speed_sq)
 
 Moist (vapor-bearing, condensate-free) hydrostatic reference: adds the vapor partial
 density `rho_vbar` and the saturation-ratio profile `satbar` (`q_v / q_sat`, physical).
 """
 struct MoistReferenceState <: AbstractReferenceState
     sbar::Matrix{Float64}
+    sigmabar::Matrix{Float64}    # entropy density rho_d*s [J/(K m^3)]
     rho_dbar::Matrix{Float64}
     rho_vbar::Matrix{Float64}    # vapor partial density [kg/m^3]
     satbar::Matrix{Float64}      # saturation ratio q_v/q_sat
@@ -53,7 +55,7 @@ struct MoistReferenceState <: AbstractReferenceState
 end
 
 """
-    CondensateReferenceState(sbar, rho_dbar, rho_vbar, rho_cbar, satbar, sound_speed_sq)
+    CondensateReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, rho_cbar, satbar, sound_speed_sq)
 
 Condensate-bearing hydrostatic reference: adds the condensate partial density
 `rho_cbar`. Used for idealized saturated base states (e.g. the Bryan & Fritsch 2002
@@ -62,11 +64,35 @@ buoyant and the prognostic perturbation zero outside the disturbance.
 """
 struct CondensateReferenceState <: AbstractReferenceState
     sbar::Matrix{Float64}
+    sigmabar::Matrix{Float64}    # entropy density rho_d*s [J/(K m^3)]
     rho_dbar::Matrix{Float64}
     rho_vbar::Matrix{Float64}
     rho_cbar::Matrix{Float64}    # condensate partial density [kg/m^3]
     satbar::Matrix{Float64}
     sound_speed_sq::Float64
+end
+
+"""
+    PressureReferenceState(pbar, rho_dbar, rho_vbar, rho_cbar, rho_tbar, Tbar,
+                           E_tbar, Q_ssbar, sound_speed_sq)
+
+Pressure-based hydrostatic reference for total-energy equation sets: pressure [Pa],
+partial and total densities, and the derived temperature, total-energy density
+E_t = ρ_d e_i + ρ_t g z (at rest, Bryan & Fritsch 2002 internal energy), and
+supersaturation density Q_ss = ρ_v − ρ_v*(T, p). Carries no entropy profile;
+hydrostatic balance is the direct dp/dz = −ρ_t g rather than the entropy/log-density
+(P_s, P_xi, P_qv) form.
+"""
+struct PressureReferenceState <: AbstractReferenceState
+    pbar::Matrix{Float64}        # total pressure [Pa]
+    rho_dbar::Matrix{Float64}    # dry-air density [kg/m^3]
+    rho_vbar::Matrix{Float64}    # vapor partial density [kg/m^3]
+    rho_cbar::Matrix{Float64}    # condensate partial density [kg/m^3]
+    rho_tbar::Matrix{Float64}    # total density, fitted on the reference basis [kg/m^3]
+    Tbar::Matrix{Float64}        # EOS temperature [K]
+    E_tbar::Matrix{Float64}      # total energy density at rest [J/m^3]
+    Q_ssbar::Matrix{Float64}     # supersaturation density [kg/m^3]
+    sound_speed_sq::Float64      # mean gamma*p/rho_t [m^2/s^2]
 end
 
 # ── Accessor interface ─────────────────────────────────────────────────────────
@@ -80,6 +106,10 @@ ref_entropy(rs::AbstractReferenceState) = rs.sbar
 
 """Dry-air density reference profile `(nlevels, 3)` [kg/m^3]."""
 ref_rho_d(rs::AbstractReferenceState) = rs.rho_dbar
+
+"""Entropy-density reference profile `(nlevels, 3)` [J/(K m^3)], σ̂ = ρ̂_d·ŝ with the vertical
+derivative computed on the reference basis (spectrally consistent — do NOT product-rule it)."""
+ref_sigma(rs::AbstractReferenceState) = rs.sigmabar
 
 """Domain-mean speed of sound squared [m^2/s^2]."""
 sound_speed_sq(rs::AbstractReferenceState) = rs.sound_speed_sq
@@ -99,6 +129,21 @@ ref_sat(rs::DryReferenceState) = 0.0
 ref_sat(rs::MoistReferenceState) = rs.satbar
 ref_sat(rs::CondensateReferenceState) = rs.satbar
 
+ref_rho_v(rs::PressureReferenceState) = rs.rho_vbar
+ref_rho_c(rs::PressureReferenceState) = rs.rho_cbar
+
+"""Total-pressure reference profile `(nlevels, 3)` [Pa] (PressureReferenceState only)."""
+ref_pressure(rs::PressureReferenceState) = rs.pbar
+
+"""Total-density reference profile `(nlevels, 3)` [kg/m^3] (PressureReferenceState only)."""
+ref_rho_t(rs::PressureReferenceState) = rs.rho_tbar
+
+"""Total-energy-density reference profile `(nlevels, 3)` [J/m^3] (PressureReferenceState only)."""
+ref_total_energy(rs::PressureReferenceState) = rs.E_tbar
+
+"""Supersaturation-density reference profile `(nlevels, 3)` [kg/m^3] (PressureReferenceState only)."""
+ref_qss(rs::PressureReferenceState) = rs.Q_ssbar
+
 """
     reference_temperature(rs) -> Vector{Float64}
 
@@ -112,6 +157,8 @@ function reference_temperature(rs::AbstractReferenceState)
     q_v = rv === 0.0 ? zero(rho_d) : rv[:, 1] ./ rho_d
     return temperature.(s, rho_d, q_v)
 end
+
+reference_temperature(rs::PressureReferenceState) = rs.Tbar[:, 1]
 
 # ── Column helpers ─────────────────────────────────────────────────────────────
 
@@ -141,7 +188,7 @@ function natural_column(column::Spline1D, grid_params)
     sp = SplineParameters(
         xmin = grid_params.kMin,
         xmax = grid_params.kMax,
-        num_cells = grid_params.kDim ÷ grid_params.mubar,
+        num_cells = grid_params.num_cells_k,
         mubar = grid_params.mubar,
         quadrature = grid_params.quadrature,
         BCL = CubicBSpline.R0,
@@ -318,11 +365,12 @@ function calculate_reference_state(ref_state_file::AbstractString, z::Array{Floa
 
     # Assemble physical profiles with spectrally consistent derivatives
     sbar = _profile(column, s_new)
+    sigmabar = _profile(column, rho_d_new .* s_new)   # entropy density on the reference basis
     rho_dbar = _profile(column, rho_d_new)
     sound = _mean_sound_speed_sq(Tk_new, rho_d_new, q_v_new)
 
     if !moisture
-        return DryReferenceState(sbar, rho_dbar, sound)
+        return DryReferenceState(sbar, sigmabar, rho_dbar, sound)
     end
 
     rho_vbar = _profile(column, rho_d_new .* q_v_new)
@@ -332,7 +380,7 @@ function calculate_reference_state(ref_state_file::AbstractString, z::Array{Floa
     p_final = pressure.(s_new, rho_d_new, q_v_new)
     q_sat = q_sat_liquid.(Tk_new, p_final)
     satbar = _profile(column, q_v_new ./ q_sat)
-    return MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound)
+    return MoistReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, satbar, sound)
 end
 
 """
@@ -370,18 +418,20 @@ function interpolate_reference_state(ref_state_file::AbstractString, z::Array{Fl
         dlnpdz = -gravity * rho_t / (p[i] * 100.0)
     end
 
-    sbar = _profile(column, entropy.(Tk, rho_d, q_v))
+    s = entropy.(Tk, rho_d, q_v)
+    sbar = _profile(column, s)
+    sigmabar = _profile(column, rho_d .* s)
     rho_dbar = _profile(column, rho_d)
     sound = _mean_sound_speed_sq(Tk, rho_d, q_v)
 
     if !moisture
-        return DryReferenceState(sbar, rho_dbar, sound)
+        return DryReferenceState(sbar, sigmabar, rho_dbar, sound)
     end
 
     rho_vbar = _profile(column, rho_d .* q_v)
     q_sat = q_sat_liquid.(Tk, p)
     satbar = _profile(column, q_v ./ q_sat)
-    return MoistReferenceState(sbar, rho_dbar, rho_vbar, satbar, sound)
+    return MoistReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, satbar, sound)
 end
 
 """
@@ -412,6 +462,7 @@ function exact_reference_state(ref_state_file::AbstractString, z::Array{Float64}
     end
 
     sbar = _profile(column, s)
+    sigmabar = _profile(column, rho_d .* s)
     rho_dbar = _profile(column, rho_d)
     rho_vbar = _profile(column, rho_v)
     rho_cbar = _profile(column, rho_c)
@@ -423,11 +474,113 @@ function exact_reference_state(ref_state_file::AbstractString, z::Array{Float64}
     satbar = _profile(column, q_v ./ q_sat)
     sound = _mean_sound_speed_sq(Tk, rho_d, q_v)
 
-    return CondensateReferenceState(sbar, rho_dbar, rho_vbar, rho_cbar, satbar, sound)
+    return CondensateReferenceState(sbar, sigmabar, rho_dbar, rho_vbar, rho_cbar, satbar, sound)
 end
 
 # Domain-mean speed of sound squared, c^2 = (dp/drho)|_s ~ P_xi / rho_t, averaged.
 function _mean_sound_speed_sq(Tk, rho_d, q_v)
     c2 = P_xi.(Tk, rho_d, q_v) ./ (rho_d .* (1.0 .+ q_v))
     return sum(c2) / length(c2)
+end
+
+# Assemble a PressureReferenceState from pointwise (p [Pa], rho_d, rho_v, rho_c) on
+# levels z: EOS temperature, BF02 total-energy density at rest, supersaturation
+# density, and mean gamma*p/rho_t sound speed; profiles fitted on `column`.
+function _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c)
+    rho_t = rho_d .+ rho_v .+ rho_c
+    Tk = p_Pa ./ ((rho_d .* Rd) .+ (rho_v .* Rv))
+    q_v = rho_v ./ rho_d
+    q_l = rho_c ./ rho_d
+    E_t = (rho_d .* internal_energy_bf02.(Tk, q_v, q_l)) .+ (rho_t .* gravity .* z)
+    Q_ss = rho_v .- rho_v_sat.(Tk, p_Pa ./ 100.0)
+    C_vt = Cvd .+ (q_v .* Cvv) .+ (q_l .* Cl)
+    R_m = Rd .+ (q_v .* Rv)
+    gamma = (C_vt .+ R_m) ./ C_vt
+    sound = sum(gamma .* p_Pa ./ rho_t) / length(p_Pa)
+    return PressureReferenceState(
+        _profile(column, p_Pa), _profile(column, rho_d), _profile(column, rho_v),
+        _profile(column, rho_c), _profile(column, rho_t), _profile(column, Tk),
+        _profile(column, E_t), _profile(column, Q_ss), sound)
+end
+
+"""
+    exact_pressure_reference_state(ref_state_file, z, column) -> PressureReferenceState
+
+Read a pre-balanced pressure-based reference state from a file with one line per model
+level: `z p rho_d rho_v rho_c` (total pressure in Pa, then dry-air, vapor, and
+condensate partial densities). Temperature comes directly from the equation of state
+(no entropy inversion); the total-energy density and supersaturation density are
+derived pointwise before fitting, so a saturated input column has `Q_ssbar = 0`
+identically. The `z` values must match the model levels (compared as written by
+`string`).
+"""
+function exact_pressure_reference_state(ref_state_file::AbstractString, z::Array{Float64}, column)
+    n = length(z)
+    p_Pa = zeros(Float64, n); rho_d = zeros(Float64, n)
+    rho_v = zeros(Float64, n); rho_c = zeros(Float64, n)
+    open(ref_state_file, "r") do f
+        for i in 1:n
+            parts = split(readline(f))
+            parts[1] == string(z[i]) ||
+                throw(DomainError(i, "Model level does not match reference level"))
+            p_Pa[i] = parse(Float64, parts[2])
+            rho_d[i] = parse(Float64, parts[3])
+            rho_v[i] = parse(Float64, parts[4])
+            rho_c[i] = parse(Float64, parts[5])
+        end
+    end
+    return _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c)
+end
+
+"""
+    calculate_pressure_reference_state(ref_state_file, z, column) -> PressureReferenceState
+
+Build a pressure-based hydrostatic reference from a sounding file (`theta`, `q_v`;
+same format as [`calculate_reference_state`](@ref)). The balance is the direct
+dp/dz = −ρ_t g, integrated spectrally on `column` with a short fixed-point sweep —
+no entropy/log-density (P_s, P_xi, P_qv) Newton refinement is required. Condensate-free
+(`rho_cbar = 0`).
+"""
+function calculate_pressure_reference_state(ref_state_file::AbstractString, z::Array{Float64}, column)
+
+    sfc_pressure, alt, theta_in, q_v_in = _read_sounding(ref_state_file)
+
+    theta = _interp_to_levels(z, alt, theta_in)
+    q_v = _interp_to_levels(z, alt, q_v_in) .* 1.0e-3
+    nlevels = length(z)
+
+    # Initial guess: level-by-level log-pressure march (as interpolate_reference_state)
+    Tk = zeros(Float64, nlevels)
+    p = zeros(Float64, nlevels)      # hPa
+    rho_d = zeros(Float64, nlevels)
+    p[1] = sfc_pressure
+    e = vapor_pressure(p[1], q_v[1])
+    Tk[1] = theta[1] / (p_0 / p[1])^(Rd / Cpd)
+    rho_d[1] = 100.0 * (p[1] - e) / (Tk[1] * Rd)
+    dlnpdz = -gravity * rho_d[1] * (1.0 + q_v[1]) / (p[1] * 100.0)
+    for i in 2:nlevels
+        p[i] = exp(log(p[i-1]) + (dlnpdz * (z[i] - z[i-1])))
+        Tk[i] = theta[i] / (p_0 / p[i])^(Rd / Cpd)
+        e = vapor_pressure(p[i], q_v[i])
+        rho_d[i] = 100.0 * (p[i] - e) / (Tk[i] * Rd)
+        dlnpdz = -gravity * rho_d[i] * (1.0 + q_v[i]) / (p[i] * 100.0)
+    end
+
+    # Fixed-point refinement: spectrally integrate dp/dz = -g*rho_t, then update
+    # T (theta, Exner), rho_d (EOS) from the new pressure.
+    p_Pa = p .* 100.0
+    for _ in 1:5
+        rho_t = rho_d .* (1.0 .+ q_v)
+        column.uMish[:] .= (-gravity .* rho_t)[:]
+        Btransform!(column); Atransform!(column)
+        p_Pa = IInttransform(column, sfc_pressure * 100.0)
+        p = p_Pa ./ 100.0
+        Tk = theta ./ (p_0 ./ p).^(Rd / Cpd)
+        e_v = vapor_pressure.(p, q_v)
+        rho_d = 100.0 .* (p .- e_v) ./ (Tk .* Rd)
+    end
+
+    rho_v = rho_d .* q_v
+    rho_c = zeros(Float64, nlevels)
+    return _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c)
 end

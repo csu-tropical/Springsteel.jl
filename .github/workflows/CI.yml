@@ -49,6 +49,7 @@ jobs:
           - basis
           - banded_cholesky
           - grids
+          - cell_counts
           - transforms
           - tiling
           - io

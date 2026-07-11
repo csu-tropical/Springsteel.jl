@@ -5,6 +5,44 @@ All notable changes to Springsteel.jl are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Explicit cell counts for every cubic B-spline direction.**
+  `SpringsteelGridParameters` gains `num_cells_i` (an alias for `num_cells`),
+  `num_cells_j`, and `num_cells_k`. A spline axis is defined by its cell count
+  (`Dim = cells * mubar`, `bDim = cells + 3`), so this lets the j- and k-directions of
+  `RR`, `RRR`, `RiRk`, `RLR`, and `SLR` be specified exactly, the way `num_cells` already
+  specified the i-direction. The resolved counts are stored on the returned parameters.
+- **`iDim`-only "reverse mode" now works** for spline-i geometries: supplying `iDim`
+  without a cell count back-derives `num_cells = iDim ÷ mubar` and rebuilds `b_iDim`,
+  `spectralIndexR`, and `patchOffsetR`. Previously this produced a malformed grid that
+  failed with a `PosDefException` inside a factorization.
+- Documented the previously implicit sizing rules: the spline `Dim`/`bDim` formulas, and
+  the j/k auto-default (uniform nodal spacing with the i-direction, rounded up).
+
+### Changed
+
+- A spline `iDim`/`jDim`/`kDim` that is not a multiple of `mubar` now raises an
+  `ArgumentError` naming the field, `mubar`, and the nearest valid cell counts. It
+  previously raised `InexactError: Int64(16.666666666666668)`, naming nothing. Chebyshev
+  and Fourier axes are unaffected.
+- Supplying contradictory cell/gridpoint counts for the same axis (e.g. `num_cells_j=7`
+  with `jDim=20`) is now an `ArgumentError` rather than being silently resolved.
+- The j/k auto-default emits a warning when the domain length is not an integer multiple
+  of the i-cell width, since the rounding then leaves `DX_j != DX_i`. Commensurate
+  domains — the overwhelmingly common case — stay silent.
+- `save_grid` writes `format_version = "1.1"`. `load_grid` reads both `"1.0"` and `"1.1"`;
+  archives written before the new parameter fields existed are upgraded on load.
+
+### Fixed
+
+- `_create_tile_from_patch` did not propagate a patch's spline j/k cell counts, so a tile
+  re-derived them from its own narrower i-domain. This was latent (the auto-default is
+  tile-invariant) but would have produced mismatched coefficient-array shapes across
+  tiles as soon as a patch set `num_cells_j` explicitly.
+
 ## [1.1.0] - 2026-06-27
 
 `v1.0.0 → v1.1.0` is a MINOR bump: every change is a backward-compatible addition

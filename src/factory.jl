@@ -207,42 +207,160 @@ function _fourier_j_dims_sph(gp::SpringsteelGridParameters)
     return jDim, b_jDim
 end
 
-# jDim, b_jDim for Cartesian Spline j (RR, RRR, Spline2D)
-function _cartesian_j_dims(gp::SpringsteelGridParameters)
-    if gp.jDim == 0
-        dy = gp.jMax - gp.jMin
-        dx = gp.iMax - gp.iMin
-        nc_j = Int64(ceil(gp.num_cells * (dy / dx)))
-    else
-        nc_j = Int64(gp.jDim / gp.mubar)
+# ── Cubic B-spline axis sizing ──────────────────────────────────────────────
+#
+# A spline axis with n cells has Dim = n*mubar physical gridpoints and
+# bDim = n + 3 spectral coefficients. The cell count is therefore the primary
+# quantity; a gridpoint count that is not an exact multiple of mubar cannot
+# describe a spline axis at all. These helpers own that invariant so no caller
+# has to re-derive `n` (and so nobody re-introduces a bare `Int64(dim/mubar)`,
+# which throws an InexactError naming neither field).
+
+# Geometries whose i-direction is a cubic B-spline. "Spline1D"/"Spline2D" are
+# accepted geometry names that are not in _GEOMETRY_ALIASES.
+const _SPLINE_I_GEOMETRIES = ("R", "Spline1D", "RZ", "RR", "Spline2D", "RRR", "RiRk",
+                              "RL", "RLZ", "RLR", "SL", "SLZ", "SLR")
+
+@inline _is_spline_i(geom::String) = geom in _SPLINE_I_GEOMETRIES
+
+# Back-derive a spline cell count from a physical gridpoint count.
+function _cells_from_dim(dim::Int, mubar::Int, dim_name::String, cells_name::String)
+    if dim % mubar != 0
+        lo = fld(dim, mubar)
+        hi = lo + 1
+        throw(ArgumentError(
+            "$dim_name=$dim is not divisible by mubar=$mubar. A cubic B-spline " *
+            "direction has $dim_name = $cells_name * mubar. Use " *
+            "$cells_name=$lo ($dim_name=$(lo * mubar)) or " *
+            "$cells_name=$hi ($dim_name=$(hi * mubar))."))
     end
-    return nc_j * gp.mubar, nc_j + 3
+    return dim ÷ mubar
 end
 
-# kDim, b_kDim for Cartesian Spline k (RRR) — also reused for RLR / SLR
-function _spline_k_dims(gp::SpringsteelGridParameters)
-    if gp.kDim == 0
-        dk = gp.kMax - gp.kMin
-        dx = gp.iMax - gp.iMin
-        nc_k = Int64(ceil(gp.num_cells * (dk / dx)))
-    else
-        nc_k = Int64(gp.kDim / gp.mubar)
+# Number of cells that matches this axis' cell width to the i-direction cell
+# width, rounded up. Expressed as a ratio so it is invariant under i-tiling.
+# Warns when the rounding actually distorts the spacing.
+function _aspect_ratio_cells(cMin::Real, cMax::Real, gp::SpringsteelGridParameters,
+                             axis::Symbol, cells_name::String)
+    span = cMax - cMin
+    dx   = gp.iMax - gp.iMin
+    ratio = gp.num_cells * (span / dx)
+    nc = Int64(ceil(ratio))
+    if abs(ratio - round(ratio)) > 1e-9 * max(1.0, abs(ratio))
+        DX_i = dx / gp.num_cells
+        @warn "$(gp.geometry) $axis-direction: the $axis-domain length ($span) is not an " *
+              "integer multiple of the i-cell width DX_i=$DX_i. Rounding up to " *
+              "$cells_name=$nc gives DX_$axis=$(span / nc) != DX_i, so the $axis-nodes " *
+              "will not align with the i-nodes. Set `$cells_name` explicitly to control " *
+              "the $axis-resolution and silence this warning." maxlog=1
     end
-    return nc_k * gp.mubar, nc_k + 3
+    return nc
+end
+
+# Resolve one Cartesian spline j/k axis to its cell count.
+#   cells > 0, dim == 0            -> cells
+#   cells > 0, dim == cells*mubar  -> cells
+#   cells > 0, dim != cells*mubar  -> conflict
+#   cells == 0, dim > 0            -> dim ÷ mubar (divisibility enforced)
+#   cells == 0, dim == 0           -> aspect-ratio default
+function _resolve_spline_axis(gp::SpringsteelGridParameters, cells::Int, dim::Int,
+                              cMin::Real, cMax::Real, axis::Symbol,
+                              cells_name::String, dim_name::String)
+    mubar = gp.mubar
+    if cells > 0
+        if dim != 0 && dim != cells * mubar
+            throw(ArgumentError(
+                "$cells_name=$cells and $dim_name=$dim disagree ($cells_name=$cells " *
+                "implies $dim_name=$(cells * mubar)); pass only one."))
+        end
+        return cells
+    elseif dim > 0
+        return _cells_from_dim(dim, mubar, dim_name, cells_name)
+    else
+        return _aspect_ratio_cells(cMin, cMax, gp, axis, cells_name)
+    end
+end
+
+# (jDim, b_jDim, num_cells_j) for Cartesian Spline j (RR, RRR, Spline2D)
+function _cartesian_j_dims(gp::SpringsteelGridParameters)
+    nc_j = _resolve_spline_axis(gp, gp.num_cells_j, gp.jDim, gp.jMin, gp.jMax,
+                                :j, "num_cells_j", "jDim")
+    return nc_j * gp.mubar, nc_j + 3, nc_j
+end
+
+# (kDim, b_kDim, num_cells_k) for Cartesian Spline k (RRR) — also RiRk / RLR / SLR
+function _spline_k_dims(gp::SpringsteelGridParameters)
+    nc_k = _resolve_spline_axis(gp, gp.num_cells_k, gp.kDim, gp.kMin, gp.kMax,
+                                :k, "num_cells_k", "kDim")
+    return nc_k * gp.mubar, nc_k + 3, nc_k
 end
 
 # Backward-compat alias
 const _cartesian_k_dims = _spline_k_dims
 
-# Reconstruct SpringsteelGridParameters with updated j/k dims and/or regular
-# output sizing. Every other field — including the user's i/j/k_regular_out —
-# must pass through verbatim: this reconstruction used to omit the
-# *_regular_out fields, silently resetting explicitly set output sizes back
-# to the @kwdef defaults for every geometry that re-derives dimensions
-# (issue #6).
+# Reconcile {num_cells, num_cells_i, iDim} for spline-i geometries and rebuild
+# the i-direction fields the @kwdef defaults derived from num_cells. Must run
+# before _compute_derived_dims: _i_mishpoints reads gp.num_cells and
+# _fourier_j_dims_cyl loops over 1:gp.iDim.
+#
+# Non-spline-i geometries (L/LL/LLZ, Z/ZZ/ZZZ) take iDim/b_iDim directly from
+# the user and are passed through untouched.
+function _resolve_cell_counts(gp::SpringsteelGridParameters)
+    _is_spline_i(_normalize_geometry(gp.geometry)) || return gp
+
+    n, m, d = gp.num_cells, gp.num_cells_i, gp.iDim
+    if n > 0 && m > 0 && n != m
+        throw(ArgumentError(
+            "num_cells=$n and num_cells_i=$m disagree; pass only one, or matching values."))
+    end
+    nc = max(n, m)
+
+    if nc > 0
+        # iDim's @kwdef default is num_cells*mubar, so a mismatch here can only
+        # come from an explicit user override.
+        if d != 0 && d != nc * gp.mubar
+            cn = n > 0 ? "num_cells" : "num_cells_i"
+            throw(ArgumentError(
+                "$cn=$nc and iDim=$d disagree ($cn=$nc implies iDim=$(nc * gp.mubar)); " *
+                "pass only one."))
+        end
+    elseif d > 0
+        # Reverse mode: only iDim was given.
+        nc = _cells_from_dim(d, gp.mubar, "iDim", "num_cells")
+    else
+        return gp   # degenerate; nothing to resolve
+    end
+
+    # With the i cell count previously unset, @kwdef deterministically produced
+    # b_iDim == 3 and spectralIndexR == spectralIndexL + 2 (and iDim == 0 in the
+    # num_cells_i-only case). Nothing there is worth preserving, so recompute.
+    b_iDim = nc + 3
+    iDim   = nc * gp.mubar
+    return _update_gp(gp;
+        num_cells      = nc,
+        num_cells_i    = nc,
+        iDim           = iDim,
+        b_iDim         = b_iDim,
+        spectralIndexR = gp.spectralIndexL + b_iDim - 1,
+        patchOffsetR   = gp.patchOffsetL + iDim)
+end
+
+# Reconstruct SpringsteelGridParameters with updated cell counts, i/j/k dims,
+# and/or regular output sizing. Every other field — including the user's
+# i/j/k_regular_out — must pass through verbatim: this reconstruction used to
+# omit the *_regular_out fields, silently resetting explicitly set output sizes
+# back to the @kwdef defaults for every geometry that re-derives dimensions
+# (issue #6). The same hazard applies to the num_cells_* fields, so any new
+# field added to SpringsteelGridParameters must be threaded through here too.
 function _update_gp(gp::SpringsteelGridParameters;
-        jDim   = gp.jDim,   b_jDim  = gp.b_jDim,
-        kDim   = gp.kDim,   b_kDim  = gp.b_kDim,
+        num_cells   = gp.num_cells,   num_cells_i = gp.num_cells_i,
+        iDim        = gp.iDim,        b_iDim      = gp.b_iDim,
+        num_cells_j = gp.num_cells_j,
+        jDim        = gp.jDim,        b_jDim      = gp.b_jDim,
+        num_cells_k = gp.num_cells_k,
+        kDim        = gp.kDim,        b_kDim      = gp.b_kDim,
+        spectralIndexR = gp.spectralIndexR,
+        patchOffsetR   = gp.patchOffsetR,
         i_regular_out = gp.i_regular_out,
         j_regular_out = gp.j_regular_out,
         k_regular_out = gp.k_regular_out)
@@ -250,23 +368,26 @@ function _update_gp(gp::SpringsteelGridParameters;
         geometry       = gp.geometry,
         iMin           = gp.iMin,
         iMax           = gp.iMax,
-        num_cells      = gp.num_cells,
+        num_cells      = num_cells,
+        num_cells_i    = num_cells_i,
         mubar          = gp.mubar,
         quadrature     = gp.quadrature,
-        iDim           = gp.iDim,
-        b_iDim         = gp.b_iDim,
+        iDim           = iDim,
+        b_iDim         = b_iDim,
         l_q            = gp.l_q,
         BCL            = gp.BCL,
         BCR            = gp.BCR,
         jMin           = gp.jMin,
         jMax           = gp.jMax,
         max_wavenumber = gp.max_wavenumber,
+        num_cells_j    = num_cells_j,
         jDim           = jDim,
         b_jDim         = b_jDim,
         BCU            = gp.BCU,
         BCD            = gp.BCD,
         kMin           = gp.kMin,
         kMax           = gp.kMax,
+        num_cells_k    = num_cells_k,
         kDim           = kDim,
         b_kDim         = b_kDim,
         BCB            = gp.BCB,
@@ -276,9 +397,9 @@ function _update_gp(gp::SpringsteelGridParameters;
         chebyshev_filter = gp.chebyshev_filter,
         spline_filter  = gp.spline_filter,
         spectralIndexL = gp.spectralIndexL,
-        spectralIndexR = gp.spectralIndexR,
+        spectralIndexR = spectralIndexR,
         patchOffsetL   = gp.patchOffsetL,
-        patchOffsetR   = gp.patchOffsetR,
+        patchOffsetR   = patchOffsetR,
         tile_num       = gp.tile_num,
         i_regular_out  = i_regular_out,
         j_regular_out  = j_regular_out,
@@ -295,17 +416,12 @@ function _resolve_regular_out(gp::SpringsteelGridParameters)
     geom = _normalize_geometry(gp.geometry)
     iout = gp.i_regular_out
     if iout == 0
-        # "Spline1D"/"Spline2D" are accepted geometry names that are not in
-        # _GEOMETRY_ALIASES (matching the defensive checks in
-        # _compute_derived_dims).
-        spline_i = geom in ("R", "Spline1D", "RZ", "RR", "Spline2D", "RRR", "RiRk",
-                            "RL", "RLZ", "RLR", "SL", "SLZ", "SLR")
-        iout = spline_i ? gp.num_cells + 1 : gp.iDim + 1
+        iout = _is_spline_i(geom) ? gp.num_cells + 1 : gp.iDim + 1
     end
     jout = gp.j_regular_out
     if jout == 0
         jout = if geom in ("RR", "Spline2D", "RRR")
-            (gp.jDim ÷ gp.mubar) + 1            # Cartesian spline j: cells + 1
+            gp.num_cells_j + 1                  # Cartesian spline j: cells + 1
         elseif geom in ("RL", "RLZ", "RLR", "SL", "SLZ", "SLR")
             (gp.iDim * 2) + 1                   # outermost-ring azimuth rule
         else
@@ -315,7 +431,7 @@ function _resolve_regular_out(gp::SpringsteelGridParameters)
     kout = gp.k_regular_out
     if kout == 0
         kout = geom in ("RRR", "RLR", "SLR", "RiRk") ?
-            (gp.kDim ÷ gp.mubar) + 1 :          # spline k: cells + 1
+            gp.num_cells_k + 1 :                # spline k: cells + 1
             gp.kDim + 1                         # Chebyshev k (1 when absent)
     end
     if iout == gp.i_regular_out && jout == gp.j_regular_out &&
@@ -338,14 +454,25 @@ fully-populated `SpringsteelGridParameters`.  For most geometries the i-dimensio
 are already set by the `@kwdef` defaults; only geometries that have variable or
 domain-aspect-ratio-dependent j/k dimensions require recomputation.
 
+First the i-direction cell count is reconciled across `num_cells`, `num_cells_i`, and
+`iDim` (see [`SpringsteelGridParameters`](@ref)); for a spline-i geometry the returned
+parameters always satisfy `num_cells == num_cells_i`, `iDim == num_cells * mubar`, and
+`b_iDim == num_cells + 3`, whichever of the three the caller supplied.
+
+Then the j/k dimensions are derived:
+
 | Geometry | What is derived |
 |:-------- |:--------------- |
 | `"R"`, `"Spline1D"`, `"RZ"` | Nothing — `jDim`/`kDim` stay at user-provided values |
 | `"RL"`, `"RLZ"` | `jDim`, `b_jDim` from cylindrical ring formula `∑(4+4rᵢ)` |
 | `"SL"`, `"SLZ"` | `jDim`, `b_jDim` from spherical sin(θ) ring formula |
-| `"RR"`, `"RiRj"`, `"Spline2D"` | `jDim`, `b_jDim` from domain aspect ratio |
-| `"RRR"` | `jDim`, `b_jDim` AND `kDim`, `b_kDim` from domain aspect ratio |
-| `"RiRk"` | `kDim`, `b_kDim` from the vertical spline cell count (`j` absent) |
+| `"RR"`, `"RiRj"`, `"Spline2D"` | `num_cells_j`, `jDim`, `b_jDim` |
+| `"RRR"` | `num_cells_j`, `jDim`, `b_jDim` AND `num_cells_k`, `kDim`, `b_kDim` |
+| `"RiRk"` | `num_cells_k`, `kDim`, `b_kDim` (`j` absent) |
+
+A spline j/k axis takes its cell count from `num_cells_j`/`num_cells_k` if given, else
+back-derives it from `jDim`/`kDim`, else defaults to uniform nodal spacing with the
+i-direction. `num_cells_j`/`num_cells_k` stay `0` for Fourier/Chebyshev axes.
 
 After the dimension derivation, the regular-output sizing sentinels
 (`i/j/k_regular_out == 0`) are resolved to geometry-aware counts (spline axes
@@ -355,7 +482,7 @@ dim + 1). Explicitly set (nonzero) values are preserved.
 See also: [`parse_geometry`](@ref), [`createGrid`](@ref)
 """
 function compute_derived_params(gp::SpringsteelGridParameters)
-    return _resolve_regular_out(_compute_derived_dims(gp))
+    return _resolve_regular_out(_compute_derived_dims(_resolve_cell_counts(gp)))
 end
 
 function _compute_derived_dims(gp::SpringsteelGridParameters)
@@ -373,28 +500,31 @@ function _compute_derived_dims(gp::SpringsteelGridParameters)
         return _update_gp(gp; jDim=jDim, b_jDim=b_jDim)
 
     elseif geom in ("RR", "Spline2D")
-        jDim, b_jDim = _cartesian_j_dims(gp)
-        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim)
+        jDim, b_jDim, nc_j = _cartesian_j_dims(gp)
+        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, num_cells_j=nc_j)
 
     elseif geom == "RRR"
-        jDim, b_jDim = _cartesian_j_dims(gp)
-        kDim, b_kDim = _spline_k_dims(gp)
-        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
+        jDim, b_jDim, nc_j = _cartesian_j_dims(gp)
+        kDim, b_kDim, nc_k = _spline_k_dims(gp)
+        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, num_cells_j=nc_j,
+                              kDim=kDim, b_kDim=b_kDim, num_cells_k=nc_k)
 
     elseif geom == "RiRk"
         # spline-i × (none) × spline-k: derive only the vertical spline dims
-        kDim, b_kDim = _spline_k_dims(gp)
-        return _update_gp(gp; kDim=kDim, b_kDim=b_kDim)
+        kDim, b_kDim, nc_k = _spline_k_dims(gp)
+        return _update_gp(gp; kDim=kDim, b_kDim=b_kDim, num_cells_k=nc_k)
 
     elseif geom == "RLR"
         jDim, b_jDim = _fourier_j_dims_cyl(gp)
-        kDim, b_kDim = _spline_k_dims(gp)
-        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
+        kDim, b_kDim, nc_k = _spline_k_dims(gp)
+        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim,
+                              kDim=kDim, b_kDim=b_kDim, num_cells_k=nc_k)
 
     elseif geom == "SLR"
         jDim, b_jDim = _fourier_j_dims_sph(gp)
-        kDim, b_kDim = _spline_k_dims(gp)
-        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim, kDim=kDim, b_kDim=b_kDim)
+        kDim, b_kDim, nc_k = _spline_k_dims(gp)
+        return _update_gp(gp; jDim=jDim, b_jDim=b_jDim,
+                              kDim=kDim, b_kDim=b_kDim, num_cells_k=nc_k)
 
     # Fourier-based (user supplies iDim/b_iDim/jDim/b_jDim/kDim/b_kDim directly)
     elseif geom in ("L", "LL", "LLZ")
@@ -607,7 +737,7 @@ function _create_cartesian_2d_rirk(gp::SpringsteelGridParameters)
     grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
-    nc_k = Int64(gp.kDim / gp.mubar)
+    nc_k = gp.num_cells_k
     for key in keys(gp.vars)
         v = gp.vars[key]
         var_l_q   = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
@@ -655,7 +785,7 @@ function _create_cartesian_2d_rr(gp::SpringsteelGridParameters)
     grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
-    nc_j = Int64(gp.jDim / gp.mubar)
+    nc_j = gp.num_cells_j
     for key in keys(gp.vars)
         v = gp.vars[key]
         var_l_q_i = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
@@ -704,8 +834,8 @@ function _create_cartesian_3d_rrr(gp::SpringsteelGridParameters)
     grid = SpringsteelGrid{CartesianGeometry, typeof(ibasis), typeof(jbasis), typeof(kbasis)}(
         gp, ibasis, jbasis, kbasis, spectral, physical)
 
-    nc_j = Int64(gp.jDim / gp.mubar)
-    nc_k = Int64(gp.kDim / gp.mubar)
+    nc_j = gp.num_cells_j
+    nc_k = gp.num_cells_k
     for key in keys(gp.vars)
         v = gp.vars[key]
         var_l_q_i = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
@@ -1450,6 +1580,7 @@ function _subgrid_for_solution(grid::SpringsteelGrid, var_names::Vector{String})
         iMin           = p.iMin,
         iMax           = p.iMax,
         num_cells      = p.num_cells,
+        num_cells_i    = p.num_cells_i,
         mubar          = p.mubar,
         quadrature     = p.quadrature,
         iDim           = p.iDim,
@@ -1460,12 +1591,14 @@ function _subgrid_for_solution(grid::SpringsteelGrid, var_names::Vector{String})
         jMin           = p.jMin,
         jMax           = p.jMax,
         max_wavenumber = _narrow_var_dict(p.max_wavenumber, var_names),
+        num_cells_j    = p.num_cells_j,
         jDim           = p.jDim,
         b_jDim         = p.b_jDim,
         BCU            = _narrow_var_dict(p.BCU, var_names),
         BCD            = _narrow_var_dict(p.BCD, var_names),
         kMin           = p.kMin,
         kMax           = p.kMax,
+        num_cells_k    = p.num_cells_k,
         kDim           = p.kDim,
         b_kDim         = p.b_kDim,
         BCB            = _narrow_var_dict(p.BCB, var_names),
