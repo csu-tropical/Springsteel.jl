@@ -1511,7 +1511,7 @@ spline axis has no sensible default domain it must be sized explicitly (see belo
 
 # Required keys
 - `:topology` — `:chain` or `:embedded`
-- `:geometry` — `"R"`, `"RL"`, `"RLZ"`, `"SL"`, `"SLZ"`, `"RR"`, `"RRR"`
+- `:geometry` — `"R"`, `"RL"`, `"RLZ"`, `"SL"`, `"SLZ"`, `"RR"`, `"RRR"`, `"RiRk"`
 - `:cells` — `Int` (all equal) or `Vector{Int}` (per-patch)
 - `:vars` — variable map
 - `:BCL`, `:BCR` — outer i-BCs (per-variable Dict, required)
@@ -1520,7 +1520,7 @@ spline axis has no sensible default domain it must be sized explicitly (see belo
 - `:jMin`, `:jMax` and either `:num_cells_j` or `:jDim` — the shared spline j-axis
 - `:BCU`, `:BCD` — j-BCs (optional; default `NaturalBC`)
 
-# Required for spline-k geometries (`"RRR"`)
+# Required for spline-k geometries (`"RRR"`, `"RiRk"`)
 - `:kMin`, `:kMax` and either `:num_cells_k` or `:kDim` — the shared spline k-axis
 - `:BCB`, `:BCT` — k-BCs (optional; default `NaturalBC`)
 
