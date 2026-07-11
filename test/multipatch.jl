@@ -2216,6 +2216,49 @@ using LinearAlgebra
         @test mg.mpg.patches[2].params.patchOffsetL > 0
     end
 
+    @testset "createMultiGrid embedded: RiRk (shared spline k, stacked interfaces)" begin
+        # Outer [0,100] DX=5, inner [20,80] DX=2.5 → 2:1 refinement.
+        config = Dict{Symbol,Any}(
+            :topology => :embedded,
+            :geometry => "RiRk",
+            :domains  => [(0.0, 100.0), (20.0, 80.0)],
+            :cells    => [20, 24],
+            :kMin     => 0.0, :kMax => 40.0, :num_cells_k => 8,
+            :vars     => Dict("u" => 1),
+            :BCL      => Dict("u" => NaturalBC()),
+            :BCR      => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        @test length(mg.mpg.interfaces) == 2       # left + right stacked
+        for p in mg.mpg.patches
+            @test p.params.num_cells_k == 8
+            @test p.params.num_cells_j == 0        # no j-axis
+        end
+        @test mg.mpg.interfaces[1].metadata.n_modes == mg.mpg.patches[1].params.b_kDim
+
+        # Field linear in x and z — inner patch is FixedBC on both i-sides, so
+        # coupling must reproduce it exactly on every vertical mode.
+        f(x, z) = -1.5x + 0.4z + 2.0
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in 1:size(pts, 1); p.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2]); end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+
+        inner = mg.mpg.patches[2]
+        gp = inner.params
+        pts = getGridpoints(inner)
+        err_k = zeros(gp.kDim)                      # RiRk layout: idx = (r-1)*kDim + m
+        for r in 1:gp.iDim, m in 1:gp.kDim
+            idx = (r - 1) * gp.kDim + m
+            err_k[m] = max(err_k[m],
+                abs(inner.physical[idx, 1, 1] - f(pts[idx, 1], pts[idx, 2])))
+        end
+        @test maximum(err_k) < 1e-8
+        @test maximum(err_k[2:end]) < 1e-8         # every vertical mode coupled
+    end
+
     # ── Factory validation tests ──────────────────────────────────────────
 
     @testset "createMultiGrid rejects missing keys" begin
