@@ -1620,6 +1620,47 @@
             @test grid4.params.k_regular_out == 9
         end
 
+        @testset "gridparams Dict fields are concretely typed" begin
+            # Regression guard. `vars` is read in downstream inner loops; when the
+            # field was declared as a bare `Dict`, every `vars["p"]` returned `Any`
+            # and poisoned the array indexing built from it. These assertions exist
+            # so the field cannot silently widen again.
+            @test fieldtype(SpringsteelGridParameters, :vars) === Dict{String,Int64}
+            @test fieldtype(SpringsteelGridParameters, :l_q) === Dict{String,Float64}
+            @test fieldtype(SpringsteelGridParameters, :max_wavenumber) === Dict{String,Int64}
+            @test fieldtype(SpringsteelGridParameters, :fourier_filter) === Dict{String,AbstractFilter}
+            @test fieldtype(SpringsteelGridParameters, :chebyshev_filter) === Dict{String,AbstractFilter}
+            @test fieldtype(SpringsteelGridParameters, :spline_filter) ===
+                  Dict{String,Dict{Symbol,AbstractFilter}}
+
+            # The point of the whole exercise: a slot lookup infers as Int64, not Any.
+            lookup(gp) = gp.vars["u"]
+            @test Base.infer_return_type(lookup, (SpringsteelGridParameters,)) === Int64
+
+            # The six BC fields deliberately stay untyped — they must accept both the
+            # legacy Dict-valued BC constants and the BoundaryConditions struct, whose
+            # only common supertype is Any. See agent_files/project_bc_type_unification.md.
+            for f in (:BCL, :BCR, :BCU, :BCD, :BCB, :BCT)
+                @test fieldtype(SpringsteelGridParameters, f) === Dict
+            end
+            mixed = SpringsteelGridParameters(
+                geometry = "R", num_cells = 6, iMin = 0.0, iMax = 60.0,
+                vars = Dict("u" => 1, "v" => 2),
+                BCL = Dict("u" => DirichletBC(), "v" => CubicBSpline.R1T1),
+                BCR = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R1T1))
+            @test createGrid(mixed) isa R_Grid
+
+            # Widened input still converts on the way in, so old callers keep working.
+            widened = SpringsteelGridParameters(
+                geometry = "R", num_cells = 6, iMin = 0.0, iMax = 60.0,
+                vars = Dict{String,Any}("u" => 1),
+                l_q = Dict{String,Any}("default" => 2.0),
+                max_wavenumber = Dict{String,Any}("default" => -1))
+            @test widened.vars isa Dict{String,Int64}
+            @test widened.l_q isa Dict{String,Float64}
+            @test widened.max_wavenumber isa Dict{String,Int64}
+        end
+
     end  # SpringsteelGrid Factory
 
     # ─────────────────────────────────────────────────────────────────────────

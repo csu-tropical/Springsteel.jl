@@ -4,6 +4,21 @@ module Springsteel
 abstract type AbstractGrid end
 abstract type AbstractMultiGrid end
 
+"""
+    AbstractFilter
+
+Abstract supertype for all spectral filter types. Subtypes define how
+spectral coefficients are weighted (kept, zeroed, or tapered) after the
+forward transform.
+
+Declared here rather than in `filtering.jl` because `SpringsteelGridParameters`
+names it as the value type of its filter fields, and that struct is defined
+before `filtering.jl` is included.
+
+See also: [`SpectralFilter`](@ref), [`GaussianFilter`](@ref), [`applyFilter!`](@ref)
+"""
+abstract type AbstractFilter end
+
 using CSV
 using Dates
 using DataFrames
@@ -507,12 +522,16 @@ Base.@kwdef struct SpringsteelGridParameters
     quadrature::Symbol = :gauss
     iDim::int = num_cells * mubar
     b_iDim::int = num_cells + 3
-    l_q::Dict = Dict("default" => 2.0)
+    l_q::Dict{String,Float64} = Dict("default" => 2.0)
+    # The six BC fields stay a bare `Dict`: they accept both the legacy Dict-valued
+    # BC constants (CubicBSpline.R0 is a Dict{String,Int64}, R1T0 a Dict{String,Float64})
+    # and the newer `BoundaryConditions` struct, whose only common supertype is `Any`.
+    # See agent_files/project_bc_type_unification.md.
     BCL::Dict = Dict("default" => CubicBSpline.R0)
     BCR::Dict = Dict("default" => CubicBSpline.R0)
     jMin::real = 0.0
     jMax::real = 2 * π
-    max_wavenumber::Dict = Dict("default" => -1) # Default is -1 to indicate ring specific
+    max_wavenumber::Dict{String,Int64} = Dict("default" => -1) # Default is -1 to indicate ring specific
     num_cells_j::int = 0
     jDim::int = 0
     b_jDim::int = 0
@@ -525,13 +544,13 @@ Base.@kwdef struct SpringsteelGridParameters
     b_kDim::int = min(kDim, floor(((2 * kDim) - 1) / 3) + 1)
     BCB::Dict = Dict("default" => Chebyshev.R0)
     BCT::Dict = Dict("default" => Chebyshev.R0)
-    vars::Dict = Dict("u" => 1)
+    vars::Dict{String,Int64} = Dict("u" => 1)
     # Spectral filters (per-variable, keyed by variable name or "default")
-    fourier_filter::Dict = Dict()
-    chebyshev_filter::Dict = Dict()
+    fourier_filter::Dict{String,AbstractFilter} = Dict{String,AbstractFilter}()
+    chebyshev_filter::Dict{String,AbstractFilter} = Dict{String,AbstractFilter}()
     # Spline-direction filter: per-variable, per-direction (`:i`, `:j`, `:k`,
-    # `:default`).  Shape `Dict{String, Dict{Symbol, AbstractFilter}}`.
-    spline_filter::Dict = Dict()
+    # `:default`).
+    spline_filter::Dict{String,Dict{Symbol,AbstractFilter}} = Dict{String,Dict{Symbol,AbstractFilter}}()
     # Patch indices
     spectralIndexL::int = 1
     spectralIndexR::int = spectralIndexL + b_iDim - 1

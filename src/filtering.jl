@@ -30,16 +30,9 @@
 # Filter types
 # ════════════════════════════════════════════════════════════════════════════
 
-"""
-    AbstractFilter
-
-Abstract supertype for all spectral filter types. Subtypes define how
-spectral coefficients are weighted (kept, zeroed, or tapered) after the
-forward transform.
-
-See also: [`SpectralFilter`](@ref), [`GaussianFilter`](@ref), [`applyFilter!`](@ref)
-"""
-abstract type AbstractFilter end
+# `AbstractFilter` itself is declared at the top of Springsteel.jl — the filter
+# fields of `SpringsteelGridParameters` name it as their value type, and that
+# struct is defined before this file is included.
 
 """
     SpectralFilter <: AbstractFilter
@@ -496,12 +489,15 @@ end
 
 Validate a `spline_filter` Dict against a grid's variables and geometry.
 
-Checks:
-- outer keys are variable names in `gp.vars` or the literal `"default"`
+The *shape* — `Dict{String, Dict{Symbol, AbstractFilter}}` — is enforced by the
+field's declared type on `SpringsteelGridParameters`, so a caller who supplies a
+non-String key, a non-Dict inner, or a non-filter value is rejected by `convert`
+at construction. What remains to check here is semantics:
+
+- outer keys name a variable in `gp.vars`, or the literal `"default"`
 - inner keys are `:i`, `:j`, `:k`, or `:default`
-- inner values are `AbstractFilter` subtypes; `SpectralFilter` (boxcar/notch
-  cutoffs) is rejected — a clear error tells the user to switch to
-  `GaussianFilter` / `LanczosFilter`
+- `SpectralFilter` (boxcar/notch cutoffs) is rejected — a clear error tells the
+  user to switch to `GaussianFilter` / `LanczosFilter`
 - the named direction is actually a spline in the given geometry
 
 Throws `ArgumentError` on the first violation.  No-op when `sf` is empty.
@@ -512,17 +508,11 @@ function _validate_spline_filter(sf::Dict, gp::SpringsteelGridParameters)
     spline_dirs = _spline_dirs(gp.geometry)
 
     for (var_key, inner) in sf
-        var_key isa AbstractString || throw(ArgumentError(
-            "spline_filter outer keys must be variable-name strings or \"default\"; got $(typeof(var_key))"))
         var_key == "default" || haskey(gp.vars, String(var_key)) || throw(ArgumentError(
             "spline_filter references unknown variable \"$var_key\" (vars: $(collect(keys(gp.vars))))"))
-        inner isa Dict || throw(ArgumentError(
-            "spline_filter[\"$var_key\"] must be a Dict{Symbol,AbstractFilter}; got $(typeof(inner))"))
         for (dir, filt) in inner
             dir in valid_dirs || throw(ArgumentError(
                 "spline_filter[\"$var_key\"] uses invalid direction `$(dir)`; valid: $(valid_dirs)"))
-            filt isa AbstractFilter || throw(ArgumentError(
-                "spline_filter[\"$var_key\"][$(dir)] must be an AbstractFilter; got $(typeof(filt))"))
             if filt isa SpectralFilter
                 throw(ArgumentError(
                     "spline_filter[\"$var_key\"][$(dir)] is a SpectralFilter — boxcar/notch " *
