@@ -422,7 +422,11 @@ function PatchInterface(primary::SpringsteelGrid, secondary::SpringsteelGrid,
     b_iDim_s = secondary.params.b_iDim
 
     if p_scheme === :per_mode
-        n_modes = size(secondary.ibasis.data, 1)
+        # One i-spline per (j[,k]) spectral mode. ibasis.data is (b_jDim, nvars)
+        # for RR and (b_jDim, b_kDim, nvars) for RRR; the mode count is the
+        # product of every axis except the trailing variable axis. Using
+        # size(.,1) here would silently drop the k-axis for RRR.
+        n_modes = length(secondary.ibasis.data) ÷ nvars
         n_slots = n_modes
         kDim_couple = 0
         b_kDim = 0
@@ -517,9 +521,13 @@ function _fill_payload_per_mode!(border::Array{Float64,3},
                                  sb::Vector{Float64})
     nvars   = meta.nvars
     n_modes = meta.n_modes
+    # Flatten the (j[,k]) mode axes so RR (2-D data) and RRR (3-D data) share
+    # one index. Column-major order makes pdata[l, v] == data[l, z, v] with
+    # l = (z-1)*b_jDim + j; reshape is a view, no copy.
+    pdata   = reshape(primary.ibasis.data, :, nvars)
     @inbounds for v in 1:nvars
         for l in 1:n_modes
-            primary_spline = primary.ibasis.data[l, v]
+            primary_spline = pdata[l, v]
             _extract_primary_coeffs!(sx, primary_spline, meta.primary_node_indices)
             mul!(sb, meta.coupling_matrix, sx)
             border[1, l, v] = sb[1]
@@ -707,10 +715,11 @@ end
 function _apply_payload_per_mode!(meta::PatchInterfaceMetadata,
                                   secondary::SpringsteelGrid,
                                   payload::InterfacePayload)
-    side = meta.secondary_side
+    side  = meta.secondary_side
+    sdata = reshape(secondary.ibasis.data, :, meta.nvars)   # unify RR/RRR (see fill kernel)
     @inbounds for v in 1:meta.nvars
         for l in 1:meta.n_modes
-            sec_spline = secondary.ibasis.data[l, v]
+            sec_spline = sdata[l, v]
             _write_interface_ahat!(sec_spline, view(payload.border, :, l, v), side)
         end
     end
@@ -1201,6 +1210,56 @@ end
 const _REQUIRED_KEYS = Set([:topology, :geometry, :cells, :vars, :BCL, :BCR])
 const _CYLINDRICAL_GEOMETRIES = Set(["RL", "RLZ", "SL", "SLZ"])
 
+# Geometries whose non-i axes are cubic B-splines the user must size. Only the
+# i-direction is decomposed across patches, so these axes are shared by every
+# patch and read once from `config`. They have no sensible default domain, so
+# createMultiGrid requires them explicitly rather than falling back to the
+# kwdef jMax=2π / Fourier-periodic defaults (which are meaningless on a spline).
+_needs_spline_j(geom::String) = geom in ("RR", "RRR", "Spline2D")
+_needs_spline_k(geom::String) = geom in ("RRR", "RiRk", "RLR", "SLR")
+
+# Require a spline axis' domain bounds and a cell/gridpoint count in `config`.
+function _require_spline_axis(config, minkey, maxkey, cellkey, dimkey, geometry, axis)
+    (haskey(config, minkey) && haskey(config, maxkey)) || throw(ArgumentError(
+        "Geometry \"$geometry\" has a cubic B-spline $axis-axis, which is shared across " *
+        "all i-patches; createMultiGrid requires :$minkey and :$maxkey."))
+    (haskey(config, cellkey) || haskey(config, dimkey)) || throw(ArgumentError(
+        "Geometry \"$geometry\" has a cubic B-spline $axis-axis; createMultiGrid requires " *
+        ":$cellkey (or :$dimkey)."))
+end
+
+# Copy the shared (non-i) axis kwargs into a patch's gp_kwargs. Spline j/k axes
+# are required (validated up front) and default to natural BCs; a Chebyshev
+# k-axis (RLZ/SLZ) keeps the legacy optional `kDim>0` behaviour.
+function _fill_shared_axis_kwargs!(gp_kwargs, config, geometry, vars)
+    if _needs_spline_j(geometry)
+        gp_kwargs[:jMin] = Float64(config[:jMin])
+        gp_kwargs[:jMax] = Float64(config[:jMax])
+        haskey(config, :num_cells_j) && (gp_kwargs[:num_cells_j] = Int(config[:num_cells_j]))
+        haskey(config, :jDim)        && (gp_kwargs[:jDim]        = Int(config[:jDim]))
+        gp_kwargs[:BCU] = get(config, :BCU, Dict(k => NaturalBC() for k in keys(vars)))
+        gp_kwargs[:BCD] = get(config, :BCD, Dict(k => NaturalBC() for k in keys(vars)))
+    end
+    if _needs_spline_k(geometry)
+        gp_kwargs[:kMin] = Float64(config[:kMin])
+        gp_kwargs[:kMax] = Float64(config[:kMax])
+        haskey(config, :num_cells_k) && (gp_kwargs[:num_cells_k] = Int(config[:num_cells_k]))
+        haskey(config, :kDim)        && (gp_kwargs[:kDim]        = Int(config[:kDim]))
+        gp_kwargs[:BCB] = get(config, :BCB, Dict(k => NaturalBC() for k in keys(vars)))
+        gp_kwargs[:BCT] = get(config, :BCT, Dict(k => NaturalBC() for k in keys(vars)))
+    elseif get(config, :kDim, 0) > 0
+        # Chebyshev k-axis (RLZ/SLZ): optional, gridpoint-sized.
+        gp_kwargs[:kMin] = get(config, :kMin, 0.0)
+        gp_kwargs[:kMax] = get(config, :kMax, 0.0)
+        gp_kwargs[:kDim] = config[:kDim]
+        BCB = get(config, :BCB, Dict{String,Any}())
+        BCT = get(config, :BCT, Dict{String,Any}())
+        isempty(BCB) || (gp_kwargs[:BCB] = BCB)
+        isempty(BCT) || (gp_kwargs[:BCT] = BCT)
+    end
+    return gp_kwargs
+end
+
 function _validate_multigrid_config(config::Dict{Symbol, Any})
     for key in _REQUIRED_KEYS
         haskey(config, key) || throw(ArgumentError("Missing required config key: :$key"))
@@ -1233,6 +1292,13 @@ function _validate_multigrid_config(config::Dict{Symbol, Any})
     else
         throw(ArgumentError("cells must be Int or Vector{Int}, got $(typeof(cells))"))
     end
+
+    # Cartesian spline j/k axes are shared across patches and must be sized.
+    geometry = config[:geometry]::String
+    _needs_spline_j(geometry) &&
+        _require_spline_axis(config, :jMin, :jMax, :num_cells_j, :jDim, geometry, "j")
+    _needs_spline_k(geometry) &&
+        _require_spline_axis(config, :kMin, :kMax, :num_cells_k, :kDim, geometry, "k")
 end
 
 # ── patchOffsetL computation ──────────────────────────────────────────────
@@ -1306,11 +1372,6 @@ function _create_chain(config::Dict{Symbol, Any})
     offsets = _compute_patch_offsets(geometry, boundaries, cells_vec, mubar)
 
     # Optional shared params
-    kMin = get(config, :kMin, 0.0)
-    kMax = get(config, :kMax, 0.0)
-    kDim = get(config, :kDim, 0)
-    BCB = get(config, :BCB, Dict{String,Any}())
-    BCT = get(config, :BCT, Dict{String,Any}())
     quadrature = get(config, :quadrature, :gauss)
     fourier_filter = get(config, :fourier_filter, Dict{String,Any}())
     chebyshev_filter = get(config, :chebyshev_filter, Dict{String,Any}())
@@ -1338,13 +1399,7 @@ function _create_chain(config::Dict{Symbol, Any})
         if offsets[k] > 0
             gp_kwargs[:patchOffsetL] = offsets[k]
         end
-        if kDim > 0
-            gp_kwargs[:kMin] = kMin
-            gp_kwargs[:kMax] = kMax
-            gp_kwargs[:kDim] = kDim
-            if !isempty(BCB); gp_kwargs[:BCB] = BCB; end
-            if !isempty(BCT); gp_kwargs[:BCT] = BCT; end
-        end
+        _fill_shared_axis_kwargs!(gp_kwargs, config, geometry, vars)
         gp = SpringsteelGridParameters(; gp_kwargs...)
         push!(grids, createGrid(gp))
     end
@@ -1404,11 +1459,6 @@ function _create_embedded(config::Dict{Symbol, Any})
     offsets = _compute_patch_offsets(geometry, boundaries_flat, cells_vec, mubar)
 
     # Optional shared params
-    kMin = get(config, :kMin, 0.0)
-    kMax = get(config, :kMax, 0.0)
-    kDim = get(config, :kDim, 0)
-    BCB = get(config, :BCB, Dict{String,Any}())
-    BCT = get(config, :BCT, Dict{String,Any}())
     quadrature = get(config, :quadrature, :gauss)
     fourier_filter = get(config, :fourier_filter, Dict{String,Any}())
     chebyshev_filter = get(config, :chebyshev_filter, Dict{String,Any}())
@@ -1436,13 +1486,7 @@ function _create_embedded(config::Dict{Symbol, Any})
         if offsets[k] > 0
             gp_kwargs[:patchOffsetL] = offsets[k]
         end
-        if kDim > 0
-            gp_kwargs[:kMin] = kMin
-            gp_kwargs[:kMax] = kMax
-            gp_kwargs[:kDim] = kDim
-            if !isempty(BCB); gp_kwargs[:BCB] = BCB; end
-            if !isempty(BCT); gp_kwargs[:BCT] = BCT; end
-        end
+        _fill_shared_axis_kwargs!(gp_kwargs, config, geometry, vars)
         gp = SpringsteelGridParameters(; gp_kwargs...)
         push!(grids, createGrid(gp))
     end
@@ -1460,17 +1504,30 @@ Construct a multi-patch grid from a configuration dictionary.
 Auto-computes interface BCs (NaturalBC for primary sides, FixedBC for secondary),
 patchOffsetL for cylindrical/spherical geometries, and validates DX ratios.
 
+Only the **i-direction** is decomposed across patches. Geometries with additional
+cubic B-spline axes (`"RR"`, `"RRR"`) share those axes across every patch, and because a
+spline axis has no sensible default domain it must be sized explicitly (see below).
+2-D/3-D patch decomposition is not supported.
+
 # Required keys
 - `:topology` — `:chain` or `:embedded`
-- `:geometry` — `"R"`, `"RL"`, `"RLZ"`, `"SL"`, `"SLZ"`, `"RR"`, `"RRR"`
+- `:geometry` — `"R"`, `"RL"`, `"RLZ"`, `"SL"`, `"SLZ"`, `"RR"`, `"RRR"`, `"RiRk"`
 - `:cells` — `Int` (all equal) or `Vector{Int}` (per-patch)
 - `:vars` — variable map
-- `:BCL`, `:BCR` — outer BCs (per-variable Dict, required)
+- `:BCL`, `:BCR` — outer i-BCs (per-variable Dict, required)
+
+# Required for spline-j geometries (`"RR"`, `"RRR"`)
+- `:jMin`, `:jMax` and either `:num_cells_j` or `:jDim` — the shared spline j-axis
+- `:BCU`, `:BCD` — j-BCs (optional; default `NaturalBC`)
+
+# Required for spline-k geometries (`"RRR"`, `"RiRk"`)
+- `:kMin`, `:kMax` and either `:num_cells_k` or `:kDim` — the shared spline k-axis
+- `:BCB`, `:BCT` — k-BCs (optional; default `NaturalBC`)
 
 # Chain: `:boundaries => [x₁, x₂, ..., xₙ₊₁]` (N+1 values → N patches)
 # Embedded: `:domains => [(min₁,max₁), ..., (minₙ,maxₙ)]` (outermost first)
 
-# Example
+# Example (chain of RL patches)
 ```julia
 mg = createMultiGrid(Dict(
     :topology   => :chain,
@@ -1482,6 +1539,19 @@ mg = createMultiGrid(Dict(
     :BCR        => Dict("u" => NaturalBC())))
 spectralTransform!(mg)
 multiGridTransform!(mg)
+```
+
+# Example (chain of RR patches — i decomposed, j shared)
+```julia
+mg = createMultiGrid(Dict(
+    :topology    => :chain,
+    :geometry    => "RR",
+    :boundaries  => [0.0, 50.0, 100.0],
+    :cells       => 8,
+    :jMin        => 0.0, :jMax => 40.0, :num_cells_j => 8,
+    :vars        => Dict("u" => 1),
+    :BCL         => Dict("u" => NaturalBC()),
+    :BCR         => Dict("u" => NaturalBC())))
 ```
 
 See also: [`SpringsteelMultiGrid`](@ref), [`PatchChain`](@ref), [`PatchEmbedded`](@ref)

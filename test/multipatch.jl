@@ -2034,6 +2034,142 @@ using LinearAlgebra
         @test mg.mpg.patches[1].params.kDim == 6
     end
 
+    @testset "createMultiGrid chain: RR i-decomposition (shared spline j)" begin
+        # Only i is decomposed; the spline j-axis is shared across patches.
+        config = Dict{Symbol,Any}(
+            :topology    => :chain,
+            :geometry    => "RR",
+            :boundaries  => [0.0, 50.0, 100.0],
+            :cells       => 8,
+            :jMin        => 0.0, :jMax => 40.0, :num_cells_j => 8,
+            :vars        => Dict("u" => 1),
+            :BCL         => Dict("u" => NaturalBC()),
+            :BCR         => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        # j-axis is shared and correctly sized on every patch
+        for p in mg.mpg.patches
+            @test p.params.num_cells_j == 8
+            @test p.params.jDim == 24
+            @test p.params.jMax == 40.0
+        end
+        # per_mode interface couples the full j-column
+        @test mg.mpg.interfaces[1].metadata.n_modes == mg.mpg.patches[1].params.b_jDim
+
+        # A field linear in x and y is exact for cubic B-splines: coupling must
+        # reproduce it across the interface on the secondary patch.
+        f(x, y) = 2x + 0.5y - 3.0
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in 1:size(pts, 1); p.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2]); end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            max_err = maximum(abs(p.physical[i, 1, 1] - f(pts[i, 1], pts[i, 2]))
+                              for i in 1:size(pts, 1))
+            @test max_err < 1e-8
+        end
+    end
+
+    @testset "createMultiGrid chain: RRR i-decomposition (all k-modes coupled)" begin
+        # Regression for the per_mode k-axis collapse: every (j,k) mode must be
+        # coupled, not just the k=1 slice.
+        config = Dict{Symbol,Any}(
+            :topology    => :chain,
+            :geometry    => "RRR",
+            :boundaries  => [0.0, 50.0, 100.0],
+            :cells       => 6,
+            :jMin        => 0.0, :jMax => 30.0, :num_cells_j => 6,
+            :kMin        => 0.0, :kMax => 30.0, :num_cells_k => 6,
+            :vars        => Dict("u" => 1),
+            :BCL         => Dict("u" => NaturalBC()),
+            :BCR         => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        p1 = mg.mpg.patches[1]
+        @test p1.params.num_cells_j == 6
+        @test p1.params.num_cells_k == 6
+        # Interface must span the full (j × k) mode grid, not just b_jDim.
+        @test mg.mpg.interfaces[1].metadata.n_modes == p1.params.b_jDim * p1.params.b_kDim
+
+        # Field linear in x, y, z — exact for cubic B-splines in every direction.
+        f(x, y, z) = 2x + 0.5y - 0.3z + 1.0
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in 1:size(pts, 1)
+                p.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2], pts[i, 3])
+            end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+
+        # Break the error out by k-plane: pre-fix, k>1 planes were never coupled
+        # and would carry large error while k=1 stayed exact.
+        p2 = mg.mpg.patches[2]
+        gp = p2.params
+        pts2 = getGridpoints(p2)
+        err_k = zeros(gp.kDim)
+        for r in 1:gp.iDim, l in 1:gp.jDim, m in 1:gp.kDim
+            idx = ((r - 1) * gp.jDim + (l - 1)) * gp.kDim + m
+            err_k[m] = max(err_k[m],
+                abs(p2.physical[idx, 1, 1] - f(pts2[idx, 1], pts2[idx, 2], pts2[idx, 3])))
+        end
+        @test maximum(err_k) < 1e-8          # all planes exact
+        @test maximum(err_k[2:end]) < 1e-8   # explicitly: k>1 coupled
+    end
+
+    @testset "createMultiGrid chain: RiRk i-decomposition (shared spline k, no j)" begin
+        # RiRk is spline-i × (none) × spline-k — same per_mode coupling as RR,
+        # but the second spline lives in the k-slot and there is no j-axis.
+        config = Dict{Symbol,Any}(
+            :topology   => :chain,
+            :geometry   => "RiRk",
+            :boundaries => [0.0, 50.0, 100.0],
+            :cells      => 8,
+            :kMin       => 0.0, :kMax => 40.0, :num_cells_k => 8,
+            :vars       => Dict("u" => 1),
+            :BCL        => Dict("u" => NaturalBC()),
+            :BCR        => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        for p in mg.mpg.patches
+            @test p.params.num_cells_k == 8
+            @test p.params.kDim == 24
+            @test p.params.num_cells_j == 0        # no j-axis
+        end
+        # one i-spline per vertical mode; per_mode couples them all
+        @test mg.mpg.interfaces[1].metadata.n_modes == mg.mpg.patches[1].params.b_kDim
+
+        # Field linear in x and z — exact for cubic B-splines in both.
+        f(x, z) = 2x - 0.7z + 4.0
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in 1:size(pts, 1); p.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2]); end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+
+        p2 = mg.mpg.patches[2]
+        gp = p2.params
+        pts2 = getGridpoints(p2)
+        err_k = zeros(gp.kDim)                      # RiRk layout: idx = (r-1)*kDim + m
+        for r in 1:gp.iDim, m in 1:gp.kDim
+            idx = (r - 1) * gp.kDim + m
+            err_k[m] = max(err_k[m],
+                abs(p2.physical[idx, 1, 1] - f(pts2[idx, 1], pts2[idx, 2])))
+        end
+        @test maximum(err_k) < 1e-8
+        @test maximum(err_k[2:end]) < 1e-8         # every vertical mode coupled
+
+        # Missing k-config is rejected (RiRk has a spline k-axis, no j-axis)
+        @test_throws ArgumentError createMultiGrid(Dict{Symbol,Any}(
+            :topology => :chain, :geometry => "RiRk",
+            :boundaries => [0.0, 50.0, 100.0], :cells => 8,
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()), :BCR => Dict("u" => NaturalBC())))
+    end
+
     @testset "createMultiGrid embedded: 1D R" begin
         config = Dict{Symbol,Any}(
             :topology => :embedded,
@@ -2080,11 +2216,83 @@ using LinearAlgebra
         @test mg.mpg.patches[2].params.patchOffsetL > 0
     end
 
+    @testset "createMultiGrid embedded: RiRk (shared spline k, stacked interfaces)" begin
+        # Outer [0,100] DX=5, inner [20,80] DX=2.5 → 2:1 refinement.
+        config = Dict{Symbol,Any}(
+            :topology => :embedded,
+            :geometry => "RiRk",
+            :domains  => [(0.0, 100.0), (20.0, 80.0)],
+            :cells    => [20, 24],
+            :kMin     => 0.0, :kMax => 40.0, :num_cells_k => 8,
+            :vars     => Dict("u" => 1),
+            :BCL      => Dict("u" => NaturalBC()),
+            :BCR      => Dict("u" => NaturalBC()))
+        mg = createMultiGrid(config)
+        @test length(mg.mpg.patches) == 2
+        @test length(mg.mpg.interfaces) == 2       # left + right stacked
+        for p in mg.mpg.patches
+            @test p.params.num_cells_k == 8
+            @test p.params.num_cells_j == 0        # no j-axis
+        end
+        @test mg.mpg.interfaces[1].metadata.n_modes == mg.mpg.patches[1].params.b_kDim
+
+        # Field linear in x and z — inner patch is FixedBC on both i-sides, so
+        # coupling must reproduce it exactly on every vertical mode.
+        f(x, z) = -1.5x + 0.4z + 2.0
+        for p in mg.mpg.patches
+            pts = getGridpoints(p)
+            for i in 1:size(pts, 1); p.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2]); end
+        end
+        spectralTransform!(mg)
+        multiGridTransform!(mg)
+
+        inner = mg.mpg.patches[2]
+        gp = inner.params
+        pts = getGridpoints(inner)
+        err_k = zeros(gp.kDim)                      # RiRk layout: idx = (r-1)*kDim + m
+        for r in 1:gp.iDim, m in 1:gp.kDim
+            idx = (r - 1) * gp.kDim + m
+            err_k[m] = max(err_k[m],
+                abs(inner.physical[idx, 1, 1] - f(pts[idx, 1], pts[idx, 2])))
+        end
+        @test maximum(err_k) < 1e-8
+        @test maximum(err_k[2:end]) < 1e-8         # every vertical mode coupled
+    end
+
     # ── Factory validation tests ──────────────────────────────────────────
 
     @testset "createMultiGrid rejects missing keys" begin
         @test_throws ArgumentError createMultiGrid(Dict{Symbol,Any}(
             :topology => :chain, :geometry => "R"))
+    end
+
+    @testset "createMultiGrid requires explicit spline j/k config" begin
+        rr_base = Dict{Symbol,Any}(
+            :topology => :chain, :geometry => "RR",
+            :boundaries => [0.0, 50.0, 100.0], :cells => 8,
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()), :BCR => Dict("u" => NaturalBC()))
+        # No j-config at all
+        @test_throws ArgumentError createMultiGrid(copy(rr_base))
+        # Missing jMax
+        @test_throws ArgumentError createMultiGrid(
+            merge(copy(rr_base), Dict{Symbol,Any}(:jMin => 0.0, :num_cells_j => 8)))
+        # Missing cell/gridpoint count
+        @test_throws ArgumentError createMultiGrid(
+            merge(copy(rr_base), Dict{Symbol,Any}(:jMin => 0.0, :jMax => 40.0)))
+        # jDim accepted in place of num_cells_j
+        ok = createMultiGrid(
+            merge(copy(rr_base), Dict{Symbol,Any}(:jMin => 0.0, :jMax => 40.0, :jDim => 24)))
+        @test ok.mpg.patches[1].params.num_cells_j == 8
+
+        # RRR additionally requires the spline k-axis
+        rrr = Dict{Symbol,Any}(
+            :topology => :chain, :geometry => "RRR",
+            :boundaries => [0.0, 50.0, 100.0], :cells => 6,
+            :jMin => 0.0, :jMax => 30.0, :num_cells_j => 6,
+            :vars => Dict("u" => 1),
+            :BCL => Dict("u" => NaturalBC()), :BCR => Dict("u" => NaturalBC()))
+        @test_throws ArgumentError createMultiGrid(copy(rrr))  # no k-config
     end
 
     @testset "createMultiGrid rejects bad topology" begin
@@ -2451,8 +2659,11 @@ using LinearAlgebra
 
         function _snapshot_patch(g)
             nvars = length(g.params.vars)
-            n_modes = size(g.ibasis.data, 1)
-            ahats = [deepcopy(g.ibasis.data[l, v].ahat)
+            # Flatten the (j[,k]) mode axes so RRR's k-modes are captured, not
+            # just the k=1 slice (matches the per_mode coupling kernels).
+            mdata = reshape(g.ibasis.data, :, nvars)
+            n_modes = size(mdata, 1)
+            ahats = [deepcopy(mdata[l, v].ahat)
                      for v in 1:nvars, l in 1:n_modes]
             reg = Springsteel._has_wavenumber_ahat(g) ?
                   deepcopy(Springsteel._WN_AHAT_REGISTRY[objectid(g)]) : nothing
