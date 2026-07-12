@@ -191,6 +191,44 @@ using DataFrames
                 end
             end
 
+            @testset "load archive with widened Dict params" begin
+                # Fixture written while vars/l_q/max_wavenumber and the filter fields
+                # were still declared as a bare `Dict`, so the caller could store
+                # genuinely widened dicts (Dict{String,Any}). Now that those fields
+                # are concretely typed, JLD2 must *convert* the on-disk values rather
+                # than reject them. Regenerate with test/fixtures/make_fixtures.jl.
+                fixture = joinpath(@__DIR__, "fixtures", "widened_dicts_grid.jld2")
+                @test isfile(fixture)
+
+                # This exercises the *other* JLD2 path from the pre-1.1 fixture above.
+                # There, fields were missing from the archive, so JLD2 gave up and handed
+                # back a ReconstructedStatic for `_upgrade_params` to rebuild. Here every
+                # field is present but three of them are stored at a wider type, so JLD2
+                # builds the struct in place and `convert` narrows each field on the way
+                # in — which is why `raw` is already a real SpringsteelGridParameters with
+                # narrowed dicts, and why the widening is not observable after the fact.
+                raw = jldopen(fixture, "r") do f; f["params"]; end
+                @test raw isa SpringsteelGridParameters      # converted, not reconstructed
+                @test raw.vars isa Dict{String,Int64}
+
+                grid = load_grid(fixture)
+                @test grid isa RL_Grid
+
+                # ... and they come back narrowed, not widened.
+                @test grid.params.vars isa Dict{String,Int64}
+                @test grid.params.l_q isa Dict{String,Float64}
+                @test grid.params.max_wavenumber isa Dict{String,Int64}
+                @test grid.params.fourier_filter isa Dict{String,AbstractFilter}
+                @test grid.params.spline_filter isa Dict{String,Dict{Symbol,AbstractFilter}}
+
+                # Values survive the coercion intact
+                @test grid.params.vars == Dict("u" => 1, "v" => 2)
+                @test grid.params.l_q["default"] == 2.0
+                @test grid.params.max_wavenumber["default"] == 4
+                @test grid.params.spline_filter["u"][:i] isa GaussianFilter
+                @test !any(isnan, grid.physical)
+            end
+
             @testset "save/load roundtrip RL" begin
                 gp = SpringsteelGridParameters(
                     geometry="RL", num_cells=5,

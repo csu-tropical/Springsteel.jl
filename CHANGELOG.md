@@ -31,6 +31,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Six of the `Dict` fields on `SpringsteelGridParameters` are now concretely typed.**
+  `vars` becomes `Dict{String,Int64}`, `l_q` becomes `Dict{String,Float64}`,
+  `max_wavenumber` becomes `Dict{String,Int64}`, `fourier_filter` and `chebyshev_filter`
+  become `Dict{String,AbstractFilter}`, and `spline_filter` becomes
+  `Dict{String,Dict{Symbol,AbstractFilter}}`. They were previously declared as a bare
+  `Dict`, i.e. `Dict{Any,Any}` at the type level.
+
+  The one that matters is `vars`. Because it was abstract, `vars["p"]` returned `Any`, so
+  every slot index a downstream model pulled out of it was boxed and every array access
+  built from that index was type-unstable. The declaration is the only thing that was ever
+  abstract — at runtime the dict was already `Dict{String,Int64}` on every path — so
+  narrowing it de-boxes those lookups without changing a single value.
+
+  **This is not a breaking change.** Every construction site already infers the narrowed
+  type, and anything wider (`Dict{String,Any}`, an empty `Dict()`, an `Int` where a
+  `Float64` is wanted) is coerced by `convert` at construction exactly as before. Archives
+  written before this change load unchanged: JLD2 narrows each field as it rebuilds the
+  struct. A `test/fixtures/widened_dicts_grid.jld2` fixture — written while the fields were
+  still untyped, and deliberately holding `Dict{String,Any}` values — pins that behaviour,
+  and `test/fixtures/make_fixtures.jl` now documents how the fixtures are produced.
+
+  The six boundary-condition fields (`BCL`, `BCR`, `BCU`, `BCD`, `BCB`, `BCT`) are
+  **deliberately left as a bare `Dict`**. They must accept both the legacy Dict-valued BC
+  constants (`CubicBSpline.R0` is a `Dict{String,Int64}`, `R1T0` a `Dict{String,Float64}`)
+  and the newer `BoundaryConditions` struct; those have no common supertype but `Any`, so
+  no concrete value type can hold them. They are read at grid-construction time only and so
+  carry none of the performance payoff. See `agent_files/project_bc_type_unification.md`.
+- `_validate_spline_filter` no longer hand-checks the *shape* of a `spline_filter` — that a
+  key is a `String`, that the inner value is a `Dict`, that the leaf is an `AbstractFilter`.
+  The field's declared type now enforces all three, so malformed input is rejected at
+  construction as a `MethodError`/`InexactError` rather than reaching the validator and
+  raising an `ArgumentError`. The *semantic* checks are unchanged and still raise
+  `ArgumentError`: unknown variable name, invalid direction, a `SpectralFilter` on a spline
+  direction, or a direction that is not a spline in the given geometry.
 - A spline `iDim`/`jDim`/`kDim` that is not a multiple of `mubar` now raises an
   `ArgumentError` naming the field, `mubar`, and the nearest valid cell counts. It
   previously raised `InexactError: Int64(16.666666666666668)`, naming nothing. Chebyshev
@@ -40,8 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The j/k auto-default emits a warning when the domain length is not an integer multiple
   of the i-cell width, since the rounding then leaves `DX_j != DX_i`. Commensurate
   domains — the overwhelmingly common case — stay silent.
-- `save_grid` writes `format_version = "1.1"`. `load_grid` reads both `"1.0"` and `"1.1"`;
-  archives written before the new parameter fields existed are upgraded on load.
+- `save_grid` stamps `format_version = "1.1"` into the archive. Archives written before the
+  new parameter fields existed are still upgraded on load. Note that this upgrade is driven
+  by *type dispatch*, not by the version tag: `save_grid` serialises the whole `params`
+  struct, so when a field is missing from an archive JLD2 hands back a reconstructed type,
+  and `_upgrade_params` rebuilds it through the keyword constructor, letting the new fields
+  take their defaults. `load_grid` does not read `format_version` at all — it is written for
+  forensics and for future use, and nothing currently branches on it.
 
 ### Fixed
 
