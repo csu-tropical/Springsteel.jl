@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Thermodynamics.potential_temperature(p_Pa, rho_d)`** — a new two-argument method giving the
+  dry potential temperature from the `(p, ρ_d)` pair, `θ_d ≡ (p₀^κ/R_d)·p^(1−κ)/ρ_d`. It is the
+  same quantity as the existing `potential_temperature(s, rho_d, q_v)`, but needs no entropy
+  inversion, so total-energy equation sets that carry pressure prognostically can diagnose θ
+  without a spectral transform. Purely additive: a new signature on an existing generic, with no
+  change to the three-argument method. Note `p_Pa` is in **pascals** (matching
+  `PressureReferenceState.pbar`), not the hPa used by the saturation functions.
 - **Explicit cell counts for every cubic B-spline direction.**
   `SpringsteelGridParameters` gains `num_cells_i` (an alias for `num_cells`),
   `num_cells_j`, and `num_cells_k`. A spline axis is defined by its cell count

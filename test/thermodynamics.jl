@@ -84,6 +84,34 @@
         @test reversible_theta_e(s, rho_d, q_v, 0.0) > 0.0
     end
 
+    @testset "potential_temperature from (p_Pa, rho_d)" begin
+        # In dry air the (p, rho_d) form must agree with the entropy form exactly: both reduce
+        # to T*(p_0/p)^kappa with T = p/(Rd*rho_d). This is the cross-check that pins the two
+        # methods to the same quantity.
+        for (Tk, rho_d) in ((300.0, 1.2), (250.0, 0.8), (220.0, 0.35))
+            s = entropy(Tk, rho_d, 0.0)
+            p_Pa = 100.0 * pressure(s, rho_d, 0.0)          # `pressure` returns hPa
+            @test potential_temperature(p_Pa, rho_d) ≈ potential_temperature(s, rho_d, 0.0) rtol=1e-12
+        end
+
+        # Definitional identity: theta = T*(p_0/p)^kappa with T from the dry EOS.
+        p_Pa, rho_d = 95000.0, 1.1
+        Tk = p_Pa / (Rd * rho_d)
+        @test potential_temperature(p_Pa, rho_d) ≈ Tk * ((100.0 * p_0) / p_Pa)^(Rd / Cpd) rtol=1e-14
+
+        # At the reference pressure theta == T
+        rho_ref = (100.0 * p_0) / (Rd * 300.0)
+        @test potential_temperature(100.0 * p_0, rho_ref) ≈ 300.0 rtol=1e-14
+
+        # Moist air: the (p, rho_d) form is the dry-density-referenced (virtual) theta, so it
+        # exceeds the dry theta by R_m/R_d.
+        q_v = 0.02
+        s_m = entropy(300.0, 1.2, q_v)
+        p_m = 100.0 * pressure(s_m, 1.2, q_v)
+        R_m = Rd + q_v * Rv
+        @test potential_temperature(p_m, 1.2) ≈ (R_m / Rd) * potential_temperature(s_m, 1.2, q_v) rtol=1e-12
+    end
+
     @testset "rho_v_sat and internal_energy_bf02" begin
         # Saturated air: rho_d*q_sat == rho_v_sat identically (algebra of the Buck forms)
         for (Tk, p) in ((300.0, 1000.0), (270.0, 700.0), (240.0, 400.0))
