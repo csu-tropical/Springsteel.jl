@@ -425,6 +425,29 @@ function potential_temperature(s::Float64, rho_d::Float64, q_v::Float64)
 end
 
 """
+    potential_temperature(p_Pa, rho_d)
+
+Dry potential temperature [K] from pressure and dry-air density alone:
+
+    θ_d ≡ (p₀^κ / R_d) · p^(1−κ) / ρ_d,    κ = R_d/C_pd
+
+the same quantity as [`potential_temperature(s, rho_d, q_v)`](@ref) but expressed in the
+`(p, ρ_d)` pair, so it needs no entropy inversion and no diagnosed field. In dry air it is
+exactly θ = T·(p₀/p)^κ; in moist air it evaluates to `(R_m/R_d)·T·(p₀/p)^κ`, a
+dry-density-referenced virtual potential temperature.
+
+!!! warning "Pressure is in Pa here"
+    `p_Pa` is in **pascals**, matching `PressureReferenceState.pbar`. This differs from the
+    `phPa` arguments of the saturation functions ([`q_sat_liquid`](@ref), [`rho_v_sat`](@ref),
+    …) and from the hPa returned by [`pressure`](@ref).
+"""
+function potential_temperature(p_Pa::Float64, rho_d::Float64)
+
+    kappa = Rd / Cpd
+    return ((100.0 * p_0)^kappa) * (p_Pa^(1.0 - kappa)) / (Rd * rho_d)
+end
+
+"""
     reversible_theta_e(s, rho_d, q_v, q_l=0.0)
 
 Reversible equivalent potential temperature [K] from physical state, accounting for
