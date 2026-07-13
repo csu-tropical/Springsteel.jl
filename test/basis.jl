@@ -1278,6 +1278,17 @@
             dxx_g = Chebyshev.Ixxtransform(col)
             @test dxx_c == dxx_g
 
+            # Ixxtransform (in-place): identical values, no allocation once warm —
+            # the basis-agnostic hot paths rely on this on both bases
+            dxx_buf = zeros(length(dxx_c))
+            Chebyshev.Ixxtransform(col, dxx_buf)
+            @test dxx_buf == dxx_c
+            @test (@allocations Chebyshev.Ixxtransform(col, dxx_buf)) == 0
+            dx_buf = zeros(length(dx_c))
+            Chebyshev.Ixtransform(col, dx_buf)
+            @test dx_buf == dx_c
+            @test (@allocations Chebyshev.Ixtransform(col, dx_buf)) == 0
+
             # IInttransform
             uint_c = Chebyshev.CIInttransform(col, 0.0)
             uint_g = Chebyshev.IInttransform(col, 0.0)

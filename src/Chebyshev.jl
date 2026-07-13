@@ -1417,6 +1417,12 @@ Ixtransform(column::Chebyshev1D, ux::AbstractVector) = CIxtransform(column, ux)
 """Generic Ixx-transform wrapper for `Chebyshev1D` (allocating). Delegates to [`CIxxtransform`](@ref)."""
 Ixxtransform(column::Chebyshev1D) = CIxxtransform(column)
 
+"""Generic Ixx-transform wrapper for `Chebyshev1D` (in-place output). Delegates to
+[`CIxxtransform`](@ref). Completes the cross-basis in-place surface: `Spline1D`
+already had `Ixxtransform(spline, uprime2)`, so basis-agnostic hot paths (the
+per-column equation sets) can avoid the allocating 1-arg form on both bases."""
+Ixxtransform(column::Chebyshev1D, uxx::AbstractVector) = CIxxtransform(column, uxx)
+
 """Generic indefinite-integral transform wrapper for `Chebyshev1D`. Delegates to [`CIInttransform`](@ref)."""
 IInttransform(column::Chebyshev1D, C0::real = 0.0) = CIInttransform(column, C0)
 

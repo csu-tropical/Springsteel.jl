@@ -227,9 +227,16 @@ Itransform!(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Itransform!(obj)
 
 Ixtransform(obj::CubicBSpline.Spline1D)  = CubicBSpline.Ixtransform(obj)
 Ixtransform(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Ixtransform(obj)
+# In-place forms: write the derivative into a caller-provided buffer instead of
+# allocating a fresh vector per call — the per-column equation-set hot paths use
+# these with per-thread scratch so a timestep makes zero transform allocations.
+Ixtransform(obj::CubicBSpline.Spline1D, ux::AbstractVector)  = CubicBSpline.Ixtransform(obj, ux)
+Ixtransform(obj::Chebyshev.Chebyshev1D, ux::AbstractVector)  = Chebyshev.Ixtransform(obj, ux)
 
 Ixxtransform(obj::CubicBSpline.Spline1D)  = CubicBSpline.Ixxtransform(obj)
 Ixxtransform(obj::Chebyshev.Chebyshev1D)  = Chebyshev.Ixxtransform(obj)
+Ixxtransform(obj::CubicBSpline.Spline1D, uxx::AbstractVector)  = CubicBSpline.Ixxtransform(obj, uxx)
+Ixxtransform(obj::Chebyshev.Chebyshev1D, uxx::AbstractVector)  = Chebyshev.Ixxtransform(obj, uxx)
 
 IInttransform(obj::CubicBSpline.Spline1D, u::Vector{Float64}, C0::Float64=0.0) = CubicBSpline.IInttransform(obj, u, C0)
 # Cached 2-arg form (integrate the function held in obj.uMish), mirroring the
