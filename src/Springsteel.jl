@@ -151,6 +151,19 @@ FixedBC() = BoundaryConditions(NaN, NaN, NaN, nothing)
 FixedBC(u::Real, du::Real=0.0, d2u::Real=0.0) =
     BoundaryConditions(Float64(u), Float64(du), Float64(d2u), nothing)
 
+"""
+    BCSpec
+
+Anything accepted where a boundary condition is asked for: a `BoundaryConditions`
+struct, a legacy Dict-valued BC constant (`CubicBSpline.R0`, `Chebyshev.R1T1`, …), or a
+per-variable `Dict` mapping variable names to either of those.
+
+This union exists because the two BC spellings have no common supertype but `Any` — the
+legacy constants are themselves `Dict`s. It is the honest way to write "a BC" in a
+signature until the two are unified; see `agent_files/project_bc_type_unification.md`.
+"""
+const BCSpec = Union{Dict, BoundaryConditions}
+
 # ── Utility functions ────────────────────────────────────────────────────────
 
 """
@@ -267,7 +280,7 @@ export PatchChain, PatchEmbedded
 export AbstractMultiGrid, SpringsteelMultiGrid, createMultiGrid
 
 # Boundary condition type system
-export BoundaryConditions, bc_rank, is_periodic, is_inhomogeneous
+export BoundaryConditions, BCSpec, bc_rank, is_periodic, is_inhomogeneous
 export NaturalBC, DirichletBC, NeumannBC, SecondDerivativeBC
 export RobinBC, PeriodicBC, CauchyBC, ExponentialBC
 export SymmetricBC, AntisymmetricBC, ZerosBC, FixedBC

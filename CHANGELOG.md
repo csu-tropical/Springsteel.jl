@@ -84,6 +84,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`grid_from_regular_data` (and `grid_from_netcdf`, which forwards to it) never accepted
+  `BoundaryConditions` structs.** Its BC keyword arguments were annotated `::Dict`, so a bare
+  `DirichletBC()` — which is not a `Dict` — raised a `MethodError`. The struct-BC API simply
+  never reached these entry points, and the calls documented in `docs/src/tutorial.md` and
+  `docs/src/interpolation.md` did not run. The BC arguments now take the new `BCSpec` union
+  (`Union{Dict, BoundaryConditions}`), and a bare struct BC is broadcast across all variables
+  exactly as a bare legacy constant already was. Both spellings work on every axis of the 1D,
+  2D, and 3D methods; legacy `Dict` callers are unaffected.
+- `grid_from_regular_data` now accepts single-variable `data` as a plain vector, reshaping it
+  to `(total_points, 1)`. Only an `AbstractMatrix` method existed, so the vector form shown in
+  the documentation raised a `MethodError` regardless of which BC spelling was used.
+- Corrected the `grid_from_regular_data` examples in `docs/src/tutorial.md` and
+  `docs/src/interpolation.md`, which additionally passed `vars` as a `Dict("u" => 1)` where the
+  signature takes a `Vector{String}`. All three documented examples now execute verbatim.
 - `_create_tile_from_patch` did not propagate a patch's spline j/k cell counts, so a tile
   re-derived them from its own narrower i-domain. This was latent (the auto-default is
   tile-invariant) but would have produced mismatched coefficient-array shapes across
