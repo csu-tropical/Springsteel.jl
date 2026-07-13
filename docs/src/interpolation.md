@@ -52,7 +52,7 @@ grid = grid_from_regular_data(x, data;
     mubar = 1,                   # regular (non-Gauss) quadrature
     BCL   = DirichletBC(),
     BCR   = DirichletBC(),
-    vars  = Dict("u" => 1),
+    vars  = ["u"],
 )
 
 # grid is now a SpringsteelGrid that you can pass to downstream code

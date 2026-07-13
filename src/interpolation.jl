@@ -88,15 +88,21 @@ _make_l_q_dict(l_q::Real) = Dict("default" => Float64(l_q))
 _make_l_q_dict(l_q::Dict) = l_q
 
 """
-    _expand_bc(bc_spec::Dict, var_dict::Dict) -> Dict
+    _expand_bc(bc_spec, var_dict::Dict) -> Dict
 
 Expand a BC specification to a per-variable Dict. If `bc_spec` already has
 variable-name keys, returns it directly. Otherwise, applies the BC spec to all
 variables.
 
 The convention is: `BCL = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R1T0)`
-maps variable names to BC types. If the user passes a bare BC like `CubicBSpline.R0`,
-it is applied to all variables.
+maps variable names to BC types. If the user passes a bare BC — either a legacy
+constant like `CubicBSpline.R0` or a `BoundaryConditions` struct like
+`DirichletBC()` — it is applied to all variables.
+
+The `Dict` method has to disambiguate two things that are both `Dict`s, because the
+legacy BC constants *are* Dicts (`CubicBSpline.R0 === Dict("R0" => 0)`): a
+per-variable mapping is told apart from a bare BC by whether its keys name variables.
+A `BoundaryConditions` struct needs no such test — it can only ever be a bare BC.
 """
 function _expand_bc(bc_spec::Dict, var_dict::Dict)
     var_names = keys(var_dict)
@@ -107,6 +113,9 @@ function _expand_bc(bc_spec::Dict, var_dict::Dict)
     # Apply same BC to all variables
     return Dict(name => bc_spec for name in var_names)
 end
+
+_expand_bc(bc_spec::BoundaryConditions, var_dict::Dict) =
+    Dict(name => bc_spec for name in keys(var_dict))
 
 # ── 1D grid_from_regular_data ────────────────────────────────────────────
 
@@ -133,6 +142,9 @@ the first and last data points.
 all coordinate vector lengths. For multi-dimensional data, the ordering is
 i-outer, j-inner (j varies fastest), matching Springsteel's physical array layout.
 
+For a single variable `data` may be passed as a plain vector of function values; it is
+reshaped to `(total_points, 1)`.
+
 # Keyword arguments
 - `mubar::Int=3`: Quadrature points per cell
 - `l_q=2.0`: Filter length (scalar or Dict)
@@ -140,6 +152,15 @@ i-outer, j-inner (j varies fastest), matching Springsteel's physical array layou
 - `BCU`, `BCD`: j-dimension boundary conditions (2D/3D only)
 - `BCB`, `BCT`: k-dimension boundary conditions (3D only)
 - `vars::Vector{String}=String[]`: Variable names (auto-generated if empty)
+
+Each BC argument takes either spelling — a `BoundaryConditions` struct (`DirichletBC()`,
+`NeumannBC()`, `NaturalBC()`, …) or a legacy constant (`CubicBSpline.R0`) — applied to every
+variable, or a `Dict` mapping variable names to per-variable BCs:
+
+```julia
+grid_from_regular_data(x, data; BCL = DirichletBC(), BCR = NeumannBC())
+grid_from_regular_data(x, data; BCL = Dict("u" => DirichletBC(), "v" => CubicBSpline.R0))
+```
 
 # Returns
 
@@ -151,7 +172,7 @@ See also: [`grid_from_netcdf`](@ref), [`interpolate_to_grid`](@ref)
 """
 function grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractMatrix{<:Real};
         mubar::Int=3, l_q=2.0,
-        BCL::Dict=CubicBSpline.R0, BCR::Dict=CubicBSpline.R0,
+        BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
         vars::Vector{String}=String[])
 
     N = length(x)
@@ -191,13 +212,19 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractMatrix{
     return grid
 end
 
+# Single-variable convenience: `data` given as a plain vector of function values rather
+# than an (npoints, 1) matrix. `data` is always (total_points, nvars); one variable is
+# the common case, and writing `reshape(data, :, 1)` at every call site is noise.
+grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractVector{<:Real}; kwargs...) =
+    grid_from_regular_data(x, reshape(data, :, 1); kwargs...)
+
 # ── 2D grid_from_regular_data ────────────────────────────────────────────
 
 function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
         data::AbstractMatrix{<:Real};
         mubar::Int=3, l_q=2.0,
-        BCL::Dict=CubicBSpline.R0, BCR::Dict=CubicBSpline.R0,
-        BCU::Dict=CubicBSpline.R0, BCD::Dict=CubicBSpline.R0,
+        BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
+        BCU::BCSpec=CubicBSpline.R0, BCD::BCSpec=CubicBSpline.R0,
         vars::Vector{String}=String[])
 
     Nx, Ny = length(x), length(y)
@@ -245,14 +272,18 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
     return grid
 end
 
+grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
+        data::AbstractVector{<:Real}; kwargs...) =
+    grid_from_regular_data(x, y, reshape(data, :, 1); kwargs...)
+
 # ── 3D grid_from_regular_data ────────────────────────────────────────────
 
 function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
         z::AbstractVector{<:Real}, data::AbstractMatrix{<:Real};
         mubar::Int=3, l_q=2.0,
-        BCL::Dict=CubicBSpline.R0, BCR::Dict=CubicBSpline.R0,
-        BCU::Dict=CubicBSpline.R0, BCD::Dict=CubicBSpline.R0,
-        BCB::Dict=CubicBSpline.R0, BCT::Dict=CubicBSpline.R0,
+        BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
+        BCU::BCSpec=CubicBSpline.R0, BCD::BCSpec=CubicBSpline.R0,
+        BCB::BCSpec=CubicBSpline.R0, BCT::BCSpec=CubicBSpline.R0,
         vars::Vector{String}=String[])
 
     Nx, Ny, Nz = length(x), length(y), length(z)
@@ -308,6 +339,10 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
 
     return grid
 end
+
+grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
+        z::AbstractVector{<:Real}, data::AbstractVector{<:Real}; kwargs...) =
+    grid_from_regular_data(x, y, z, reshape(data, :, 1); kwargs...)
 
 # ── grid_from_netcdf ─────────────────────────────────────────────────────
 

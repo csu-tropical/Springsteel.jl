@@ -211,6 +211,85 @@ using Springsteel.Chebyshev
         @test haskey(grid.params.vars, "v2")
     end
 
+    @testset "grid_from_regular_data accepts BoundaryConditions structs" begin
+        # The struct-BC API never reached grid_from_regular_data: its BC kwargs were
+        # annotated ::Dict, so a bare DirichletBC() -- which is not a Dict -- raised a
+        # MethodError. The call documented in docs/src/tutorial.md did not run.
+        x = collect(0.5:1.0:29.5)
+        data = reshape(sin.(x), :, 1)
+
+        grid = grid_from_regular_data(x, data; mubar=1,
+                                      BCL=DirichletBC(), BCR=DirichletBC(), vars=["u"])
+        @test grid isa R_Grid
+        # A bare BC is broadcast to every variable
+        @test grid.params.BCL["u"] == DirichletBC()
+        @test grid.params.BCR["u"] == DirichletBC()
+
+        # A per-variable Dict of struct BCs passes through untouched
+        grid2 = grid_from_regular_data(x, data; mubar=1,
+                                       BCL=Dict("u" => NeumannBC()),
+                                       BCR=Dict("u" => DirichletBC()), vars=["u"])
+        @test grid2.params.BCL["u"] == NeumannBC()
+        @test grid2.params.BCR["u"] == DirichletBC()
+
+        # Legacy Dict BCs still work, and still broadcast
+        grid3 = grid_from_regular_data(x, data; mubar=1, BCL=CubicBSpline.R1T1, vars=["u"])
+        @test grid3.params.BCL["u"] == CubicBSpline.R1T1
+        @test grid3.params.BCR["u"] == CubicBSpline.R0        # untouched default
+
+        # The 2D and 3D overloads take struct BCs on every axis too
+        y = collect(0.5:1.0:11.5)
+        grid4 = grid_from_regular_data(x, y, reshape(ones(30 * 12), :, 1); mubar=1,
+                                       BCL=DirichletBC(), BCU=NaturalBC(), vars=["u"])
+        @test grid4 isa RR_Grid
+        @test grid4.params.BCU["u"] == NaturalBC()
+
+        # ... and the struct BCs are actually *enforced*, not merely stored: on a constant
+        # field, the struct spelling must reproduce its documented legacy equivalent
+        # exactly -- NaturalBC() == R0 (unconstrained), DirichletBC(0) == R1T0 (u -> 0).
+        flat = reshape(ones(length(x)), :, 1)
+        edge(bc) = begin
+            g = grid_from_regular_data(x, flat; mubar=1, BCL=bc, BCR=bc, vars=["u"])
+            spectralTransform!(g); gridTransform!(g)
+            g.physical[1, 1, 1]
+        end
+        @test edge(NaturalBC())   ≈ edge(CubicBSpline.R0)
+        @test edge(DirichletBC()) ≈ edge(CubicBSpline.R1T0)
+        @test edge(NaturalBC())   ≈ 1.0                       # no constraint
+        @test edge(DirichletBC())  <  edge(NaturalBC())        # pulled toward zero
+    end
+
+    @testset "grid_from_regular_data accepts vector data" begin
+        # Single-variable data as a plain vector, rather than an (npoints, 1) matrix.
+        # The documented examples pass a vector, but only the matrix overload existed.
+        x = collect(0.0:0.05:1.0)
+        vec_data = @. exp(-(x - 0.5)^2 / 0.01)
+        mat_data = reshape(vec_data, :, 1)
+
+        gv = grid_from_regular_data(x, vec_data; mubar=1, vars=["u"])
+        gm = grid_from_regular_data(x, mat_data; mubar=1, vars=["u"])
+        @test gv isa R_Grid
+        # isequal, not ==: the derivative slots are filled with NaN, and NaN != NaN
+        @test isequal(gv.physical, gm.physical)
+        @test gv.params.iDim == gm.params.iDim
+
+        # 2D and 3D take vector data too
+        y = collect(0.0:0.25:0.75)
+        g2 = grid_from_regular_data(x, y, ones(length(x) * length(y)); mubar=1, vars=["u"])
+        @test g2 isa RR_Grid
+        @test g2.physical[:, 1, 1] == ones(length(x) * length(y))
+
+        z = collect(0.0:0.5:0.5)
+        n3 = length(x) * length(y) * length(z)
+        g3 = grid_from_regular_data(x, y, z, ones(n3); mubar=1, vars=["u"])
+        @test g3 isa RRR_Grid
+
+        # ... and vector data composes with the struct BCs
+        g4 = grid_from_regular_data(x, vec_data; mubar=1,
+                                    BCL=DirichletBC(), BCR=DirichletBC(), vars=["u"])
+        @test g4.params.BCL["u"] == DirichletBC()
+    end
+
     # ════════════════════════════════════════════════════════════════════════
     # Layer 1: grid_from_netcdf
     # ════════════════════════════════════════════════════════════════════════

@@ -261,7 +261,7 @@ grid = grid_from_regular_data(x, data;
     mubar = 1,
     BCL   = DirichletBC(),
     BCR   = DirichletBC(),
-    vars  = Dict("u" => 1),
+    vars  = ["u"],
 )
 ```
 
@@ -287,7 +287,7 @@ Once you have a spectral source grid, [`interpolate_to_grid!`](@ref)
 moves data to any target grid of the same geometry:
 
 ```julia
-coarse = grid_from_regular_data(x, data; mubar=1, BCL=DirichletBC(), BCR=DirichletBC(), vars=Dict("u"=>1))
+coarse = grid_from_regular_data(x, data; mubar=1, BCL=DirichletBC(), BCR=DirichletBC(), vars=["u"])
 
 fine_gp = SpringsteelGridParameters(
     geometry = "R", iMin = 0.0, iMax = 1.0, num_cells = 40,
