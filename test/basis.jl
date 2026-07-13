@@ -451,9 +451,18 @@
             C_r0 = sum(expected_r0 .- uInt_r0) / length(pts_r0)
             @test maximum(abs.(uInt_r0 .+ C_r0 .- expected_r0)) < 1e-5
 
-            # IInttransform generic wrapper produces identical result to SIInttransform
+            # The generic IInttransform wrapper is ANCHORED at xmin (the Chebyshev
+            # convention, so basis-agnostic callers get "C0 = value at the bottom" on
+            # both bases): ∫₀ˣ sin dx' = 1 - cos(x), no free gauge.
             uInt_gen = CubicBSpline.IInttransform(spline_per, f_per, 0.0)
-            @test uInt_gen == uInt
+            @test maximum(abs.(uInt_gen .- (1.0 .- cos.(pts_per)))) < 1e-5
+            # C0 shifts the anchored result uniformly
+            uInt_gen25 = CubicBSpline.IInttransform(spline_per, f_per, 2.5)
+            @test maximum(abs.(uInt_gen25 .- uInt_gen .- 2.5)) < 1e-13
+            # The spline-native SIInttransform keeps its own (unanchored) gauge; the
+            # two differ only by the constant that anchors xmin
+            @test maximum(abs.((uInt_gen .- uInt) .-
+                               (uInt_gen[1] - uInt[1]))) < 1e-13
         end
 
     end

@@ -1869,18 +1869,36 @@ Ixxtransform(spline::Spline1D, uprime2::AbstractVector) = SIxxtransform(spline, 
 Ixxtransform(spline::Spline1D, points::Vector{real}, uprime2::AbstractVector) =
     SIxxtransform(spline, points, uprime2)
 
-"""Generic indefinite-integral transform wrapper for `Spline1D`. Delegates to [`SIInttransform`](@ref)."""
-IInttransform(spline::Spline1D, uMish::Vector{real}, C0::real = 0.0) =
-    SIInttransform(spline, uMish, C0)
+"""
+Generic indefinite-integral transform wrapper for `Spline1D`, ANCHORED at `xmin`:
+the returned antiderivative equals `C0` at the domain bottom, matching the Chebyshev
+`IInttransform` convention so basis-agnostic callers (reference-state hydrostatic
+integration, boundary-layer w from divergence) get the same semantics on both bases.
+
+The spline-native [`SIInttransform`](@ref) is NOT anchored — Ooyama (2002)'s
+antiderivative coefficients carry their own gauge (zero near the domain center) and
+`C0` is added uniformly there. Passing its raw output where "value at the surface"
+was meant silently offsets the profile by the mid-domain integral (a ~2x surface
+pressure error in a 20 km hydrostatic column). Clobbers `spline.a`, like
+`SIInttransform!`.
+"""
+function IInttransform(spline::Spline1D, uMish::Vector{real}, C0::real = 0.0)
+    SIIntcoefficients!(spline, uMish)
+    at_xmin = SItransform(spline.params, spline.a, spline.params.xmin)
+    uInt = zeros(real, spline.params.mishDim)
+    SItransform(spline.params, spline.a, spline.mishPoints, uInt, 0)
+    @. uInt += C0 - at_xmin
+    return uInt
+end
 
 """
 Cached indefinite-integral wrapper for `Spline1D` mirroring the Chebyshev
 `IInttransform(column, C0)` form: integrates the function currently held in
-`spline.uMish`. Lets basis-agnostic callers (e.g. reference-state integration)
-use a single 2-argument signature across Chebyshev and spline columns.
+`spline.uMish`, anchored so the result equals `C0` at `xmin` (see the
+`uMish` method above).
 """
 IInttransform(spline::Spline1D, C0::real = 0.0) =
-    SIInttransform(spline, spline.uMish, C0)
+    IInttransform(spline, spline.uMish, C0)
 
 """Generic I-transform matrix wrapper for `Spline1D`. Delegates to [`SItransform_matrix`](@ref)."""
 Itransform_matrix(spline::Spline1D, points::Vector{Float64}, derivative::Int64=0) =
