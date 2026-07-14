@@ -190,6 +190,36 @@ using Serialization
         @test p2.scheme === p.scheme && p2.side === p.side
     end
 
+    # ── Out-of-place SAtransform honors R3X ahat ─────────────────────────────
+    # The tiled b→a path (3-arg splineTransform!) uses the allocating
+    # SAtransform(spline, b); it must reproduce SAtransform!'s ahat handling,
+    # otherwise nest patches lose their coupled borders on the tiled path.
+
+    @testset "SAtransform(spline, b) matches SAtransform! for R3X" begin
+        gp = SpringsteelGridParameters(
+            geometry="R", iMin=0.0, iMax=10.0, num_cells=10,
+            BCL=Dict("u" => CubicBSpline.R3X),
+            BCR=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        g = createGrid(gp)
+        pts = getGridpoints(g)
+        for i in eachindex(pts)
+            g.physical[i, 1, 1] = sin(pts[i])
+        end
+        spectralTransform!(g)
+        spline = g.ibasis.data[1, 1]
+        Springsteel.CubicBSpline.set_ahat_r3x!(spline, 0.3, 0.7, 1.1, :left)
+
+        spline.b .= view(g.spectral, :, 1)
+        CubicBSpline.SAtransform!(spline)
+        a_inplace = copy(spline.a)
+        a_alloc = CubicBSpline.SAtransform(spline, view(g.spectral, :, 1))
+        @test a_alloc ≈ a_inplace atol=1e-14
+        # Rank-3 invariant: the constrained border trio IS the ahat
+        @test a_alloc[1:3] ≈ spline.ahat[1:3] atol=1e-14
+        @test any(!iszero, spline.ahat[1:3])
+    end
+
     # ── evaluate_grid_ipoints, RiRk grid ─────────────────────────────────────
 
     @testset "evaluate_grid_ipoints matches gridTransform! on mish points (RiRk)" begin
