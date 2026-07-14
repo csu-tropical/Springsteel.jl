@@ -62,6 +62,7 @@ jobs:
           - r3x
           - bc
           - multipatch
+          - nesting_support
           - tile_multipatch
           - basis_cache
           - relocation
