@@ -252,3 +252,110 @@ using Serialization
     end
 
 end
+
+# ── RL (cylindrical) nesting support ─────────────────────────────────────────
+
+@testset "RL nesting support" begin
+
+    @testset "evaluate_grid_points matches gridTransform! on mish points (RL)" begin
+        gp = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=50.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        g = createGrid(gp)
+        pts = getGridpoints(g)
+        for i in 1:size(pts, 1)
+            r, λ = pts[i, 1], pts[i, 2]
+            g.physical[i, 1, 1] = 0.1 * r + r * cos(λ) + 0.5 * r * sin(2λ)
+        end
+        spectralTransform!(g)
+        gridTransform!(g)
+
+        # gridTransform reconstructs ring ri with wavenumbers k ≤ ri only;
+        # pass the same per-point truncation for an exact comparison.
+        kmax = Int[]
+        for r in 1:g.params.iDim
+            ri = r + g.params.patchOffsetL
+            append!(kmax, fill(ri, 4 + 4 * ri))
+        end
+        out = evaluate_grid_points(g, pts; kmax = kmax)
+        for s in 1:5
+            err = maximum(abs.(out[:, 1, s] .- g.physical[:, 1, s]))
+            @test err < 1e-8
+        end
+    end
+
+    @testset "tiled RL splineTransform! honors the per-wavenumber registry" begin
+        # Disc-in-annulus fixture with distinct k=0 / k=1-real / k=1-imag borders
+        gp_annulus = SpringsteelGridParameters(
+            geometry="RL", iMin=20.0, iMax=100.0, num_cells=10,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        gp_disc = SpringsteelGridParameters(
+            geometry="RL", iMin=0.0, iMax=20.0, num_cells=5,
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => FixedBC()),
+            vars=Dict("u" => 1))
+        g_annulus = createGrid(gp_annulus)
+        g_disc = createGrid(gp_disc)
+        f(r, λ) = (2r + 5) + 0.3r * cos(λ) + 0.7r * sin(λ)
+        pts_a = getGridpoints(g_annulus)
+        pts_d = getGridpoints(g_disc)
+        for i in 1:size(pts_a, 1); g_annulus.physical[i, 1, 1] = f(pts_a[i, 1], pts_a[i, 2]); end
+        for i in 1:size(pts_d, 1); g_disc.physical[i, 1, 1] = f(pts_d[i, 1], pts_d[i, 2]); end
+        spectralTransform!(g_annulus)
+        spectralTransform!(g_disc)
+
+        iface = PatchInterface(g_annulus, g_disc, :left, :right, :i)
+        gridTransform!(g_annulus)
+        update_interface!(iface)
+
+        # Known-correct registry-aware path
+        gridTransform!(g_disc)
+        want = copy(g_disc.physical)
+
+        # Tiled path: 3-arg splineTransform! (patch splines) + tileTransform!
+        shared = SharedArray{Float64,2}(size(g_disc.spectral))
+        shared .= g_disc.spectral
+        tile = createGrid(gp_disc)
+        splineTransform!(shared, g_disc, tile)
+        tileTransform!(shared, tile, tile.physical, tile.spectral)
+        for s in 1:5
+            err = maximum(abs.(tile.physical[:, 1, s] .- want[:, 1, s]))
+            @test err < 1e-10
+        end
+
+        # Single-tile 2-arg path on the coupled grid object itself
+        splineTransform!(shared, g_disc)
+        tileTransform!(shared, g_disc, g_disc.physical, g_disc.spectral)
+        for s in 1:5
+            err = maximum(abs.(g_disc.physical[:, 1, s] .- want[:, 1, s]))
+            @test err < 1e-10
+        end
+    end
+
+    @testset "offset RL annulus follows global ring numbering" begin
+        # Nest-annulus convention: patchOffsetL carries the GLOBAL ring offset
+        # explicitly, while spectralIndexL stays 1 (the annulus is its own
+        # patch, so tile spectral windows are annulus-relative).
+        mubar = 3
+        gp = SpringsteelGridParameters(
+            geometry="RL", iMin=150.0e3, iMax=300.0e3, num_cells=50,
+            patchOffsetL = 50 * mubar,    # 50 inner cells of the same DX
+            BCL=Dict("u" => NaturalBC()), BCR=Dict("u" => NaturalBC()),
+            vars=Dict("u" => 1))
+        g = createGrid(gp)
+        @test g.params.patchOffsetL == 50 * mubar
+        @test g.params.spectralIndexL == 1
+        pts = getGridpoints(g)
+        # First ring's lpoints follows the global index: 4 + 4*(1 + offset)
+        lp1 = 4 + 4 * (1 + g.params.patchOffsetL)
+        @test count(x -> x ≈ pts[1, 1], pts[1:lp1 + 8, 1]) == lp1
+
+        # A single tile of the annulus composes the offset (rings match the
+        # patch) while keeping its spectral window patch-relative.
+        tiles = calcTileSizes(g, 1)
+        @test tiles[1].params.spectralIndexL == 1
+        @test tiles[1].params.patchOffsetL == g.params.patchOffsetL
+        @test size(getGridpoints(tiles[1]), 1) == size(pts, 1)
+    end
+end

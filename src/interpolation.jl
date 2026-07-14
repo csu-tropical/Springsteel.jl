@@ -1567,9 +1567,19 @@ function _get_ahat_cache_rl(source::SpringsteelGrid, sv::Int)
         return entry.a_coeffs
     end
 
+    # Multi-patch coupling: reload the per-wavenumber border coefficients into
+    # the reused splines before each solve (see gridTransform(_RLGrid)). The
+    # cache key hashes the spectral b only; that is sufficient in practice
+    # because a coupled patch's b changes whenever its neighbors' data does
+    # (every step of a time integration).
+    has_wn_ahat = _has_wavenumber_ahat(source)
+
     a_cache = zeros(Float64, b_iDim, n_kslots)
     sp0 = source.ibasis.data[1, sv]
     sp0.b .= view(source.spectral, 1:b_iDim, sv)
+    if has_wn_ahat
+        sp0.ahat .= _get_wavenumber_ahat(source, sv, 0)
+    end
     SAtransform!(sp0)
     a_cache[:, 1] .= sp0.a
 
@@ -1580,11 +1590,17 @@ function _get_ahat_cache_rl(source::SpringsteelGrid, sv::Int)
 
         spc = source.ibasis.data[2, sv]
         spc.b .= view(source.spectral, p1c:p2c, sv)
+        if has_wn_ahat
+            spc.ahat .= _get_wavenumber_ahat(source, sv, p)
+        end
         SAtransform!(spc)
         a_cache[:, 2k] .= spc.a
 
         sps = source.ibasis.data[3, sv]
         sps.b .= view(source.spectral, p1s:p2s, sv)
+        if has_wn_ahat
+            sps.ahat .= _get_wavenumber_ahat(source, sv, p + 1)
+        end
         SAtransform!(sps)
         a_cache[:, 2k + 1] .= sps.a
     end
@@ -1732,8 +1748,12 @@ function _eval_unstructured_rl(source::SpringsteelGrid, pts::AbstractMatrix{Floa
     for n in 1:npts
         f = sc.ak[n, 1]
         λ = pts[n, 2]
+        # FFTW halfcomplex convention: the "imag" slot holds the NEGATIVE sine
+        # sum, so synthesis is a0 + Σ 2(aR cos kλ − aI sin kλ). The previous
+        # `+ sin` sign silently flipped every sine (odd-in-λ) component of the
+        # evaluated field.
         for k in 1:kDim
-            f += 2.0 * (sc.ak[n, 2k] * cos(k * λ) + sc.ak[n, 2k + 1] * sin(k * λ))
+            f += 2.0 * (sc.ak[n, 2k] * cos(k * λ) - sc.ak[n, 2k + 1] * sin(k * λ))
         end
         result[n] = f
     end
@@ -1783,8 +1803,10 @@ function _eval_unstructured_rlz(source::SpringsteelGrid, pts::AbstractMatrix{Flo
 
         for z_b in 1:b_kDim
             val = sc.spline_vals[n, z_b, 1]
+            # FFTW halfcomplex: "imag" slots hold the NEGATIVE sine sum (see
+            # _eval_unstructured_rl) — synthesis subtracts the sine term.
             for k in 1:kDim_wn
-                val += 2.0 * (sc.spline_vals[n, z_b, 2k] * cos(k * λ) +
+                val += 2.0 * (sc.spline_vals[n, z_b, 2k] * cos(k * λ) -
                               sc.spline_vals[n, z_b, 2k + 1] * sin(k * λ))
             end
             cheb_col.b[z_b] = val

@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `test/nesting_support.jl` suite documents the construction and adds an
     anti-freeze regression against BC-based (dual-R3X) feedback, which is
     degenerate (a rank-3 spline's border trio is identically its `ahat`).
+  - **`evaluate_grid_points(grid::RL_Grid, pts; kmax)`** — values plus
+    ∂r/∂²r/∂λ/∂²λ at arbitrary `(r, λ)` points for radially-nested RL models,
+    with an optional per-point wavenumber truncation (the azimuthal analogue of
+    ring transmissibility: injected values must not exceed the target ring's
+    supported wavenumbers). Registry-aware via `_get_ahat_cache_rl`.
+  - **Nest-annulus grids**: an RL patch may set `patchOffsetL` explicitly (with
+    `spectralIndexL` left patch-relative) so its ring point counts and
+    wavenumber support follow the global ring numbering, and
+    `_create_tile_from_patch` now composes the patch's own `patchOffsetL` into
+    its tiles (identity for ordinary patches).
 
 - **`Thermodynamics.potential_temperature(p_Pa, rho_d)`** — a new two-argument method giving the
   dry potential temperature from the `(p, ρ_d)` pair, `θ_d ≡ (p₀^κ/R_d)·p^(1−κ)/ρ_d`. It is the
@@ -105,6 +115,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unstructured RL/RLZ evaluation flipped every sine (odd-in-λ) component.**
+  `_eval_unstructured_rl`/`_eval_unstructured_rlz` (behind `evaluate_unstructured`,
+  `interpolate_to_grid`, and grid relocation) synthesized the Fourier series with
+  `+ aI·sin(kλ)`, but the FFTW halfcomplex "imag" slots hold the **negative**
+  sine sums — so any azimuthally-asymmetric field was evaluated as its mirror
+  image. The synthesis now subtracts the sine term, matching the `HC2R` inverse
+  used by `FItransform!`; a new mish-point test pins the convention against
+  `gridTransform!` (the existing interpolation/relocation tests passed under
+  either sign and never caught this). **This changes results** for any consumer
+  that evaluated asymmetric RL/RLZ fields at unstructured points.
+- **The tiled RL b→a solves now reload the coupled per-wavenumber border.**
+  The 2- and 3-argument `splineTransform!(…, ::RL_Grid)` reused the three
+  k0/real/imag spline objects across all wavenumbers without reloading their
+  `ahat` from the multi-patch registry, so an R3X-coupled RL patch carried the
+  *last-applied* wavenumber's border on every mode (only k=0 was right). Both
+  methods — and the `_get_ahat_cache_rl` coefficient cache behind the
+  unstructured evaluators — now mirror `gridTransform`'s per-wavenumber registry
+  loads.
 - **The out-of-place `SAtransform(spline, b)` now honors the R3X `ahat`.** This
   allocating form is what every 3-argument (tiled) `splineTransform!` method uses
   for the b→a solve on the patch splines, and it ignored `spline.ahat` — so a

@@ -1753,3 +1753,93 @@ function _check_ipoints_in_domain(grid::SpringsteelGrid, xq::AbstractVector{Floa
     end
     return nothing
 end
+
+"""
+    evaluate_grid_points(grid::RL_Grid, pts; kmax=nothing) -> Array{Float64,3}
+
+Evaluate an RL (spline-radius × Fourier-azimuth) grid's spectral
+representation at arbitrary `(r, λ)` points — `pts` is `(N, 2)` with radius in
+column 1 and azimuth in column 2 — returning `(N, nvars, 5)` with the RL
+`physical` slice layout: 1=value, 2=∂r, 3=∂²r, 4=∂λ, 5=∂²λ.
+
+`kmax` (optional, `Vector{Int}` of length N) truncates the wavenumber sum per
+point. RL rings only support wavenumbers up to their global ring index, so a
+consumer injecting these values into another RL grid's rings should pass the
+TARGET ring's supported maximum — the azimuthal analogue of the radial
+transmissibility truncation (higher-k content would alias on the target
+ring's coarser azimuth points).
+
+This is the fine→coarse collar-feedback primitive for radially-nested RL
+models: the coarse annulus's collar ring points are evaluated on the fine
+patch and injected into the coarse Galerkin loads. Reads `grid.spectral` (b)
+and honors the per-wavenumber coupled border registry via
+`_get_ahat_cache_rl`. The λ-derivatives are analytic (FFTW halfcomplex
+convention: "imag" slots are negative sine sums).
+"""
+function evaluate_grid_points(grid::_RLGrid, pts::AbstractMatrix{Float64};
+                              kmax::Union{Nothing, Vector{Int}} = nothing)
+    gp = grid.params
+    b_iDim = gp.b_iDim
+    kDim = gp.iDim + gp.patchOffsetL
+    npts = size(pts, 1)
+    kmax === nothing || length(kmax) == npts || throw(ArgumentError(
+        "kmax must have one entry per point ($(npts)), got $(length(kmax))"))
+    size(pts, 2) == 2 || throw(ArgumentError("pts must be (N, 2) [r λ], got $(size(pts))"))
+    n_kslots = 1 + 2 * kDim
+    nvars = length(gp.vars)
+
+    lo, hi = gp.iMin, gp.iMax
+    tol = 1e-9 * max(abs(lo), abs(hi), 1.0)
+    for n in 1:npts
+        (lo - tol <= pts[n, 1] <= hi + tol) || throw(ArgumentError(
+            "Evaluation radius $(pts[n, 1]) outside grid domain [$lo, $hi]"))
+    end
+
+    out = zeros(Float64, npts, nvars, 5)
+    ak0 = Matrix{Float64}(undef, npts, n_kslots)   # radial value
+    ak1 = Matrix{Float64}(undef, npts, n_kslots)   # ∂r
+    ak2 = Matrix{Float64}(undef, npts, n_kslots)   # ∂²r
+    r_view = view(pts, :, 1)
+
+    for v in 1:nvars
+        a_cache = _get_ahat_cache_rl(grid, v)
+        sp0 = grid.ibasis.data[1, v]
+        for slot in 1:n_kslots
+            a_slice = view(a_cache, :, slot)
+            CubicBSpline.SItransform(sp0.params, a_slice, r_view,
+                                     view(ak0, :, slot), 0)
+            CubicBSpline.SItransform(sp0.params, a_slice, r_view,
+                                     view(ak1, :, slot), 1)
+            CubicBSpline.SItransform(sp0.params, a_slice, r_view,
+                                     view(ak2, :, slot), 2)
+        end
+        @inbounds for n in 1:npts
+            λ = pts[n, 2]
+            f   = ak0[n, 1]
+            fr  = ak1[n, 1]
+            frr = ak2[n, 1]
+            fl  = 0.0
+            fll = 0.0
+            # FFTW halfcomplex convention: the "imag" slot holds the NEGATIVE
+            # sine sum, so synthesis is a0 + Σ 2(aR cos kλ − aI sin kλ)
+            # (matching the HC2R inverse used by FItransform!).
+            kn = kmax === nothing ? kDim : min(kDim, kmax[n])
+            for k in 1:kn
+                ck = cos(k * λ)
+                sk = sin(k * λ)
+                aR0 = ak0[n, 2k]; aI0 = ak0[n, 2k + 1]
+                f   += 2.0 * (aR0 * ck - aI0 * sk)
+                fr  += 2.0 * (ak1[n, 2k] * ck - ak1[n, 2k + 1] * sk)
+                frr += 2.0 * (ak2[n, 2k] * ck - ak2[n, 2k + 1] * sk)
+                fl  += 2.0 * k * (-aR0 * sk - aI0 * ck)
+                fll -= 2.0 * k * k * (aR0 * ck - aI0 * sk)
+            end
+            out[n, v, 1] = f
+            out[n, v, 2] = fr
+            out[n, v, 3] = frr
+            out[n, v, 4] = fl
+            out[n, v, 5] = fll
+        end
+    end
+    return out
+end

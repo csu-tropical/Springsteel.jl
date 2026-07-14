@@ -285,7 +285,7 @@ export compute_interface_payload, compute_interface_payload!
 export apply_interface_payload!
 export PatchChain, PatchEmbedded
 export AbstractMultiGrid, SpringsteelMultiGrid, createMultiGrid
-export lerp_payload!, evaluate_grid_ipoints, evaluate_grid_ipoints!
+export lerp_payload!, evaluate_grid_ipoints, evaluate_grid_ipoints!, evaluate_grid_points
 
 # Boundary condition type system
 export BoundaryConditions, BCSpec, bc_rank, is_periodic, is_inhomogeneous

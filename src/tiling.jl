@@ -82,6 +82,14 @@ function _create_tile_from_patch(patch::SpringsteelGrid,
         mubar          = patch.params.mubar,
         quadrature     = patch.params.quadrature,
         spectralIndexL = spectralIndexL,
+        # Compose the patch's own physical offset (nonzero for nest annulus
+        # patches whose ring numbering / wavenumber support follows the GLOBAL
+        # grid) with the tile's position inside the patch. spectralIndexL stays
+        # patch-relative — it windows the tile into the patch spectral array —
+        # while patchOffsetL carries the global mish offset. For ordinary
+        # patches (patchOffsetL == 0) this reduces to the previous derivation.
+        patchOffsetL   = patch.params.patchOffsetL +
+                         (spectralIndexL - 1) * patch.params.mubar,
         tile_num       = tile_num)
     return createGrid(tile_gp)
 end
@@ -1514,10 +1522,17 @@ function splineTransform!(sharedSpectral::SharedArray{real}, tile::_RLGrid)
     kDim   = tile.params.iDim + tile.params.patchOffsetL
     nvars  = length(tile.params.vars)
 
+    # Reload the coupled per-wavenumber border coefficients before every solve
+    # on the reused splines (see the 3-arg method and gridTransform).
+    has_wn_ahat = _has_wavenumber_ahat(tile)
+
     for v in 1:nvars
         # k = 0 block
         k1 = 1
         k2 = b_iDim
+        if has_wn_ahat
+            tile.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(tile, v, 0)
+        end
         tile.spectral[k1:k2, v] .= SAtransform(tile.ibasis.data[1, v],
                                                  view(sharedSpectral, k1:k2, v))
 
@@ -1526,10 +1541,16 @@ function splineTransform!(sharedSpectral::SharedArray{real}, tile::_RLGrid)
             p  = k * 2
             p1 = ((p - 1) * b_iDim) + 1
             p2 = p * b_iDim
+            if has_wn_ahat
+                tile.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(tile, v, p)
+            end
             tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[2, v],
                                                      view(sharedSpectral, p1:p2, v))
             p1 = p * b_iDim + 1
             p2 = (p + 1) * b_iDim
+            if has_wn_ahat
+                tile.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(tile, v, p + 1)
+            end
             tile.spectral[p1:p2, v] .= SAtransform(tile.ibasis.data[3, v],
                                                      view(sharedSpectral, p1:p2, v))
         end
@@ -3511,8 +3532,18 @@ function splineTransform!(sharedSpectral::SharedArray{real},
     kDim         = tile.params.iDim + tile.params.patchOffsetL
     nvars        = length(tile.params.vars)
 
+    # Multi-patch coupling: the reused splines (k0/real/imag) are shared across
+    # wavenumbers, so the coupled border coefficients must be reloaded from the
+    # per-wavenumber registry before EVERY SAtransform, exactly as the non-tiled
+    # gridTransform does — otherwise every k >= 1 solve reuses whatever ahat the
+    # last apply_interface_payload! left behind.
+    has_wn_ahat = _has_wavenumber_ahat(patch)
+
     for v in 1:nvars
         # k = 0 block
+        if has_wn_ahat
+            patch.ibasis.data[1, v].ahat .= _get_wavenumber_ahat(patch, v, 0)
+        end
         patch.spectral[1:b_iDim_patch, v] .=
             SAtransform(patch.ibasis.data[1, v],
                         view(sharedSpectral, 1:b_iDim_patch, v))
@@ -3526,6 +3557,9 @@ function splineTransform!(sharedSpectral::SharedArray{real},
             # Real part
             pp1 = (p - 1) * b_iDim_patch + 1
             tp1 = (p - 1) * b_iDim_tile + 1
+            if has_wn_ahat
+                patch.ibasis.data[2, v].ahat .= _get_wavenumber_ahat(patch, v, p)
+            end
             patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
                 SAtransform(patch.ibasis.data[2, v],
                             view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
@@ -3535,6 +3569,9 @@ function splineTransform!(sharedSpectral::SharedArray{real},
             # Imaginary part
             pp1 = p * b_iDim_patch + 1
             tp1 = p * b_iDim_tile + 1
+            if has_wn_ahat
+                patch.ibasis.data[3, v].ahat .= _get_wavenumber_ahat(patch, v, p + 1)
+            end
             patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
                 SAtransform(patch.ibasis.data[3, v],
                             view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
