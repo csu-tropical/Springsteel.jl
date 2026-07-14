@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Temporal-nesting support for two-way nested models** (DeMaria et al. 1992;
+  Ooyama 2001):
+  - **`lerp_payload!(dest, p0, p1, θ)`** linearly interpolates two
+    [`InterfacePayload`]s in time, bitwise-exact at the endpoints. A subcycling
+    child patch applies the interpolated parent trio at each of its substeps
+    between the parent's bracketing steps.
+  - **`evaluate_grid_ipoints(grid, xq)`** (and the in-place `!` form) evaluates a
+    grid's spectral representation at arbitrary i-direction points with the same
+    variable/derivative-slice layout as `grid.physical` (1-D spline `R` and
+    `RiRk` grids). This is the fine→coarse feedback primitive: the coarse patch's
+    collar quadrature points are evaluated on the fine grid and injected into the
+    coarse Galerkin loads, per DeMaria et al. (1992) eq. 2.22 — feedback through
+    the tendencies, not through a boundary condition.
+  - **Collar interfaces** — a parent patch extended one cell past the nominal
+    junction into the child's domain, so the trio the child's R3X boundary reads
+    consists of interior, freely-fitted parent amplitudes — are covered by the
+    existing `PatchInterface(...; is_stacked=true)` path; the new
+    `test/nesting_support.jl` suite documents the construction and adds an
+    anti-freeze regression against BC-based (dual-R3X) feedback, which is
+    degenerate (a rank-3 spline's border trio is identically its `ahat`).
+  - **`evaluate_grid_points(grid::RL_Grid, pts; kmax)`** — values plus
+    ∂r/∂²r/∂λ/∂²λ at arbitrary `(r, λ)` points for radially-nested RL models,
+    with an optional per-point wavenumber truncation (the azimuthal analogue of
+    ring transmissibility: injected values must not exceed the target ring's
+    supported wavenumbers). Registry-aware via `_get_ahat_cache_rl`.
+  - **Nest-annulus grids**: an RL patch may set `patchOffsetL` explicitly (with
+    `spectralIndexL` left patch-relative) so its ring point counts and
+    wavenumber support follow the global ring numbering, and
+    `_create_tile_from_patch` now composes the patch's own `patchOffsetL` into
+    its tiles (identity for ordinary patches).
+
 - **`Thermodynamics.potential_temperature(p_Pa, rho_d)`** — a new two-argument method giving the
   dry potential temperature from the `(p, ρ_d)` pair, `θ_d ≡ (p₀^κ/R_d)·p^(1−κ)/ρ_d`. It is the
   same quantity as the existing `potential_temperature(s, rho_d, q_v)`, but needs no entropy
@@ -84,6 +115,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unstructured RL/RLZ evaluation flipped every sine (odd-in-λ) component.**
+  `_eval_unstructured_rl`/`_eval_unstructured_rlz` (behind `evaluate_unstructured`,
+  `interpolate_to_grid`, and grid relocation) synthesized the Fourier series with
+  `+ aI·sin(kλ)`, but the FFTW halfcomplex "imag" slots hold the **negative**
+  sine sums — so any azimuthally-asymmetric field was evaluated as its mirror
+  image. The synthesis now subtracts the sine term, matching the `HC2R` inverse
+  used by `FItransform!`; a new mish-point test pins the convention against
+  `gridTransform!` (the existing interpolation/relocation tests passed under
+  either sign and never caught this). **This changes results** for any consumer
+  that evaluated asymmetric RL/RLZ fields at unstructured points.
+- **The tiled RL b→a solves now reload the coupled per-wavenumber border.**
+  The 2- and 3-argument `splineTransform!(…, ::RL_Grid)` reused the three
+  k0/real/imag spline objects across all wavenumbers without reloading their
+  `ahat` from the multi-patch registry, so an R3X-coupled RL patch carried the
+  *last-applied* wavenumber's border on every mode (only k=0 was right). Both
+  methods — and the `_get_ahat_cache_rl` coefficient cache behind the
+  unstructured evaluators — now mirror `gridTransform`'s per-wavenumber registry
+  loads.
+- **The out-of-place `SAtransform(spline, b)` now honors the R3X `ahat`.** This
+  allocating form is what every 3-argument (tiled) `splineTransform!` method uses
+  for the b→a solve on the patch splines, and it ignored `spline.ahat` — so a
+  rank-3-coupled (R3X) patch lost its donated border trio on the distributed tile
+  path, with the border silently pinned to zero while the in-place `SAtransform!`
+  honored the coupling. The rank-3 inhomogeneous path now matches `SAtransform!`
+  exactly; a regression test asserts allocating == in-place for an R3X spline
+  with nonzero `ahat`.
 - **`grid_from_regular_data` (and `grid_from_netcdf`, which forwards to it) never accepted
   `BoundaryConditions` structs.** Its BC keyword arguments were annotated `::Dict`, so a bare
   `DirichletBC()` — which is not a `Dict` — raised a `MethodError`. The struct-BC API simply

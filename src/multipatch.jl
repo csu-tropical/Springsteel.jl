@@ -1573,3 +1573,273 @@ function createMultiGrid(config::Dict{Symbol, Any};
     end
     return SpringsteelMultiGrid(cfg, mpg)
 end
+
+# ────────────────────────────────────────────────────────────────────────────
+# Temporal nesting support: payload time-interpolation + collar evaluation
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Two-way nesting à la DeMaria et al. (1992, MWR) / Ooyama (2001, JAS):
+#
+# - Coarse→fine: the fine patch's R3X border trio comes from the coarse
+#   amplitudes at the interface node (COUPLING_MATRIX_2X).  When the fine
+#   patch subcycles with a smaller timestep, the coarse trio is linearly
+#   interpolated in time between the bracketing coarse steps
+#   (`lerp_payload!`).
+# - Fine→coarse: NOT a boundary condition.  The coarse patch extends one
+#   coarse cell past the interface into the fine domain (the "collar"); its
+#   Galerkin load integrals there are evaluated from the fine-mesh
+#   representation.  `evaluate_grid_ipoints` provides those fine-mesh values
+#   (and derivative slices, matching the `physical` array layout) at the
+#   coarse patch's collar quadrature points.
+#
+# A collar interface is constructed with the existing
+# `PatchInterface(...; is_stacked=true)` path: the primary (coarse) domain
+# extends one cell past the secondary (fine) boundary, so the extraction trio
+# sits at interior, freely-fitted primary nodes.
+
+"""
+    lerp_payload!(dest, p0, p1, θ) -> InterfacePayload
+
+Linearly interpolate two [`InterfacePayload`](@ref)s in time:
+`dest.border = (1-θ)·p0.border + θ·p1.border`.
+
+Used by subcycling drivers: the primary computes payloads at its step
+endpoints `t_n` (`p0`) and `t_{n+1}` (`p1`); each secondary substep at
+fraction `θ ∈ [0,1]` of the primary step applies the interpolated payload.
+`θ == 0.0` and `θ == 1.0` reproduce `p0`/`p1` bitwise.
+
+All three payloads must agree in scheme, side, nvars, and n_slots.
+"""
+function lerp_payload!(dest::InterfacePayload, p0::InterfacePayload,
+                       p1::InterfacePayload, θ::Float64)
+    for p in (p0, p1)
+        p.scheme === dest.scheme || throw(ArgumentError(
+            "Payload scheme :$(p.scheme) ≠ dest scheme :$(dest.scheme)"))
+        p.side === dest.side || throw(ArgumentError(
+            "Payload side :$(p.side) ≠ dest side :$(dest.side)"))
+        p.nvars == dest.nvars || throw(ArgumentError(
+            "Payload nvars $(p.nvars) ≠ dest nvars $(dest.nvars)"))
+        p.n_slots == dest.n_slots || throw(ArgumentError(
+            "Payload n_slots $(p.n_slots) ≠ dest n_slots $(dest.n_slots)"))
+    end
+    (0.0 <= θ <= 1.0) || throw(ArgumentError("θ must be in [0,1], got $θ"))
+    if θ == 0.0
+        copyto!(dest.border, p0.border)
+    elseif θ == 1.0
+        copyto!(dest.border, p1.border)
+    else
+        @. dest.border = (1.0 - θ) * p0.border + θ * p1.border
+    end
+    return dest
+end
+
+"""
+    evaluate_grid_ipoints(grid, xq) -> Array{Float64,3}
+
+Evaluate `grid`'s spectral representation at arbitrary i-direction points
+`xq` (which must lie inside the grid's i-domain), returning an array with the
+same variable and derivative-slice layout as `grid.physical`, but with the
+i-mish points replaced by `xq`.
+
+- 1-D spline grid (`R`): output is `(length(xq), nvars, 3)` with slices
+  1=value, 2=∂i, 3=∂²i.
+- 2-D spline×spline grid (`RiRk`): output is `(length(xq)·kDim, nvars, 5)`
+  with rows ordered `(q-1)·kDim + z` (i-outer, k-inner, matching `physical`)
+  and slices 1=value, 2=∂i, 3=∂²i, 4=∂k, 5=∂²k.  The k-direction is
+  evaluated at the grid's own vertical mish points.
+
+This is the fine→coarse feedback primitive for two-way nesting: the coarse
+patch's collar quadrature points are evaluated on the fine grid, and the
+result overwrites the coarse `physical` rows there before the coarse
+tendency computation (DeMaria et al. 1992, eq. 2.22 discussion).
+
+Reads `grid.spectral`; mutates the grid's basis spline scratch (`.b`, `.a`)
+exactly as `gridTransform!` does, so it must not run concurrently with other
+transforms on the same grid.
+"""
+function evaluate_grid_ipoints(grid::_1DCartesianGrid, xq::AbstractVector{Float64})
+    nvars = size(grid.spectral, 2)
+    out = zeros(Float64, length(xq), nvars, 3)
+    return evaluate_grid_ipoints!(out, grid, xq)
+end
+
+function evaluate_grid_ipoints!(out::AbstractArray{Float64,3},
+                                grid::_1DCartesianGrid,
+                                xq::AbstractVector{Float64})
+    nvars = size(grid.spectral, 2)
+    size(out) == (length(xq), nvars, 3) || throw(DimensionMismatch(
+        "out must be ($(length(xq)), $nvars, 3), got $(size(out))"))
+    _check_ipoints_in_domain(grid, xq)
+    for v in 1:nvars
+        spline = grid.ibasis.data[1, v]
+        spline.b .= view(grid.spectral, :, v)
+        CubicBSpline.SAtransform!(spline)
+        for dr in 0:2
+            CubicBSpline.SItransform(spline.params, spline.a, xq,
+                                     view(out, :, v, dr + 1), dr)
+        end
+    end
+    return out
+end
+
+function evaluate_grid_ipoints(grid::_2DCartesianRiRk, xq::AbstractVector{Float64})
+    kDim  = grid.params.kDim
+    nvars = size(grid.spectral, 2)
+    out = zeros(Float64, length(xq) * kDim, nvars, 5)
+    return evaluate_grid_ipoints!(out, grid, xq)
+end
+
+function evaluate_grid_ipoints!(out::AbstractArray{Float64,3},
+                                grid::_2DCartesianRiRk,
+                                xq::AbstractVector{Float64})
+    nq     = length(xq)
+    kDim   = grid.params.kDim
+    b_iDim = grid.params.b_iDim
+    b_kDim = grid.params.b_kDim
+    nvars  = size(grid.spectral, 2)
+    size(out) == (nq * kDim, nvars, 5) || throw(DimensionMismatch(
+        "out must be ($(nq * kDim), $nvars, 5), got $(size(out))"))
+    _check_ipoints_in_domain(grid, xq)
+
+    buf = Matrix{Float64}(undef, nq, b_kDim)   # i-evaluated k-mode coefficients
+    kscratch = Vector{Float64}(undef, kDim)
+
+    for v in 1:nvars
+        kcol = grid.kbasis.data[v]
+        for dr in 0:2
+            # i-direction: evaluate each k-spectral mode's i-spline at xq
+            for z in 1:b_kDim
+                r1 = (z - 1) * b_iDim + 1
+                isp = grid.ibasis.data[z, v]
+                copyto!(isp.b, 1, grid.spectral, r1 + (v - 1) * size(grid.spectral, 1), b_iDim)
+                CubicBSpline.SAtransform!(isp)
+                CubicBSpline.SItransform(isp.params, isp.a, xq,
+                                         view(buf, :, z), dr)
+            end
+            # k-direction: inverse transform per evaluation point
+            for q in 1:nq
+                @inbounds for z in 1:b_kDim
+                    kcol.b[z] = buf[q, z]
+                end
+                CubicBSpline.SAtransform!(kcol)
+                z1 = (q - 1) * kDim + 1
+                z2 = z1 + kDim - 1
+                if dr == 0
+                    CubicBSpline.SItransform!(kcol)
+                    copyto!(view(out, z1:z2, v, 1), kcol.uMish)
+                    CubicBSpline.SIxtransform(kcol, kscratch)
+                    copyto!(view(out, z1:z2, v, 4), kscratch)
+                    CubicBSpline.SIxxtransform(kcol, kscratch)
+                    copyto!(view(out, z1:z2, v, 5), kscratch)
+                elseif dr == 1
+                    CubicBSpline.SItransform!(kcol)
+                    copyto!(view(out, z1:z2, v, 2), kcol.uMish)
+                else
+                    CubicBSpline.SItransform!(kcol)
+                    copyto!(view(out, z1:z2, v, 3), kcol.uMish)
+                end
+            end
+        end
+    end
+    return out
+end
+
+function _check_ipoints_in_domain(grid::SpringsteelGrid, xq::AbstractVector{Float64})
+    lo, hi = _get_domain_bounds(grid, :i)
+    tol = 1e-9 * max(abs(lo), abs(hi), 1.0)
+    for x in xq
+        (lo - tol <= x <= hi + tol) || throw(ArgumentError(
+            "Evaluation point $x outside grid i-domain [$lo, $hi]"))
+    end
+    return nothing
+end
+
+"""
+    evaluate_grid_points(grid::RL_Grid, pts; kmax=nothing) -> Array{Float64,3}
+
+Evaluate an RL (spline-radius × Fourier-azimuth) grid's spectral
+representation at arbitrary `(r, λ)` points — `pts` is `(N, 2)` with radius in
+column 1 and azimuth in column 2 — returning `(N, nvars, 5)` with the RL
+`physical` slice layout: 1=value, 2=∂r, 3=∂²r, 4=∂λ, 5=∂²λ.
+
+`kmax` (optional, `Vector{Int}` of length N) truncates the wavenumber sum per
+point. RL rings only support wavenumbers up to their global ring index, so a
+consumer injecting these values into another RL grid's rings should pass the
+TARGET ring's supported maximum — the azimuthal analogue of the radial
+transmissibility truncation (higher-k content would alias on the target
+ring's coarser azimuth points).
+
+This is the fine→coarse collar-feedback primitive for radially-nested RL
+models: the coarse annulus's collar ring points are evaluated on the fine
+patch and injected into the coarse Galerkin loads. Reads `grid.spectral` (b)
+and honors the per-wavenumber coupled border registry via
+`_get_ahat_cache_rl`. The λ-derivatives are analytic (FFTW halfcomplex
+convention: "imag" slots are negative sine sums).
+"""
+function evaluate_grid_points(grid::_RLGrid, pts::AbstractMatrix{Float64};
+                              kmax::Union{Nothing, Vector{Int}} = nothing)
+    gp = grid.params
+    b_iDim = gp.b_iDim
+    kDim = gp.iDim + gp.patchOffsetL
+    npts = size(pts, 1)
+    kmax === nothing || length(kmax) == npts || throw(ArgumentError(
+        "kmax must have one entry per point ($(npts)), got $(length(kmax))"))
+    size(pts, 2) == 2 || throw(ArgumentError("pts must be (N, 2) [r λ], got $(size(pts))"))
+    n_kslots = 1 + 2 * kDim
+    nvars = length(gp.vars)
+
+    lo, hi = gp.iMin, gp.iMax
+    tol = 1e-9 * max(abs(lo), abs(hi), 1.0)
+    for n in 1:npts
+        (lo - tol <= pts[n, 1] <= hi + tol) || throw(ArgumentError(
+            "Evaluation radius $(pts[n, 1]) outside grid domain [$lo, $hi]"))
+    end
+
+    out = zeros(Float64, npts, nvars, 5)
+    ak0 = Matrix{Float64}(undef, npts, n_kslots)   # radial value
+    ak1 = Matrix{Float64}(undef, npts, n_kslots)   # ∂r
+    ak2 = Matrix{Float64}(undef, npts, n_kslots)   # ∂²r
+    r_view = view(pts, :, 1)
+
+    for v in 1:nvars
+        a_cache = _get_ahat_cache_rl(grid, v)
+        sp0 = grid.ibasis.data[1, v]
+        for slot in 1:n_kslots
+            a_slice = view(a_cache, :, slot)
+            CubicBSpline.SItransform(sp0.params, a_slice, r_view,
+                                     view(ak0, :, slot), 0)
+            CubicBSpline.SItransform(sp0.params, a_slice, r_view,
+                                     view(ak1, :, slot), 1)
+            CubicBSpline.SItransform(sp0.params, a_slice, r_view,
+                                     view(ak2, :, slot), 2)
+        end
+        @inbounds for n in 1:npts
+            λ = pts[n, 2]
+            f   = ak0[n, 1]
+            fr  = ak1[n, 1]
+            frr = ak2[n, 1]
+            fl  = 0.0
+            fll = 0.0
+            # FFTW halfcomplex convention: the "imag" slot holds the NEGATIVE
+            # sine sum, so synthesis is a0 + Σ 2(aR cos kλ − aI sin kλ)
+            # (matching the HC2R inverse used by FItransform!).
+            kn = kmax === nothing ? kDim : min(kDim, kmax[n])
+            for k in 1:kn
+                ck = cos(k * λ)
+                sk = sin(k * λ)
+                aR0 = ak0[n, 2k]; aI0 = ak0[n, 2k + 1]
+                f   += 2.0 * (aR0 * ck - aI0 * sk)
+                fr  += 2.0 * (ak1[n, 2k] * ck - ak1[n, 2k + 1] * sk)
+                frr += 2.0 * (ak2[n, 2k] * ck - ak2[n, 2k + 1] * sk)
+                fl  += 2.0 * k * (-aR0 * sk - aI0 * ck)
+                fll -= 2.0 * k * k * (aR0 * ck - aI0 * sk)
+            end
+            out[n, v, 1] = f
+            out[n, v, 2] = fr
+            out[n, v, 3] = frr
+            out[n, v, 4] = fl
+            out[n, v, 5] = fll
+        end
+    end
+    return out
+end

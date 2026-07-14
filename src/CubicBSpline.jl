@@ -1354,6 +1354,14 @@ end
 
 function SAtransform(spline::Spline1D, b::AbstractVector)
 
+    # R3X (inhomogeneous rank-3) splines carry coupled border coefficients in
+    # spline.ahat; honor them exactly as the in-place SAtransform! does. The
+    # tiled b→a path (3-arg splineTransform!) relies on this so that patch
+    # splines coupled to a nest neighbor reconstruct with the donated border.
+    if _has_r3x(spline.params)
+        btilde = spline.gammaBC * (b .- (spline.pq * spline.ahat))
+        return (spline.gammaBC' * (spline.pqFactor \ btilde)) .+ spline.ahat
+    end
     a = spline.gammaBC' * (spline.pqFactor \ (spline.gammaBC * b))
     return a
 end
