@@ -115,6 +115,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`read_netcdf` threw on files with a CF time coordinate.** A time axis
+  written by `write_netcdf(...; time=t)` (units `"seconds since ..."`, a
+  `calendar`) is decoded by NCDatasets to `DateTime`, which the reader tried to
+  store in a `Dict{String, Vector{Float64}}` — a `convert` error. The
+  `"coordinates"`/`"variables"` containers are now `Any`-valued, so the decoded
+  time is preserved (`data["coordinates"]["time"]::Vector{DateTime}`) alongside
+  the `Float64` spatial coordinates.
+
 - **Unstructured RL/RLZ evaluation flipped every sine (odd-in-λ) component.**
   `_eval_unstructured_rl`/`_eval_unstructured_rlz` (behind `evaluate_unstructured`,
   `interpolate_to_grid`, and grid relocation) synthesized the Fourier series with

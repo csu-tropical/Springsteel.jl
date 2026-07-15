@@ -850,6 +850,38 @@ using DataFrames
                 @test haskey(data["variables"], "u_xx")
             end
 
+            @testset "read_netcdf preserves CF time coordinate" begin
+                # write_netcdf(...; time=t) writes a CF time axis (units
+                # "seconds since 1970-...", calendar gregorian), which NCDatasets
+                # decodes to DateTime. read_netcdf must preserve it, not coerce to
+                # Float64. Regression: it previously threw a convert error.
+                gp = SpringsteelGridParameters(geometry="R", num_cells=20,
+                    iMin=0.0, iMax=10.0,
+                    vars=Dict("u" => 1),
+                    BCL=Dict("u" => CubicBSpline.PERIODIC),
+                    BCR=Dict("u" => CubicBSpline.PERIODIC))
+                grid = createGrid(gp)
+                pts = getGridpoints(grid)
+                for i in eachindex(pts)
+                    grid.physical[i, 1, 1] = sin(2π * pts[i] / 10.0)
+                end
+                spectralTransform!(grid)
+
+                tmpfile = joinpath(mktempdir(), "test_r_time.nc")
+                write_netcdf(tmpfile, grid; time=3600.0)
+
+                data = read_netcdf(tmpfile)   # must not throw
+
+                @test haskey(data["coordinates"], "time")
+                t_vals = data["coordinates"]["time"]
+                @test eltype(t_vals) <: Dates.AbstractTime
+                # 3600 s since the 1970 epoch = 1970-01-01T01:00:00
+                @test t_vals[1] == DateTime(1970, 1, 1, 1, 0, 0)
+                # spatial coordinate still decodes to Float64
+                @test data["coordinates"]["x"] isa AbstractVector{Float64}
+                @test haskey(data["variables"], "u")
+            end
+
             @testset "read_netcdf nonexistent file throws" begin
                 @test_throws Exception read_netcdf("/nonexistent/path/file.nc")
             end
