@@ -1092,17 +1092,25 @@ and return its contents as a plain [`Dict`].
 
 The returned dictionary has four string-keyed entries:
 
-| Key            | Type                          | Contents                          |
-|:-------------- |:----------------------------- |:--------------------------------- |
-| `"dimensions"` | `Dict{String, Int}`           | dimension name → length           |
-| `"coordinates"`| `Dict{String, Vector{Float64}}`| coordinate name → values         |
-| `"variables"`  | `Dict{String, Array{Float64}}`| data variable name → array        |
-| `"attributes"` | `Dict{String, Any}`           | global attribute name → value     |
+| Key            | Type                | Contents                          |
+|:-------------- |:------------------- |:--------------------------------- |
+| `"dimensions"` | `Dict{String, Int}` | dimension name → length           |
+| `"coordinates"`| `Dict{String, Any}` | coordinate name → values          |
+| `"variables"`  | `Dict{String, Any}` | data variable name → array        |
+| `"attributes"` | `Dict{String, Any}` | global attribute name → value     |
 
 Coordinate variables are identified by sharing their name with a NetCDF
 dimension.  All other variables are returned under `"variables"`.  This
 format-independent structure can be passed directly to plotting libraries
 or used for further analysis without requiring a [`SpringsteelGrid`](@ref).
+
+Values are returned exactly as NCDatasets decodes them: spatial coordinates and
+data come back as `Float64` arrays, while a CF time axis (a coordinate carrying
+`units = "... since ..."` and a `calendar`) is decoded to a `DateTime` (or
+`CFTime` for non-standard calendars) array. The `"coordinates"`/`"variables"`
+containers are therefore `Any`-valued so the decoded time is preserved rather
+than forced into `Float64` — reading a file written with `write_netcdf(...;
+time=t)` returns `data["coordinates"]["time"]::Vector{DateTime}`.
 
 # Arguments
 - `filename`: Path to an existing NetCDF file.
@@ -1133,8 +1141,10 @@ function read_netcdf(filename::String)
         end
         result["dimensions"] = dims
 
-        # Coordinates (variables that share their dimension name)
-        coords = Dict{String, Vector{Float64}}()
+        # Coordinates (variables that share their dimension name). Any-valued:
+        # NCDatasets decodes a CF time axis to DateTime/CFTime, which must not be
+        # coerced to Float64 — preserving it is the whole point of a time axis.
+        coords = Dict{String, Any}()
         for name in keys(dims)
             if haskey(ds, name)
                 coords[name] = Array(ds[name])
@@ -1142,8 +1152,9 @@ function read_netcdf(filename::String)
         end
         result["coordinates"] = coords
 
-        # Variables (everything that's not a coordinate)
-        vars = Dict{String, Array{Float64}}()
+        # Variables (everything that's not a coordinate). Any-valued for the same
+        # reason as coordinates (a data variable may also carry a decoded type).
+        vars = Dict{String, Any}()
         for name in keys(ds)
             if !haskey(dims, name)
                 vars[name] = Array(ds[name])
