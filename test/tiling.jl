@@ -617,6 +617,66 @@
             @test length(single_tile) == 1
         end
 
+        @testset "3D multi-tile splineTransform! (RLZ / RLR / SLR)" begin
+            # A tiled B → A round trip must reproduce the physical field on
+            # EVERY tile. The regression this guards: sub-blocks are aligned by
+            # wavenumber but an inner tile carries fewer wavenumbers than the
+            # patch, so the patch z-level stride (b_iDim_p * (1 + 2*patch_kDim))
+            # differs from the tile's — using the tile's stride for the patch
+            # base index reads the wrong shared rows on every z level past the
+            # first. The seeded field carries wavenumber-1 content so the k >= 1
+            # blocks are exercised, not just the k = 0 spline.
+            function tiled_roundtrip_3d(geometry)
+                cheb_vert = geometry in ("RLZ", "SLZ")
+                gp = SpringsteelGridParameters(;
+                    geometry = geometry,
+                    num_cells = 9,
+                    iMin = 0.0,
+                    iMax = startswith(geometry, "S") ? Float64(π) : 75.0,
+                    kMin = 0.0, kMax = 10.0,
+                    (cheb_vert ? (kDim = 6,) : (num_cells_k = 4,))...,
+                    vars = Dict("u" => 1),
+                    BCL = Dict("u" => CubicBSpline.R0),
+                    BCR = Dict("u" => CubicBSpline.R0),
+                    BCB = Dict("u" => cheb_vert ? Chebyshev.R0 : CubicBSpline.R0),
+                    BCT = Dict("u" => cheb_vert ? Chebyshev.R0 : CubicBSpline.R0))
+                patch = createGrid(gp)
+                pts = getGridpoints(patch)
+                rMax = patch.params.iMax
+                zMax = patch.params.kMax
+                f(r, l, z) = sin(π * r / rMax) * (0.5 + z / zMax) *
+                             (1.0 + 0.5 * (r / rMax) * cos(l))
+                for i in 1:size(pts, 1)
+                    patch.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2], pts[i, 3])
+                end
+                spectralTransform!(patch)
+
+                shared = SharedArray{Float64}(size(patch.spectral))
+                shared[:, :] .= patch.spectral
+
+                tiles = calcTileSizes(patch, 3)
+                worst_val = 0.0
+                for tile in tiles
+                    splineTransform!(shared, patch, tile)
+                    tile_phys = zeros(Float64, size(tile.physical))
+                    tileTransform!(shared, tile, tile_phys, tile.spectral)
+                    tpts = getGridpoints(tile)
+                    for i in 1:size(tpts, 1)
+                        worst_val = max(worst_val,
+                            abs(tile_phys[i, 1, 1] - f(tpts[i, 1], tpts[i, 2], tpts[i, 3])))
+                    end
+                    @test all(isfinite, tile_phys)
+                end
+                return worst_val
+            end
+
+            # Smooth field over 9 cells: cubic-spline accuracy. An inner-tile
+            # stride bug produces O(1) garbage, far outside this tolerance.
+            @test tiled_roundtrip_3d("RLZ") < 5e-3
+            @test tiled_roundtrip_3d("RLR") < 5e-3
+            @test tiled_roundtrip_3d("SLR") < 5e-3
+        end
+
         @testset "Multi-dim tiling" begin
 
             # ── 2D tiling on RR_Grid (3 i-tiles × 2 j-tiles = 6 tiles) ──────
