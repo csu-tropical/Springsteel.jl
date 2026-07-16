@@ -438,6 +438,49 @@ end
         end
     end
 
+    @testset "tiled RLR splineTransform! honors the per-wavenumber registry" begin
+        # The RL tiled-transform bug reincarnated on RLR: without the per-block
+        # ahat reload, a nested patch's R3X borders are silently ignored by the
+        # worker-loop spline solve.
+        g_disc = make_rlr_grid(iMin=0.0, iMax=50.0, num_cells=10, BCRu=FixedBC())
+        g_ann = make_rlr_grid(iMin=50.0, iMax=150.0, num_cells=10, BCLu=NaturalBC())  # 2:1 coarser
+        f(r, λ, z) = (2.0 * r + 5.0 + 0.3 * r * cos(λ) + 0.7 * r * sin(λ)) *
+                     (1.0 + 0.1 * z)
+        for g in (g_disc, g_ann)
+            pts = getGridpoints(g)
+            for i in 1:size(pts, 1)
+                g.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2], pts[i, 3])
+            end
+            spectralTransform!(g)
+        end
+        iface = PatchInterface(g_ann, g_disc, :left, :right, :i)
+        gridTransform!(g_ann)
+        update_interface!(iface)
+
+        # Known-correct registry-aware path
+        gridTransform!(g_disc)
+        want = copy(g_disc.physical)
+
+        # Tiled path: 3-arg splineTransform! (patch splines) + tileTransform!
+        shared = SharedArray{Float64,2}(size(g_disc.spectral))
+        shared .= g_disc.spectral
+        tile = createGrid(g_disc.params)
+        splineTransform!(shared, g_disc, tile)
+        tileTransform!(shared, tile, tile.physical, tile.spectral)
+        for s in 1:7
+            err = maximum(abs.(tile.physical[:, 1, s] .- want[:, 1, s]))
+            @test err < 1e-10
+        end
+
+        # Single-tile 2-arg path on the coupled grid object itself
+        splineTransform!(shared, g_disc)
+        tileTransform!(shared, g_disc, g_disc.physical, g_disc.spectral)
+        for s in 1:7
+            err = maximum(abs.(g_disc.physical[:, 1, s] .- want[:, 1, s]))
+            @test err < 1e-10
+        end
+    end
+
     @testset "evaluate_grid_points honors the coupled-border registry (RLR)" begin
         # Disc-in-annulus: after the chain transform the annulus' k-blocks carry
         # R3X borders from the disc; the collar evaluation must reload them.
