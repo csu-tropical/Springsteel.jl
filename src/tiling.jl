@@ -421,10 +421,14 @@ end
 """
     num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, <:SplineBasisArray}) -> Int
 
-Return `b_jDim * b_kDim` for 3-D Cartesian Spline×Spline×Spline (RRR) grids.
+Return `iDim * jDim` for 3-D Cartesian Spline×Spline×Spline (RRR) grids: the
+number of physical vertical columns (one per horizontal gridpoint), matching
+the RZ/RiRk and RLZ/RLR/SLZ/SLR convention that model drivers advance the
+state one z-fastest vertical column at a time. (Previously returned the
+spectral count `b_jDim * b_kDim`, which no caller used.)
 """
 function num_columns(grid::SpringsteelGrid{CartesianGeometry, <:SplineBasisArray, <:SplineBasisArray, <:SplineBasisArray})
-    return grid.params.b_jDim * grid.params.b_kDim
+    return grid.params.iDim * grid.params.jDim
 end
 
 # ────────────────────────────────────────────────────────────────────────────
