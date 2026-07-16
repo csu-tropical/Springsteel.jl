@@ -1630,6 +1630,13 @@ function _get_ahat_cache_rlz(source::SpringsteelGrid, sv::Int)
 
     a_cache = zeros(Float64, b_iDim, total_stripes)
 
+    # Multi-patch coupling: reload the per-wavenumber border coefficients into
+    # the reused splines before each solve, exactly as gridTransform(_RLRGrid)
+    # does (slots z_slot_base + 0 / 1+p / 2+p with p = (k-1)*2). Without the
+    # reload, collar/unstructured evaluation of a coupled patch pins its R3X
+    # borders to zero.
+    has_wn_ahat = _has_wavenumber_ahat(source)
+
     for z_b in 1:b_kDim
         r1_base = (z_b - 1) * b_iDim * (1 + kDim_wn * 2) + 1
         r2_base = r1_base + b_iDim - 1
@@ -1637,6 +1644,9 @@ function _get_ahat_cache_rlz(source::SpringsteelGrid, sv::Int)
 
         sp0 = source.ibasis.data[1, sv]
         sp0.b .= view(source.spectral, r1_base:r2_base, sv)
+        if has_wn_ahat
+            sp0.ahat .= _get_wavenumber_ahat(source, sv, stripe_offset + 0)
+        end
         SAtransform!(sp0)
         a_cache[:, stripe_offset + 1] .= sp0.a
 
@@ -1646,12 +1656,18 @@ function _get_ahat_cache_rlz(source::SpringsteelGrid, sv::Int)
 
             spc = source.ibasis.data[2, sv]
             spc.b .= view(source.spectral, p1:p2, sv)
+            if has_wn_ahat
+                spc.ahat .= _get_wavenumber_ahat(source, sv, stripe_offset + 1 + p)
+            end
             SAtransform!(spc)
             a_cache[:, stripe_offset + 2k] .= spc.a
 
             p1 = p2 + 1;  p2 = p1 + b_iDim - 1
             sps = source.ibasis.data[3, sv]
             sps.b .= view(source.spectral, p1:p2, sv)
+            if has_wn_ahat
+                sps.ahat .= _get_wavenumber_ahat(source, sv, stripe_offset + 2 + p)
+            end
             SAtransform!(sps)
             a_cache[:, stripe_offset + 2k + 1] .= sps.a
         end
@@ -1856,8 +1872,11 @@ function _eval_unstructured_rlr(source::SpringsteelGrid, pts::AbstractMatrix{Flo
 
         for z_b in 1:b_kDim
             val = sc.spline_vals[n, z_b, 1]
+            # FFTW halfcomplex: "imag" slots hold the NEGATIVE sine sum (see
+            # _eval_unstructured_rl) — synthesis subtracts the sine term. The
+            # former `+ sin` here mirror-imaged every odd-in-λ component.
             for k in 1:kDim_wn
-                val += 2.0 * (sc.spline_vals[n, z_b, 2k] * cos(k * λ) +
+                val += 2.0 * (sc.spline_vals[n, z_b, 2k] * cos(k * λ) -
                               sc.spline_vals[n, z_b, 2k + 1] * sin(k * λ))
             end
             kspl.b[z_b] = val

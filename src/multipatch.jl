@@ -1208,7 +1208,7 @@ end
 # ── Config validation ─────────────────────────────────────────────────────
 
 const _REQUIRED_KEYS = Set([:topology, :geometry, :cells, :vars, :BCL, :BCR])
-const _CYLINDRICAL_GEOMETRIES = Set(["RL", "RLZ", "SL", "SLZ"])
+const _CYLINDRICAL_GEOMETRIES = Set(["RL", "RLZ", "SL", "SLZ", "RLR", "SLR"])
 
 # Geometries whose non-i axes are cubic B-splines the user must size. Only the
 # i-direction is decomposed across patches, so these axes are shared by every
@@ -1839,6 +1839,134 @@ function evaluate_grid_points(grid::_RLGrid, pts::AbstractMatrix{Float64};
             out[n, v, 3] = frr
             out[n, v, 4] = fl
             out[n, v, 5] = fll
+        end
+    end
+    return out
+end
+
+"""
+    evaluate_grid_points(grid::_RLRGrid, pts, zq; kmax=nothing) -> (N*nz, nvars, 7)
+
+Evaluate an RLR (spline-radius × Fourier-azimuth × spline-z) grid's spectral
+representation on a set of vertical COLUMNS: `pts` is `(N, 2)` `[r λ]` column
+locations and `zq` the vertical evaluation points shared by every column
+(arbitrary z, not restricted to the mish). Returns `(N*nz, nvars, 7)` with the
+RLR `physical` slice layout (1=value, 2=∂r, 3=∂²r, 4=∂λ, 5=∂²λ, 6=∂z, 7=∂²z),
+z-fastest within each column — the same row ordering as `physical`.
+
+`kmax` (optional, length N) is the per-COLUMN azimuthal transmissibility
+truncation of [`evaluate_grid_points(::_RLGrid, ...)`](@ref). This is the
+fine→coarse collar-feedback primitive for radially-nested RLR models. Honors
+the per-wavenumber coupled-border registry via `_get_ahat_cache_rlz`.
+
+The column API exists for cost: radial spline evaluations are done once per
+DISTINCT radius (collar columns share their ring radii) and each column pays
+one z-spline solve per horizontal-derivative family instead of per point.
+"""
+function evaluate_grid_points(grid::_RLRGrid, pts::AbstractMatrix{Float64},
+                              zq::AbstractVector{Float64};
+                              kmax::Union{Nothing, Vector{Int}} = nothing)
+    gp = grid.params
+    b_iDim = gp.b_iDim
+    b_kDim = gp.b_kDim
+    kDim_wn = gp.iDim + gp.patchOffsetL
+    ncol = size(pts, 1)
+    nz = length(zq)
+    kmax === nothing || length(kmax) == ncol || throw(ArgumentError(
+        "kmax must have one entry per column ($(ncol)), got $(length(kmax))"))
+    size(pts, 2) == 2 || throw(ArgumentError("pts must be (N, 2) [r λ], got $(size(pts))"))
+    n_kslots = 1 + 2 * kDim_wn
+    nvars = length(gp.vars)
+
+    lo, hi = gp.iMin, gp.iMax
+    tol = 1e-9 * max(abs(lo), abs(hi), 1.0)
+    for n in 1:ncol
+        (lo - tol <= pts[n, 1] <= hi + tol) || throw(ArgumentError(
+            "Evaluation radius $(pts[n, 1]) outside grid domain [$lo, $hi]"))
+    end
+    ztol = 1e-9 * max(abs(gp.kMin), abs(gp.kMax), 1.0)
+    for z in zq
+        (gp.kMin - ztol <= z <= gp.kMax + ztol) || throw(ArgumentError(
+            "Evaluation height $(z) outside grid domain [$(gp.kMin), $(gp.kMax)]"))
+    end
+
+    # Radial evaluations once per distinct radius (collar columns share rings)
+    uradii = unique(view(pts, :, 1))
+    ur_of = Dict(r => u for (u, r) in enumerate(uradii))
+    col_ur = [ur_of[pts[n, 1]] for n in 1:ncol]
+    nur = length(uradii)
+
+    out = zeros(Float64, ncol * nz, nvars, 7)
+    rk0 = Array{Float64,3}(undef, nur, n_kslots, b_kDim)   # radial value
+    rk1 = Array{Float64,3}(undef, nur, n_kslots, b_kDim)   # ∂r
+    rk2 = Array{Float64,3}(undef, nur, n_kslots, b_kDim)   # ∂²r
+    B = Matrix{Float64}(undef, b_kDim, 5)                  # f, ∂r, ∂²r, ∂λ, ∂²λ
+    nA = b_kDim + 2                                        # cubic B-spline a size
+    A = Matrix{Float64}(undef, 0, 5)                       # sized after kspl below
+
+    for v in 1:nvars
+        a_cache = _get_ahat_cache_rlz(grid, v)
+        sp0 = grid.ibasis.data[1, v]
+        for z_b in 1:b_kDim
+            stripe = (z_b - 1) * n_kslots
+            for slot in 1:n_kslots
+                a_slice = view(a_cache, :, stripe + slot)
+                CubicBSpline.SItransform(sp0.params, a_slice, uradii,
+                                         view(rk0, :, slot, z_b), 0)
+                CubicBSpline.SItransform(sp0.params, a_slice, uradii,
+                                         view(rk1, :, slot, z_b), 1)
+                CubicBSpline.SItransform(sp0.params, a_slice, uradii,
+                                         view(rk2, :, slot, z_b), 2)
+            end
+        end
+
+        kspl = grid.kbasis.data[v]
+        if size(A, 1) != length(kspl.a)
+            A = Matrix{Float64}(undef, length(kspl.a), 5)
+        end
+        @inbounds for n in 1:ncol
+            λ = pts[n, 2]
+            u = col_ur[n]
+            kn = kmax === nothing ? kDim_wn : min(kDim_wn, kmax[n])
+            for z_b in 1:b_kDim
+                f   = rk0[u, 1, z_b]
+                fr  = rk1[u, 1, z_b]
+                frr = rk2[u, 1, z_b]
+                fl  = 0.0
+                fll = 0.0
+                # FFTW halfcomplex convention: the "imag" slot holds the
+                # NEGATIVE sine sum (see evaluate_grid_points(::_RLGrid)).
+                for k in 1:kn
+                    ck = cos(k * λ)
+                    sk = sin(k * λ)
+                    aR0 = rk0[u, 2k, z_b]; aI0 = rk0[u, 2k + 1, z_b]
+                    f   += 2.0 * (aR0 * ck - aI0 * sk)
+                    fr  += 2.0 * (rk1[u, 2k, z_b] * ck - rk1[u, 2k + 1, z_b] * sk)
+                    frr += 2.0 * (rk2[u, 2k, z_b] * ck - rk2[u, 2k + 1, z_b] * sk)
+                    fl  += 2.0 * k * (-aR0 * sk - aI0 * ck)
+                    fll -= 2.0 * k * k * (aR0 * ck - aI0 * sk)
+                end
+                B[z_b, 1] = f
+                B[z_b, 2] = fr
+                B[z_b, 3] = frr
+                B[z_b, 4] = fl
+                B[z_b, 5] = fll
+            end
+            for fam in 1:5
+                kspl.b .= view(B, :, fam)
+                SAtransform!(kspl)
+                A[:, fam] .= kspl.a
+            end
+            for (iz, z) in enumerate(zq)
+                row = (n - 1) * nz + iz
+                out[row, v, 1] = CubicBSpline.SItransform(kspl.params, view(A, :, 1), z, 0)
+                out[row, v, 2] = CubicBSpline.SItransform(kspl.params, view(A, :, 2), z, 0)
+                out[row, v, 3] = CubicBSpline.SItransform(kspl.params, view(A, :, 3), z, 0)
+                out[row, v, 4] = CubicBSpline.SItransform(kspl.params, view(A, :, 4), z, 0)
+                out[row, v, 5] = CubicBSpline.SItransform(kspl.params, view(A, :, 5), z, 0)
+                out[row, v, 6] = CubicBSpline.SItransform(kspl.params, view(A, :, 1), z, 1)
+                out[row, v, 7] = CubicBSpline.SItransform(kspl.params, view(A, :, 1), z, 2)
+            end
         end
     end
     return out

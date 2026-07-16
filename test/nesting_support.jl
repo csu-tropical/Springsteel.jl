@@ -359,3 +359,106 @@ end
         @test size(getGridpoints(tiles[1]), 1) == size(pts, 1)
     end
 end
+
+# ── RLR (3D cylindrical) nesting support ─────────────────────────────────────
+
+@testset "RLR nesting support" begin
+
+    function make_rlr_grid(; iMin=0.0, iMax=50.0, num_cells=10, BCLu=NaturalBC(),
+                            BCRu=NaturalBC(), patchOffsetL=0)
+        gp = SpringsteelGridParameters(
+            geometry="RLR", iMin=iMin, iMax=iMax, num_cells=num_cells,
+            patchOffsetL=patchOffsetL,
+            kMin=0.0, kMax=10.0, kDim=12,
+            BCL=Dict("u" => BCLu), BCR=Dict("u" => BCRu),
+            BCB=Dict("u" => CubicBSpline.R0), BCT=Dict("u" => CubicBSpline.R0),
+            vars=Dict("u" => 1))
+        return createGrid(gp)
+    end
+
+    "Column (r, λ) list, per-column ring kmax, and the vertical mish of an RLR grid."
+    function rlr_columns(g)
+        pts = getGridpoints(g)
+        kDim = g.params.kDim
+        ncol = size(pts, 1) ÷ kDim
+        cols = zeros(ncol, 2)
+        kmax = Int[]
+        row = 0
+        for r in 1:g.params.iDim
+            ri = r + g.params.patchOffsetL
+            lpoints = 4 + 4 * ri
+            for l in 1:lpoints
+                c = row + l
+                cols[c, 1] = pts[(c - 1) * kDim + 1, 1]
+                cols[c, 2] = pts[(c - 1) * kDim + 1, 2]
+                push!(kmax, ri)
+            end
+            row += lpoints
+        end
+        z = pts[1:kDim, 3]
+        return cols, kmax, z
+    end
+
+    @testset "evaluate_grid_points matches gridTransform! on mish points (RLR)" begin
+        g = make_rlr_grid()
+        pts = getGridpoints(g)
+        f(r, λ, z) = (0.1 * r + r * cos(λ) + 0.5 * r * sin(2λ)) * (1.0 + 0.2 * z + 0.01 * z^2)
+        for i in 1:size(pts, 1)
+            g.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2], pts[i, 3])
+        end
+        spectralTransform!(g)
+        gridTransform!(g)
+
+        cols, kmax, z = rlr_columns(g)
+        out = evaluate_grid_points(g, cols, z; kmax = kmax)
+        @test size(out) == (size(pts, 1), 1, 7)
+        for s in 1:7
+            err = maximum(abs.(out[:, 1, s] .- g.physical[:, 1, s]))
+            @test err < 1e-8
+        end
+    end
+
+    @testset "evaluate_grid_points at arbitrary z (off the mish)" begin
+        g = make_rlr_grid()
+        pts = getGridpoints(g)
+        f(r, λ, z) = (0.1 * r + 0.3 * r * sin(λ)) * (1.0 + 0.2 * z)
+        for i in 1:size(pts, 1)
+            g.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2], pts[i, 3])
+        end
+        spectralTransform!(g)
+        gridTransform!(g)
+
+        cols, kmax, zmish = rlr_columns(g)
+        zq = [2.37, 5.0, 8.61]
+        out = evaluate_grid_points(g, cols, zq; kmax = kmax)
+        @test size(out, 1) == size(cols, 1) * length(zq)
+        for n in axes(cols, 1), (iz, z) in enumerate(zq)
+            row = (n - 1) * length(zq) + iz
+            @test out[row, 1, 1] ≈ f(cols[n, 1], cols[n, 2], z) atol = 0.05
+        end
+    end
+
+    @testset "evaluate_grid_points honors the coupled-border registry (RLR)" begin
+        # Disc-in-annulus: after the chain transform the annulus' k-blocks carry
+        # R3X borders from the disc; the collar evaluation must reload them.
+        g_disc = make_rlr_grid(iMin=0.0, iMax=50.0, num_cells=10, BCRu=NaturalBC())
+        g_ann = make_rlr_grid(iMin=50.0, iMax=75.0, num_cells=10, BCLu=FixedBC())
+        f(r, λ, z) = (2.0 * r + 5.0 + 0.3 * r * cos(λ) + 0.7 * r * sin(λ)) *
+                     (1.0 + 0.1 * z)
+        for (g, pts) in ((g_disc, getGridpoints(g_disc)), (g_ann, getGridpoints(g_ann)))
+            for i in 1:size(pts, 1)
+                g.physical[i, 1, 1] = f(pts[i, 1], pts[i, 2], pts[i, 3])
+            end
+            spectralTransform!(g)
+        end
+        mpg = PatchChain([g_disc, g_ann])
+        multiGridTransform!(mpg)
+
+        cols, kmax, z = rlr_columns(g_ann)
+        out = evaluate_grid_points(g_ann, cols, z; kmax = kmax)
+        for s in 1:7
+            err = maximum(abs.(out[:, 1, s] .- g_ann.physical[:, 1, s]))
+            @test err < 1e-8
+        end
+    end
+end
