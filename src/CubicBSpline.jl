@@ -18,7 +18,7 @@ export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
 export SIIntcoefficients, SIInttransform, SIIntcoefficients!, SIInttransform!, SBxtransform!
 export setMishValues
-export set_ahat_r3x!
+export set_ahat_r3x!, set_ahat_neumann!
 # Generic (no-prefix) wrappers for abstract 1D basis dispatch
 export Btransform, Btransform!, Bxtransform
 export Atransform, Atransform!
@@ -107,6 +107,25 @@ from an outer grid that changes each timestep. Set boundary values via
 [`set_ahat_r3x!`](@ref).
 """
 const R3X = Dict("R3X" => 0)
+
+"""
+Rank-1, **inhomogeneous Neumann** boundary condition: ``u'(x_0) = g`` with `g`
+supplied at RUNTIME rather than baked into the basis. Identical to R1T1
+(`α1 = 0, β1 = 1`) in the `gammaBC` matrix — so the admissible subspace, and
+therefore every stability property of a solver built on this basis, is exactly
+R1T1's — but the SAtransform adds the background coefficient vector `ahat`,
+which carries `g`. Set it with [`set_ahat_neumann!`](@ref).
+
+The motivating case is a rigid wall in a compressible atmosphere. `w ≡ 0` at the
+wall makes ``∂p'/∂z = -g ρ_t'`` an exact identity there, so the pressure needs a
+*nonzero, state-dependent* wall derivative — while the semi-implicit acoustic
+solve, which eliminates `w` and cannot see that derivative, needs the R1T1
+subspace to stay operator-consistent. Homogeneous R1T1 gets the second and loses
+the first; R1T2 gets the first and loses the second (measurably: it costs a
+factor ~2.7 in stable timestep). R1T1X gets both, because `ahat` is an AFFINE
+offset and leaves the homogeneous subspace — hence the stability — untouched.
+"""
+const R1T1X = Dict("α1" => 0.0, "β1" => 1.0, "X1" => 1)
 
 """
 Periodic boundary condition (Ooyama 2002, section 3e): couples the left and
@@ -1358,7 +1377,7 @@ function SAtransform(spline::Spline1D, b::AbstractVector)
     # spline.ahat; honor them exactly as the in-place SAtransform! does. The
     # tiled b→a path (3-arg splineTransform!) relies on this so that patch
     # splines coupled to a nest neighbor reconstruct with the donated border.
-    if _has_r3x(spline.params)
+    if _has_ahat(spline.params)
         btilde = spline.gammaBC * (b .- (spline.pq * spline.ahat))
         return (spline.gammaBC' * (spline.pqFactor \ btilde)) .+ spline.ahat
     end
@@ -1367,11 +1386,16 @@ function SAtransform(spline::Spline1D, b::AbstractVector)
 end
 
 """
-    _has_r3x(sp::SplineParameters) -> Bool
+    _has_ahat(sp::SplineParameters) -> Bool
 
-Return `true` if either boundary condition is R3X (inhomogeneous rank-3).
+Return `true` if either boundary condition is inhomogeneous, i.e. carries its
+boundary data in the background coefficient vector `ahat` rather than in the
+basis: R3X (rank-3, [`set_ahat_r3x!`](@ref)) or R1T1X (rank-1 Neumann,
+[`set_ahat_neumann!`](@ref)).
 """
-_has_r3x(sp::SplineParameters) = haskey(sp.BCL, "R3X") || haskey(sp.BCR, "R3X")
+_has_ahat(sp::SplineParameters) =
+    haskey(sp.BCL, "R3X") || haskey(sp.BCR, "R3X") ||
+    haskey(sp.BCL, "X1")  || haskey(sp.BCR, "X1")
 
 function SAtransform!(spline::Spline1D)
     # In-place SA transform: writes spline.a from spline.b (and spline.ahat for R3X).
@@ -1381,7 +1405,7 @@ function SAtransform!(spline::Spline1D)
     #   Non-R3X path:    a = γ' (PQ \ (γ b))
     #   R3X path:        a = γ' (PQ \ (γ (b - pq·ahat))) + ahat
     γ = spline.gammaBC
-    if _has_r3x(spline.params)
+    if _has_ahat(spline.params)
         # _scratch_btilde = b - pq·ahat   (bDim-length)
         mul!(spline._scratch_btilde, spline.pq, spline.ahat)
         @. spline._scratch_btilde = spline.b - spline._scratch_btilde
@@ -1475,6 +1499,53 @@ function set_ahat_r3x!(spline::Spline1D, u0::Real, u1::Real, u2::Real, side::Sym
     else
         throw(ArgumentError("side must be :left or :right, got :$side"))
     end
+end
+
+"""
+    set_ahat_neumann!(spline::Spline1D, du::Real, side::Symbol)
+
+Set the inhomogeneous Neumann boundary derivative `u'(x₀) = du` on an
+[`R1T1X`](@ref) spline, by storing the single border coefficient that produces
+it in `spline.ahat`.
+
+Only the eliminated border coefficient is written (index 1 for `:left`,
+`end` for `:right`), because that is precisely the coefficient the R1T1
+`gammaBC` relation determines from the interior. The homogeneous part of the
+fit contributes zero boundary derivative by construction, so the whole of `du`
+comes from `ahat` and the two are exactly separable:
+
+    a = γ'(PQ \\ (γ (b - pq·ahat))) + ahat        (SAtransform!)
+
+Consequences worth relying on: `du = 0` reproduces the homogeneous R1T1 fit
+bit-for-bit, `du` may be changed between fits at no cost beyond this call, and
+because `ahat` is an affine offset it does not alter the admissible subspace —
+a solver's stability is R1T1's regardless of `du`.
+
+Cheap enough to call per column per timestep: one `basis` evaluation and one
+store.
+
+# Arguments
+- `spline::Spline1D`: spline whose BC on `side` is [`R1T1X`](@ref)
+- `du::Real`: desired first derivative at the boundary
+- `side::Symbol`: `:left` (x = xmin) or `:right` (x = xmax)
+
+See also: [`set_ahat_r3x!`](@ref), [`R1T1X`](@ref)
+"""
+function set_ahat_neumann!(spline::Spline1D, du::Real, side::Symbol)
+    sp = spline.params
+    # The border basis function whose coefficient the R1T1 relation eliminates,
+    # and its slope at the wall. Taken from `basis` rather than the uniform-mesh
+    # closed form (±1/2DX) so this stays correct if the normalisation changes.
+    if side === :left
+        slope = basis(sp, -1, sp.xmin, 1)
+        spline.ahat[1] = du / slope
+    elseif side === :right
+        slope = basis(sp, sp.num_cells + 1, sp.xmax, 1)
+        spline.ahat[end] = du / slope
+    else
+        throw(ArgumentError("side must be :left or :right, got :$side"))
+    end
+    return spline
 end
 
 """

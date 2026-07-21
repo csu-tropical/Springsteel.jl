@@ -2246,3 +2246,73 @@ function set_boundary_values!(grid::RiRk_Grid, side::Symbol, var::String,
                                     bc_spectral[1,k], bc_spectral[2,k], bc_spectral[3,k], side)
     end
 end
+
+# ────────────────────────────────────────────────────────────────────────────
+# R1T1X vertical-wall interface (inhomogeneous Neumann in the k-direction)
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    set_wall_derivatives!(grid::RiRk_Grid, side::Symbol, var::String,
+                          du::AbstractVector)
+
+Prescribe the vertical wall derivative `∂u/∂z` of `var` at `side` (`:bottom` or
+`:top`), one value per radial column, for a k-basis declared
+[`CubicBSpline.R1T1X`](@ref). The values are stored in
+`grid.kbasis.wall_du` and installed into the shared column spline's `ahat`
+inside [`gridTransform!`](@ref), immediately before each column's SA solve.
+
+This is the k-direction counterpart of [`set_boundary_values!`](@ref)'s R3X path.
+The difference is structural: in the i-direction every spectral mode owns its own
+spline and can hold its own `ahat`, whereas the k-direction has ONE spline per
+variable shared by every column, so per-column data cannot live on the spline.
+
+Call it whenever the wall data changes — it is a store, not a fit. `du` must have
+one entry per radial gridpoint (`iDim`).
+
+# Example — a rigid wall in a compressible atmosphere
+
+`w ≡ 0` at the ground makes `∂p'/∂z = -g ρ_t'` an exact identity there:
+
+```julia
+set_wall_derivatives!(grid, :bottom, "p", -gravity .* rho_t_prime_at_ground)
+```
+
+See also: [`CubicBSpline.R1T1X`](@ref), [`CubicBSpline.set_ahat_neumann!`](@ref)
+"""
+function set_wall_derivatives!(grid::RiRk_Grid, side::Symbol, var::String,
+                               du::AbstractVector)
+    v = grid.params.vars[var]
+    wall_du = grid.kbasis.wall_du
+    isempty(wall_du) && throw(ArgumentError(
+        "this grid's k-basis carries no wall_du storage"))
+    length(du) == size(wall_du, 1) || throw(DimensionMismatch(
+        "du has $(length(du)) entries, expected $(size(wall_du, 1)) (iDim)"))
+    s = side === :bottom ? 1 : side === :top ? 2 :
+        throw(ArgumentError("side must be :bottom or :top, got :$side"))
+    kcol = grid.kbasis.data[v]
+    haskey(s == 1 ? kcol.params.BCL : kcol.params.BCR, "X1") || throw(ArgumentError(
+        "variable \"$var\" does not declare R1T1X at the $side wall; " *
+        "setting a derivative there would be silently ignored"))
+    @inbounds for r in eachindex(du)
+        wall_du[r, v, s, 1] = du[r]
+    end
+    # Fill the i-derivative levels. The 2-D transform takes the i-derivative
+    # BEFORE fitting in k, so its dr = 1 / dr = 2 passes need d(du)/di and
+    # d2(du)/di2 as their `ahat`; leaving those at the value would assert
+    # dg/di = g and corrupt the i-derivative slots in the boundary cell.
+    # Differentiated through the variable's OWN i-basis, so it is the same
+    # discrete operator the transform applies to everything else.
+    isp = grid.ibasis.data[1, v]
+    @inbounds for r in eachindex(du)
+        isp.uMish[r] = du[r]
+    end
+    CubicBSpline.SBtransform!(isp)
+    CubicBSpline.SAtransform!(isp)
+    d1 = CubicBSpline.SIxtransform(isp)
+    d2 = CubicBSpline.SIxxtransform(isp)
+    @inbounds for r in eachindex(du)
+        wall_du[r, v, s, 2] = d1[r]
+        wall_du[r, v, s, 3] = d2[r]
+    end
+    return grid
+end

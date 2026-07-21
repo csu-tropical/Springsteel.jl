@@ -727,7 +727,10 @@ function _create_cartesian_2d_rirk(gp::SpringsteelGridParameters)
     columns  = Array{Spline1D}(undef, nvars)
     ibasis   = SplineBasisArray(splines)
     jbasis   = NoBasisArray()
-    kbasis   = SplineBasisArray(columns)
+    # Per-column R1T1X wall derivatives (see `SplineBasisArray.wall_du`). Always
+    # allocated — iDim x nvars x 2 doubles is negligible — and only consulted for
+    # variables whose k-BC actually declares X1, so nothing else pays for it.
+    kbasis   = SplineBasisArray(columns, zeros(Float64, gp.iDim, nvars, 2, 3))
 
     spec_dim = gp.b_kDim * gp.b_iDim
     phys_dim = gp.iDim * gp.kDim

@@ -880,10 +880,19 @@ function gridTransform(
 
             # k-direction inverse transform per i gridpoint
             kcol = grid.kbasis.data[v]
+            # Inhomogeneous Neumann (R1T1X): one shared column spline serves every
+            # radius, so the per-column wall derivative has to be installed into
+            # `ahat` immediately before each column's SA solve. Hoisted BC lookup;
+            # both flags are false for every other BC, so this costs one branch.
+            wall_du = grid.kbasis.wall_du
+            xL = haskey(kcol.params.BCL, "X1") && !isempty(wall_du)
+            xR = haskey(kcol.params.BCR, "X1") && !isempty(wall_du)
             for r in 1:iDim
                 @inbounds for z in 1:b_kDim
                     kcol.b[z] = splineBuffer[r, z]
                 end
+                xL && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 1, dr+1], :left)
+                xR && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 2, dr+1], :right)
                 SAtransform!(kcol)
                 SItransform!(kcol)
                 z1 = (r-1)*kDim + 1

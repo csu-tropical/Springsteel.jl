@@ -3010,10 +3010,19 @@ function tileTransform!(sharedSpectral::SharedArray{real},
 
             # k-direction inverse transform per i gridpoint
             kcol = tile.kbasis.data[v]
+            # Inhomogeneous Neumann (R1T1X) — see the identical block in
+            # `gridTransform(::_2DCartesianRiRk, …)`. This is the per-step path
+            # in a tiled/distributed run, so it must apply the same per-column
+            # wall derivative or the tiled and single-patch fits disagree.
+            wall_du = tile.kbasis.wall_du
+            xL = haskey(kcol.params.BCL, "X1") && !isempty(wall_du)
+            xR = haskey(kcol.params.BCR, "X1") && !isempty(wall_du)
             for r in 1:iDim
                 @inbounds for z in 1:b_kDim
                     kcol.b[z] = splineBuffer[r, z]
                 end
+                xL && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 1, dr+1], :left)
+                xR && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 2, dr+1], :right)
                 SAtransform!(kcol)
                 SItransform!(kcol)
                 z1 = (r - 1) * kDim + 1
