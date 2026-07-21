@@ -483,10 +483,80 @@ function _mean_sound_speed_sq(Tk, rho_d, q_v)
     return sum(c2) / length(c2)
 end
 
+"""
+    _hydrostatic_pressure_profile(column, rho_tbar, p_anchor; tol=0.01) -> Matrix
+
+Pressure profile `(nlevels, 3)` in EXACT discrete hydrostatic balance with the fitted
+total density `rho_tbar` (itself an `(nlevels, 3)` profile), anchored so the value at the
+first mish point is `p_anchor`.
+
+Fitting `p` directly and reading back its spline derivative — which is what `_profile`
+does — CANNOT resolve `dp/dz` in the upper atmosphere. The fit is accurate to ~0.03 %,
+but 0.03 % of 1e5 Pa is ~30 Pa, and across a 500 m cell that is ~0.06 Pa/m, which is
+10-17 % of `g·ρ_t` where `p` is small. Measured on the 50-cell / 25 km tropical-cyclone
+grid, the stored `-(dp̄/dz + g·ρ̄_t)/ρ̄_t` reached **+1.67 m/s²** at 22.6 km — 300x the
+balanced vortex's own hydrostatic residual — switching on at the tropopause and growing
+monotonically to the lid. It is a cancellation/scale problem, not the spline operator
+(a centred finite difference of the same `p̄` agrees with the spline derivative to <1 %)
+and not the `l_q` smoothing (identical to 4 digits at l_q = 2.0, 1.0, 0.5, 0.1 and 0.0).
+
+Two steps, in order:
+
+1. **Integrate, do not re-fit.** Fit `-g·ρ̄_t` (accurate to 0.03 %) and take its
+   antiderivative with `IInttransform`. The value slot is that antiderivative — the
+   spline whose derivative IS the fit of `-g·ρ̄_t` by construction. The previous code
+   built exactly this pressure and then threw the spline away, re-fitting its VALUES.
+2. **Snap the derivative slots** to `-g·ρ̄_t` and `-g·dρ̄_t/dz`, so the discrete balance
+   is exact to machine precision rather than to fit accuracy. Step 1 is what makes this
+   a ~0.03 % adjustment instead of a 17 % one, i.e. what keeps the value slot and the
+   derivative slots mutually consistent.
+
+The reconstruction is then compared against the input pressure and rejected above
+`tol` (relative). That is the coarse-sounding gate: a sounding too coarse to support a
+discrete hydrostatic state on the requested grid must fail loudly, not silently produce
+an unbalanced reference.
+"""
+function _hydrostatic_pressure_profile(column, rho_tbar::Array{Float64},
+                                       p_anchor::AbstractVector{Float64}; tol::Float64=0.01)
+    n = size(rho_tbar, 1)
+    prof = zeros(Float64, n, 3)
+
+    # (1) antiderivative of the FITTED -g*rho_t; anchor afterwards, since IInttransform's
+    # C0 pins the value at `xmin`, which is not a mish point.
+    column.uMish[:] .= -gravity .* view(rho_tbar, :, 1)
+    Btransform!(column)
+    Atransform!(column)
+    p_int = IInttransform(column, 0.0)
+    prof[:, 1] .= p_int .+ (p_anchor[1] - p_int[1])
+
+    # (2) exact discrete balance
+    prof[:, 2] .= -gravity .* view(rho_tbar, :, 1)
+    prof[:, 3] .= -gravity .* view(rho_tbar, :, 2)
+
+    # The coarse-sounding gate
+    err, k = findmax(abs.(prof[:, 1] .- p_anchor) ./ p_anchor)
+    err <= tol || throw(DomainError(err,
+        "the input sounding does not support a discrete hydrostatic state on this " *
+        "grid: re-integrating dp/dz = -g*rho_t from the fitted density reproduces the " *
+        "input pressure to only $(round(100*err, sigdigits=3)) % (tolerance " *
+        "$(round(100*tol, sigdigits=3)) %), worst at level $k, " *
+        "p_in = $(p_anchor[k]) Pa vs p_hydrostatic = $(prof[k, 1]) Pa. Refine the " *
+        "sounding's vertical resolution or coarsen the model grid."))
+    return prof
+end
+
 # Assemble a PressureReferenceState from pointwise (p [Pa], rho_d, rho_v, rho_c) on
 # levels z: EOS temperature, BF02 total-energy density at rest, supersaturation
 # density, and mean gamma*p/rho_t sound speed; profiles fitted on `column`.
-function _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c)
+#
+# `hydrostatic = true` (opt-in; off by default and bitwise inert when off) builds the
+# pressure profile through `_hydrostatic_pressure_profile` instead of a plain fit, so
+# the stored dp̄/dz satisfies discrete hydrostatic balance EXACTLY. The equation sets
+# that consume a PressureReferenceState carry `dp̄/dz = -g·ρ̄_t` as an unstated
+# assumption — every reference-derivative term in the moist_compressible tendencies
+# multiplies `w`, and the `w` forcing is perturbation-only — so where the stored
+# derivative violates it, the model silently omits a forcing of that size.
+function _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c; hydrostatic::Bool=false)
     rho_t = rho_d .+ rho_v .+ rho_c
     Tk = p_Pa ./ ((rho_d .* Rd) .+ (rho_v .* Rv))
     q_v = rho_v ./ rho_d
@@ -497,9 +567,12 @@ function _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c)
     R_m = Rd .+ (q_v .* Rv)
     gamma = (C_vt .+ R_m) ./ C_vt
     sound = sum(gamma .* p_Pa ./ rho_t) / length(p_Pa)
+    rho_tbar = _profile(column, rho_t)
+    pbar = hydrostatic ? _hydrostatic_pressure_profile(column, rho_tbar, p_Pa) :
+                         _profile(column, p_Pa)
     return PressureReferenceState(
-        _profile(column, p_Pa), _profile(column, rho_d), _profile(column, rho_v),
-        _profile(column, rho_c), _profile(column, rho_t), _profile(column, Tk),
+        pbar, _profile(column, rho_d), _profile(column, rho_v),
+        _profile(column, rho_c), rho_tbar, _profile(column, Tk),
         _profile(column, E_t), _profile(column, Q_ss), sound)
 end
 
@@ -513,8 +586,16 @@ condensate partial densities). Temperature comes directly from the equation of s
 derived pointwise before fitting, so a saturated input column has `Q_ssbar = 0`
 identically. The `z` values must match the model levels (compared as written by
 `string`).
+
+`hydrostatic = true` rebuilds the pressure profile from the fitted density so the
+stored `dp̄/dz` is in EXACT discrete hydrostatic balance (see
+`_hydrostatic_pressure_profile`); the file's pressure is then used only as the
+integration anchor and as the accuracy check. This is what lets the values-only file
+round-trip carry a balanced reference without a format change. Off by default and
+bitwise inert when off.
 """
-function exact_pressure_reference_state(ref_state_file::AbstractString, z::Array{Float64}, column)
+function exact_pressure_reference_state(ref_state_file::AbstractString, z::Array{Float64}, column;
+                                        hydrostatic::Bool=false)
     n = length(z)
     p_Pa = zeros(Float64, n); rho_d = zeros(Float64, n)
     rho_v = zeros(Float64, n); rho_c = zeros(Float64, n)
@@ -529,7 +610,7 @@ function exact_pressure_reference_state(ref_state_file::AbstractString, z::Array
             rho_c[i] = parse(Float64, parts[5])
         end
     end
-    return _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c)
+    return _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c; hydrostatic)
 end
 
 """
@@ -540,8 +621,14 @@ same format as [`calculate_reference_state`](@ref)). The balance is the direct
 dp/dz = −ρ_t g, integrated spectrally on `column` with a short fixed-point sweep —
 no entropy/log-density (P_s, P_xi, P_qv) Newton refinement is required. Condensate-free
 (`rho_cbar = 0`).
+
+`hydrostatic = true` keeps the antiderivative spline instead of re-fitting its values,
+and snaps the derivative slots, so the stored `dp̄/dz` is in EXACT discrete hydrostatic
+balance (see `_hydrostatic_pressure_profile`). Off by default and bitwise inert
+when off.
 """
-function calculate_pressure_reference_state(ref_state_file::AbstractString, z::Array{Float64}, column)
+function calculate_pressure_reference_state(ref_state_file::AbstractString, z::Array{Float64}, column;
+                                            hydrostatic::Bool=false)
 
     sfc_pressure, alt, theta_in, q_v_in = _read_sounding(ref_state_file)
 
@@ -568,19 +655,47 @@ function calculate_pressure_reference_state(ref_state_file::AbstractString, z::A
 
     # Fixed-point refinement: spectrally integrate dp/dz = -g*rho_t, then update
     # T (theta, Exner), rho_d (EOS) from the new pressure.
+    #
+    # The sweep OSCILLATES before it settles — it is a damped alternation, not a
+    # monotone approach — so a fixed count leaves the returned (p, rho_d) pair
+    # inconsistent by wherever the swing happened to be. On the 50-cell / 25 km
+    # tropical-cyclone grid with the Dunion MT sounding, the lid pressure runs
+    #
+    #   it     1      2      3      4      5      6      7      8     ...    50
+    #   p   1912   4010   1512   3550   2273   2897   2642   2724     ...  2707 Pa
+    #
+    # and the historical `1:5` stops on 2273 Pa — 16 % BELOW the converged 2707 Pa,
+    # with the pair mutually inconsistent to 27 %. That truncation, not the sounding's
+    # vertical resolution and not the spline operator, is why the stored dp̄/dz departed
+    # from -g·ρ̄_t by up to 17 % above the tropopause.
+    #
+    # `hydrostatic = true` iterates to convergence instead. The legacy `1:5` is kept as
+    # the default so every existing baseline stays bitwise unchanged.
     p_Pa = p .* 100.0
-    for _ in 1:5
+    maxit = hydrostatic ? 200 : 5
+    converged = !hydrostatic
+    for it in 1:maxit
         rho_t = rho_d .* (1.0 .+ q_v)
         column.uMish[:] .= (-gravity .* rho_t)[:]
         Btransform!(column); Atransform!(column)
-        p_Pa = IInttransform(column, sfc_pressure * 100.0)
+        p_next = IInttransform(column, sfc_pressure * 100.0)
+        delta = maximum(abs.(p_next .- p_Pa) ./ p_Pa)
+        p_Pa = p_next
         p = p_Pa ./ 100.0
         Tk = theta ./ (p_0 ./ p).^(Rd / Cpd)
         e_v = vapor_pressure.(p, q_v)
         rho_d = 100.0 .* (p .- e_v) ./ (Tk .* Rd)
+        if hydrostatic && it > 1 && delta < 1.0e-12
+            converged = true
+            break
+        end
     end
+    converged || throw(DomainError(maxit,
+        "the hydrostatic fixed point did not converge in $maxit sweeps for " *
+        "'$ref_state_file' on this grid. The sounding's (theta, q_v) profile and the " *
+        "hydrostatic integral are not mutually consistent to 1e-12."))
 
     rho_v = rho_d .* q_v
     rho_c = zeros(Float64, nlevels)
-    return _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c)
+    return _pressure_reference(z, column, p_Pa, rho_d, rho_v, rho_c; hydrostatic)
 end
