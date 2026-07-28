@@ -249,6 +249,8 @@ export SpringsteelGrid, SpringsteelGridParameters, GridParameters
 export CubicBSpline, SplineParameters, Spline1D
 export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
+export SAtransform_bounded!, SAtransform_bounded, set_lower_bound!, set_lower_bound_from_profile!
+export clear_lower_bound!, bound_shortfall, basis_integrals
 export setMishValues
 
 export FourierParameters, Fourier1D, Fourier
@@ -572,6 +574,18 @@ Base.@kwdef struct SpringsteelGridParameters
     # Spline-direction filter: per-variable, per-direction (`:i`, `:j`, `:k`,
     # `:default`).
     spline_filter::Dict{String,Dict{Symbol,AbstractFilter}} = Dict{String,Dict{Symbol,AbstractFilter}}()
+    # Positivity: per-variable, per-direction (`:i`, `:j`, `:k`, `:default`) lower bound on
+    # the reconstructed field, imposed as a box constraint on the spline coefficients (see
+    # `CubicBSpline.SAtransform_bounded!`). A `Float64` is a uniform physical bound —
+    # `0.0` for a positive-definite total such as `rho_r`. Empty (the default) leaves every
+    # spline unconstrained and every existing configuration bit-identical.
+    #
+    # Only the spline directions honour it, and only where the boundary condition is R0
+    # (NaturalBC) or R1T1 (NeumannBC); anything else throws at grid construction. For a
+    # variable carried as a perturbation from a reference profile the bound is `-ā`, which
+    # is not known until the reference exists — install those at runtime with
+    # `CubicBSpline.set_lower_bound_from_profile!` instead of here.
+    positivity::Dict{String,Dict{Symbol,Float64}} = Dict{String,Dict{Symbol,Float64}}()
     # Patch indices
     spectralIndexL::int = 1
     spectralIndexR::int = spectralIndexL + b_iDim - 1

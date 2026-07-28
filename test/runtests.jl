@@ -33,4 +33,5 @@ const TEST_GROUP = get(ENV, "TEST_GROUP", "all")
     TEST_GROUP in ("all", "solver_problem")   && include("solver_problem.jl")
     TEST_GROUP in ("all", "basis_cache")      && include("basis_cache.jl")
     TEST_GROUP in ("all", "relocation")       && include("relocation.jl")
+    TEST_GROUP in ("all", "positivity")       && include("positivity.jl")
 end

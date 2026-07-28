@@ -79,6 +79,7 @@ function _create_tile_from_patch(patch::SpringsteelGrid,
         fourier_filter = patch.params.fourier_filter,
         chebyshev_filter = patch.params.chebyshev_filter,
         spline_filter  = patch.params.spline_filter,
+        positivity     = patch.params.positivity,
         mubar          = patch.params.mubar,
         quadrature     = patch.params.quadrature,
         spectralIndexL = spectralIndexL,
@@ -2848,8 +2849,13 @@ function splineTransform!(sharedSpectral::SharedArray{real},
         for z in 1:b_kDim
             r1 = (z - 1) * b_iDim + 1
             r2 = r1 + b_iDim - 1
-            tile.spectral[r1:r2, v] .= SAtransform(tile.ibasis.data[z, v],
-                                                    view(sharedSpectral, r1:r2, v))
+            # Bounded form: this is where the i-direction A-coefficients of the STATE are
+            # produced, so it is where an i-direction positivity bound has to bite. With no
+            # bound installed it is the plain `SAtransform`. See the MULTI-DIMENSIONAL
+            # DESIGN note in CubicBSpline.jl — bounding this leg is what keeps the k-leg
+            # feasible.
+            tile.spectral[r1:r2, v] .= SAtransform_bounded(tile.ibasis.data[z, v],
+                                                           view(sharedSpectral, r1:r2, v))
         end
     end
     return nothing
@@ -2877,8 +2883,8 @@ function splineTransform!(sharedSpectral::SharedArray{real},
             pp1 = (z - 1) * b_iDim_patch + 1
             tp1 = (z - 1) * b_iDim_tile + 1
             patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
-                SAtransform(patch.ibasis.data[z, v],
-                            view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+                SAtransform_bounded(patch.ibasis.data[z, v],
+                                    view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
             tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
                 patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
         end
@@ -3023,7 +3029,9 @@ function tileTransform!(sharedSpectral::SharedArray{real},
                 end
                 xL && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 1, dr+1], :left)
                 xR && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 2, dr+1], :right)
-                SAtransform!(kcol)
+                # Value pass only; see the identical block in
+                # `gridTransform(::_2DCartesianRiRk, …)`.
+                dr == 0 ? SAtransform_bounded!(kcol) : SAtransform!(kcol)
                 SItransform!(kcol)
                 z1 = (r - 1) * kDim + 1
                 z2 = z1 + kDim - 1
@@ -3204,6 +3212,7 @@ function calcTileSizes(patch::_2DCartesianRR, tile_spec::NamedTuple)
                 fourier_filter = patch.params.fourier_filter,
                 chebyshev_filter = patch.params.chebyshev_filter,
                 spline_filter  = patch.params.spline_filter,
+                positivity     = patch.params.positivity,
                 mubar          = patch.params.mubar,
                 quadrature     = patch.params.quadrature,
                 spectralIndexL = siL_i[ti],
@@ -3318,6 +3327,7 @@ function calcTileSizes(patch::_3DCartesianRRR, tile_spec::NamedTuple)
                     fourier_filter = patch.params.fourier_filter,
                     chebyshev_filter = patch.params.chebyshev_filter,
                     spline_filter  = patch.params.spline_filter,
+                    positivity     = patch.params.positivity,
                     mubar          = patch.params.mubar,
                     quadrature     = patch.params.quadrature,
                     spectralIndexL = siL_i[ti],

@@ -859,7 +859,11 @@ function gridTransform(
                 r2 = r1 + b_iDim - 1
                 isp = grid.ibasis.data[z, v]
                 copyto!(isp.b, view(spectral, r1:r2, v))
-                SAtransform!(isp)
+                # Unlike the k-leg below, this SA does not depend on `dr` — the same b-vector
+                # is re-solved for all three passes and only the SI evaluation differs — so
+                # bounding it here also makes the ∂i and ∂²i slots derivatives of the bounded
+                # field rather than of the unbounded one.
+                SAtransform_bounded!(isp)
                 if dr == 0
                     SItransform!(isp)
                     @inbounds for r in 1:iDim
@@ -893,7 +897,10 @@ function gridTransform(
                 end
                 xL && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 1, dr+1], :left)
                 xR && CubicBSpline.set_ahat_neumann!(kcol, wall_du[r, v, 2, dr+1], :right)
-                SAtransform!(kcol)
+                # The positivity bound applies to the VALUE pass only: dr = 1, 2 carry ∂x and
+                # ∂²x of the field, which a lower bound on the field says nothing about. With
+                # no bound installed (the default) both branches are the same transform.
+                dr == 0 ? SAtransform_bounded!(kcol) : SAtransform!(kcol)
                 SItransform!(kcol)
                 z1 = (r-1)*kDim + 1
                 z2 = z1 + kDim - 1

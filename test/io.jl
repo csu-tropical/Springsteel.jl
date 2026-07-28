@@ -200,16 +200,17 @@ using DataFrames
                 fixture = joinpath(@__DIR__, "fixtures", "widened_dicts_grid.jld2")
                 @test isfile(fixture)
 
-                # This exercises the *other* JLD2 path from the pre-1.1 fixture above.
-                # There, fields were missing from the archive, so JLD2 gave up and handed
-                # back a ReconstructedStatic for `_upgrade_params` to rebuild. Here every
-                # field is present but three of them are stored at a wider type, so JLD2
-                # builds the struct in place and `convert` narrows each field on the way
-                # in — which is why `raw` is already a real SpringsteelGridParameters with
-                # narrowed dicts, and why the widening is not observable after the fact.
+                # WHICH JLD2 path this takes depends on whether the struct has gained any
+                # field since the fixture was written, and that is not what this fixture is
+                # for. With no new fields JLD2 builds the struct in place and `convert`
+                # narrows the three widened dicts on the way in; once a field is added (e.g.
+                # `positivity`, 2026-07-26) the archive is missing it, so JLD2 hands back a
+                # ReconstructedStatic and `_upgrade_params` rebuilds — the same path the
+                # pre-1.1 fixture above exercises. Assert only what the fixture actually
+                # tests: that a widened on-disk dict survives EITHER route and comes back
+                # narrowed. `load_grid` below is the real contract, and it stays strict.
                 raw = jldopen(fixture, "r") do f; f["params"]; end
-                @test raw isa SpringsteelGridParameters      # converted, not reconstructed
-                @test raw.vars isa Dict{String,Int64}
+                raw isa SpringsteelGridParameters && @test raw.vars isa Dict{String,Int64}
 
                 grid = load_grid(fixture)
                 @test grid isa RL_Grid
