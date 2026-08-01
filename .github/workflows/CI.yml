@@ -66,6 +66,7 @@ jobs:
           - tile_multipatch
           - basis_cache
           - relocation
+          - positivity
           - reference_state
           - thermodynamics
     steps:

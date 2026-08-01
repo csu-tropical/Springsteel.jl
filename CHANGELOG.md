@@ -7,8 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-01
+
+`v1.0.0 → v1.1.0` is a MINOR bump: every change is a backward-compatible addition
+(new geometries, two new submodules, new boundary-condition and constrained-fit
+families, new transform/tiling/nesting methods, performance) or a fix. No public API
+was removed or changed in a breaking way.
+
+Two fixes **change results** for code that was already exercising the affected paths,
+and are called out inline below: unstructured evaluation of azimuthally asymmetric
+`RL`/`RLZ`/`RLR` fields (a sine-sign error), and `num_columns(::RRR_Grid)` (which
+returned a spectral block count rather than physical columns).
+
 ### Added
 
+#### Geometries, sizing, and grid transforms
+
+- **First-class grid transforms for six previously solver-only geometries** —
+  `Z`, `ZZ`, `ZZZ` (pure-Chebyshev Cartesian) and `L`, `LL`, `LLZ` (Fourier, and
+  Fourier × Fourier × Chebyshev). Each gains the full transform surface
+  (`getGridpoints`, `spectralTransform`/`spectralTransform!`,
+  `gridTransform`/`gridTransform!`, `getRegularGridpoints`, and both
+  `regularGridTransform` overloads). These grids now round-trip and emit
+  regular-grid output like the spline families; previously they raised
+  `MethodError` for every transform entry point and only worked through the solver
+  assembly path.
+- **RiRk geometry** — a 2-D Cartesian grid with a cubic-B-spline vertical
+  (`Spline-i × Spline-k`; exports `RiRk_Grid`, and `RiRj_Grid` as an alias of
+  `RR`). Full support: forward/inverse transforms, tiling, regular-grid output
+  (`getRegularGridpoints`/`regularGridTransform`), NetCDF/CSV IO, and inhomogeneous
+  R3X boundary conditions (`set_boundary_values!`). Transforms are zero-allocation.
+- **Explicit cell counts for every cubic B-spline direction.**
+  `SpringsteelGridParameters` gains `num_cells_i` (an alias for `num_cells`),
+  `num_cells_j`, and `num_cells_k`. A spline axis is defined by its cell count
+  (`Dim = cells * mubar`, `bDim = cells + 3`), so this lets the j- and k-directions of
+  `RR`, `RRR`, `RiRk`, `RLR`, and `SLR` be specified exactly, the way `num_cells` already
+  specified the i-direction. The resolved counts are stored on the returned parameters.
+- **`iDim`-only "reverse mode" now works** for spline-i geometries: supplying `iDim`
+  without a cell count back-derives `num_cells = iDim ÷ mubar` and rebuilds `b_iDim`,
+  `spectralIndexR`, and `patchOffsetR`. Previously this produced a malformed grid that
+  failed with a `PosDefException` inside a factorization.
+- Documented the previously implicit sizing rules: the spline `Dim`/`bDim` formulas, and
+  the j/k auto-default (uniform nodal spacing with the i-direction, rounded up).
+- **Geometry-aware regular-output sizing** — regular-grid output dimensions are now
+  derived per geometry and preserve explicitly-provided values.
+
+#### Boundary conditions and constrained fits
+
+- **`CubicBSpline.R1T1X` — rank-1 inhomogeneous Neumann carried in the affine `ahat`
+  offset.** A rigid wall in a compressible atmosphere needs a state-dependent pressure
+  condition (`w` Dirichlet at the wall ⟹ `dp′/dz = −g·ρ_t′` there exactly) that no
+  homogeneous BC supplies, but the semi-implicit acoustic solve eliminates `w` and so
+  needs the `R1T1` subspace to stay operator-consistent. `R1T1X` uses the **same**
+  `gammaBC` as `R1T1` — hence the same admissible subspace and solver stability — with
+  the boundary derivative carried in `ahat`. `du = 0` reproduces the homogeneous fit
+  bitwise, so nothing that does not opt in can change. Adds `set_ahat_neumann!`,
+  `set_wall_derivatives!`, and `_has_ahat` (formerly `_has_r3x`, now covering both
+  inhomogeneous families). `SplineBasisArray` gains `wall_du`, indexed
+  `[column, variable, side, dr+1]`: a k-basis shares one spline across every column, so
+  the per-column wall data cannot live on the spline and is installed inside the
+  transform's column loop (both the `RiRk` `gridTransform` and `tileTransform`). The `dr`
+  axis is load-bearing — a 2-D transform differentiates in `i` *before* fitting in `k`,
+  so the `dr = 1/2` passes need `d(wall)/di` and `d²(wall)/di²`. New `test/r1t1x.jl`,
+  run under the existing `r3x` group.
+
+- **Positivity-constrained cubic-B-spline fits for positive-definite fields.**
+  `SAtransform_bounded!` imposes a per-coefficient lower bound on the SA solve, selected
+  per variable and per leg through the new `SpringsteelGridParameters.positivity` field
+  (e.g. `positivity = Dict("q" => Dict(:k => 0.0))`). Because the B-spline basis is
+  non-negative, a componentwise bound on the coefficients bounds the *reconstruction*
+  everywhere by the convex-hull property — not merely at the mish points. The clip is
+  conservative: the mass a column must shed is redistributed within that column, and
+  anything that cannot be placed is accumulated into `bound_shortfall` rather than
+  silently created.
+
+  Two rules govern which legs to bound. **Sufficiency** — bounding the *last* leg puts
+  the field above the bound everywhere the model evaluates it, since every earlier
+  direction has already been collapsed to a physical coordinate. **Feasibility** —
+  bounding the *earlier* legs is what keeps the last one solvable: `Σₘ bₘ = ∫u` by
+  partition of unity and `Σₘ aₘwₘ = ∫u` because the `l_q` penalty has zero third
+  derivative, so a componentwise non-negative `b` entering a leg guarantees that leg's
+  column mass is non-negative and hence always conservatively fixable.
+
+  Supporting API: `basis_integrals`, `bound_shortfall`, `set_lower_bound!`,
+  `clear_lower_bound!`, `set_lower_bound_from_profile!`, and a `lower` keyword on
+  `Spline1D`. Constraints are rejected rather than mis-applied where the box cannot
+  express positivity: `R1T0`/`R3` boundary conditions (a slaved coefficient is not in the
+  box), R3X borders (the trio is pinned to the parent's donated `ahat`), Fourier and
+  Chebyshev directions (no convex-hull property), and a *nonzero* `:i` bound on an
+  intermediate leg (which fits inner products, not the field, so only a zero bound
+  carries through unchanged).
+
+#### Tiling, multipatch, and nesting
+
+- **RZ tiling transforms** — tiled transform support for the `RZ`
+  (Spline × Chebyshev) geometry.
+- **Tiled `splineTransform!` for the `RLR` and `SLR` geometries.** The 3-argument
+  `(sharedSpectral, patch, tile)` form existed for `RZ`/`RiRk`, `RL`, `SL`, `RLZ`, and
+  `SLZ` but not `RLR`/`SLR`, so any distributed run on those geometries failed with a
+  `MethodError` at the first spectral sync. Both use the `RLZ` per-`z_b` block layout
+  (k = 0 block, then real/imag pairs per azimuthal wavenumber) over the spline vertical's
+  `b_kDim` blocks.
+- **`createMultiGrid` now supports i-direction multipatch for `RR`, `RRR`, and `RiRk`.**
+  It previously advertised `RR`/`RRR` but never plumbed their spline j/k axes, so an `RR`
+  patch silently inherited the `@kwdef` `jMax = 2π` with periodic Fourier BCs on a cubic
+  B-spline j-axis. The shared spline axes are now threaded through `_create_chain` and
+  `_create_embedded` (only `i` is decomposed, so j/k are read once and copied into every
+  patch) and are *required* by `_validate_multigrid_config`, since a spline axis has no
+  sensible default domain; `BCU`/`BCD`/`BCB`/`BCT` default to natural. 2-D/3-D patch
+  decomposition remains deferred.
 - **Temporal-nesting support for two-way nested models** (DeMaria et al. 1992;
   Ooyama 2001):
   - **`lerp_payload!(dest, p0, p1, θ)`** linearly interpolates two
@@ -39,7 +146,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     wavenumber support follow the global ring numbering, and
     `_create_tile_from_patch` now composes the patch's own `patchOffsetL` into
     its tiles (identity for ordinary patches).
+- **`evaluate_grid_points(grid::RLR_Grid, pts, zq; kmax)`** — the fine→coarse collar
+  primitive for radially-nested `RLR` models. Evaluates whole vertical columns at
+  arbitrary `(r, λ)` locations and arbitrary `z`, returning the 7-slice physical layout
+  z-fastest per column, with optional per-column azimuthal transmissibility truncation.
+  Radial spline evaluations are deduped per distinct radius, and each column pays one
+  z-solve per horizontal-derivative family. `RLR` and `SLR` are also added to
+  `_CYLINDRICAL_GEOMETRIES` for the `createMultiGrid` offset path.
 
+#### Thermodynamics and reference states
+
+- **`Thermodynamics` submodule** — basis-agnostic atmospheric thermodynamics
+  (physical equation of state + diagnostics), shared by Springsteel-grid clients;
+  imported explicitly, e.g. `using Springsteel.Thermodynamics`.
+- **Hydrostatic reference-state module** — physical-density reference (base) state
+  types and builders: `AbstractReferenceState`, `DryReferenceState`,
+  `MoistReferenceState`, `CondensateReferenceState`, with hydrostatic builders and
+  a physical-format exact reference builder (including condensate).
+- **`PressureReferenceState`** — a pressure-based hydrostatic reference for total-energy
+  equation sets, storing `p` [Pa], partial and total densities, and derived temperature
+  (EOS), total energy density `E_t = ρ_d·e_i + ρ_t·g·z` (BF02 internal energy), and
+  supersaturation density `Q_ss = ρ_v − ρ_v,sat(T, p)`. Balance is the direct
+  `dp/dz = −ρ_t·g`, so no entropy/log-density refinement is needed. Builders
+  `exact_pressure_reference_state` (reads `z p ρ_d ρ_v ρ_c`; saturated input columns give
+  `Q_ssbar ≡ 0`) and `calculate_pressure_reference_state` (sounding path, spectral
+  fixed-point integration of `dp/dz = −g·ρ_t`); accessors `ref_pressure`, `ref_rho_t`,
+  `ref_total_energy`, `ref_qss`; new thermodynamics helpers `rho_v_sat(Tk, phPa)` and
+  `internal_energy_bf02(Tk, q_v, q_l)`.
+- **`sigmabar` — the entropy-density (`ρ_d·s`) profile** — added to the dry, moist, and
+  condensate reference states with a `ref_sigma` accessor, supporting entropy-density
+  equation sets.
 - **`Thermodynamics.potential_temperature(p_Pa, rho_d)`** — a new two-argument method giving the
   dry potential temperature from the `(p, ρ_d)` pair, `θ_d ≡ (p₀^κ/R_d)·p^(1−κ)/ρ_d`. It is the
   same quantity as the existing `potential_temperature(s, rho_d, q_v)`, but needs no entropy
@@ -47,18 +183,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without a spectral transform. Purely additive: a new signature on an existing generic, with no
   change to the three-argument method. Note `p_Pa` is in **pascals** (matching
   `PressureReferenceState.pbar`), not the hPa used by the saturation functions.
-- **Explicit cell counts for every cubic B-spline direction.**
-  `SpringsteelGridParameters` gains `num_cells_i` (an alias for `num_cells`),
-  `num_cells_j`, and `num_cells_k`. A spline axis is defined by its cell count
-  (`Dim = cells * mubar`, `bDim = cells + 3`), so this lets the j- and k-directions of
-  `RR`, `RRR`, `RiRk`, `RLR`, and `SLR` be specified exactly, the way `num_cells` already
-  specified the i-direction. The resolved counts are stored on the returned parameters.
-- **`iDim`-only "reverse mode" now works** for spline-i geometries: supplying `iDim`
-  without a cell count back-derives `num_cells = iDim ÷ mubar` and rebuilds `b_iDim`,
-  `spectralIndexR`, and `patchOffsetR`. Previously this produced a malformed grid that
-  failed with a `PosDefException` inside a factorization.
-- Documented the previously implicit sizing rules: the spline `Dim`/`bDim` formulas, and
-  the j/k auto-default (uniform nodal spacing with the i-direction, rounded up).
+
+#### Transform surface
+
+- **Generic in-place `Ixtransform`/`Ixxtransform`.** The basis-native in-place derivative
+  evaluations existed on both bases, but the cross-basis generic surface offered only the
+  allocating 1-argument forms, so per-column hot paths allocated a fresh derivative vector
+  on every call. Adds the Chebyshev generic in-place `Ixxtransform` wrapper and the
+  two-argument top-level delegations for both bases; tests assert the in-place forms match
+  the allocating ones bit-for-bit and allocate nothing once warm.
+
+#### Tests
+
+- **Chebyshev solver parity test** — the unified solver is checked against the
+  legacy `Chebyshev.bvp` reference; documentation grid-type tables and the v1.1
+  roadmap were refreshed (RiRk documented; "available but untested" grid claims
+  corrected).
+- **New test groups:** `thermodynamics`, `reference_state`, `cell_counts`,
+  `nesting_support`, and `positivity` (all added to the suite and the CI matrix).
 
 ### Changed
 
@@ -88,7 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constants (`CubicBSpline.R0` is a `Dict{String,Int64}`, `R1T0` a `Dict{String,Float64}`)
   and the newer `BoundaryConditions` struct; those have no common supertype but `Any`, so
   no concrete value type can hold them. They are read at grid-construction time only and so
-  carry none of the performance payoff. See `agent_files/project_bc_type_unification.md`.
+  carry none of the performance payoff.
 - `_validate_spline_filter` no longer hand-checks the *shape* of a `spline_filter` — that a
   key is a `String`, that the inner value is a `Dict`, that the leaf is an `AbstractFilter`.
   The field's declared type now enforces all three, so malformed input is rejected at
@@ -113,15 +255,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   take their defaults. `load_grid` does not read `format_version` at all — it is written for
   forensics and for future use, and nothing currently branches on it.
 
+### Performance
+
+- **Batched Cartesian unstructured evaluation** — `evaluate_unstructured` on the
+  `RR`, `RZ`, `RiRk`, and `RRR` spline grids now hoists the per-stripe
+  `SAtransform!` out of the per-output-point loop and batch-evaluates into a
+  per-call buffer. Allocation count is now constant in the number of query points
+  (was ~2 per point), removing a multi-threaded GC-pressure hazard. Roughly
+  **17–21× faster** for `RR`/`RZ` and **~12×** for `RRR` at 1000 query points.
+  Results are unchanged.
+
 ### Fixed
 
-- **`read_netcdf` threw on files with a CF time coordinate.** A time axis
-  written by `write_netcdf(...; time=t)` (units `"seconds since ..."`, a
-  `calendar`) is decoded by NCDatasets to `DateTime`, which the reader tried to
-  store in a `Dict{String, Vector{Float64}}` — a `convert` error. The
-  `"coordinates"`/`"variables"` containers are now `Any`-valued, so the decoded
-  time is preserved (`data["coordinates"]["time"]::Vector{DateTime}`) alongside
-  the `Float64` spatial coordinates.
+#### Unstructured evaluation and coefficient caches
 
 - **Unstructured RL/RLZ evaluation flipped every sine (odd-in-λ) component.**
   `_eval_unstructured_rl`/`_eval_unstructured_rlz` (behind `evaluate_unstructured`,
@@ -133,6 +279,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gridTransform!` (the existing interpolation/relocation tests passed under
   either sign and never caught this). **This changes results** for any consumer
   that evaluated asymmetric RL/RLZ fields at unstructured points.
+- **Unstructured `RLR` evaluation flipped every sine (odd-in-λ) component.**
+  `_eval_unstructured_rlr` had the same defect, and was invisible to the existing
+  axisymmetric test. **This changes results** for any consumer that evaluated
+  azimuthally asymmetric `RLR` fields at unstructured points.
+- **`_get_ahat_cache_rlz` never reloaded the per-wavenumber coupled-border registry**, so
+  unstructured and collar evaluation of a nested patch pinned its R3X borders to zero. It
+  now mirrors `gridTransform(_RLRGrid)`'s registry loads.
+
+#### Tiled transforms
+
 - **The tiled RL b→a solves now reload the coupled per-wavenumber border.**
   The 2- and 3-argument `splineTransform!(…, ::RL_Grid)` reused the three
   k0/real/imag spline objects across all wavenumbers without reloading their
@@ -141,6 +297,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   methods — and the `_get_ahat_cache_rl` coefficient cache behind the
   unstructured evaluators — now mirror `gridTransform`'s per-wavenumber registry
   loads.
+- **The tiled `RLR` `splineTransform!` ignored the R3X per-wavenumber `ahat` registry.**
+  Both `RLR` methods (single-tile 2-argument and patch/tile 3-argument) solved every
+  `(z_b, k)` block without reloading the per-wavenumber coupled-border coefficients that
+  `apply_interface_payload!` registers, so a nested `RLR` patch's R3X borders were
+  silently ignored on every worker-loop solve — the RL tiled-transform bug reincarnated on
+  the `RLR` path. Field evidence: a 2-patch nested `RLR` run diverged from its
+  bitwise-matched nested-axisymmetric twin by O(1) relative within 300 s, while the
+  single-grid control matched to 1e-10 over the same integration. Both methods now reload
+  slots `z_slot_base + 0 / 1+p / 2+p` (`p = (k−1)*2`), matching `gridTransform(_RLRGrid)`.
 - **The out-of-place `SAtransform(spline, b)` now honors the R3X `ahat`.** This
   allocating form is what every 3-argument (tiled) `splineTransform!` method uses
   for the b→a solve on the patch splines, and it ignored `spline.ahat` — so a
@@ -149,6 +314,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honored the coupling. The rank-3 inhomogeneous path now matches `SAtransform!`
   exactly; a regression test asserts allocating == in-place for an R3X spline
   with nonzero `ahat`.
+- **The tiled 3-D `splineTransform!` used the wrong patch stride on inner tiles.** The
+  3-argument method for the z-major 3-D layouts (`RLZ`/`SLZ`, and the newly added `RLR`)
+  computed the *patch* z-level base index with the *tile's* wavenumber block count.
+  Sub-blocks are aligned by wavenumber, but an inner tile carries fewer wavenumbers than
+  the patch (its `kDim` follows its outermost ring), so every z level past the first read
+  the wrong shared rows on inner tiles. Single-tile runs (tile = patch) are unchanged —
+  the strides coincide. A multi-tile b→a round-trip test for `RLZ`/`RLR`/`SLR` seeds
+  wavenumber-1 content and reconstructs the physical field on every tile of a 3-way
+  radial decomposition; it was verified to fail against the pre-fix stride math.
+- `_create_tile_from_patch` did not propagate a patch's spline j/k cell counts, so a tile
+  re-derived them from its own narrower i-domain. This was latent (the auto-default is
+  tile-invariant) but would have produced mismatched coefficient-array shapes across
+  tiles as soon as a patch set `num_cells_j` explicitly.
+
+#### Multipatch coupling and column semantics
+
+- **`num_columns(::RRR_Grid)` returned a spectral block count, not physical columns.** It
+  returned `b_jDim * b_kDim`, while every other grid with a vertical dimension returns the
+  number of physical z-fastest columns (`iDim` for `RZ`/`RiRk`, `jDim` for
+  `RLZ`/`RLR`/`SLZ`/`SLR`). Model drivers advance the state one vertical column at a time
+  and stride by `kDim`, so the `RRR` value must be `iDim * jDim`. No caller used the old
+  value.
+- RZ tiling: restored physical-column `num_columns` semantics.
+- **The `RRR` `:per_mode` inter-patch coupling only coupled `b_jDim` of `b_jDim*b_kDim`
+  i-splines.** The fill/apply kernels iterated `size(ibasis.data, 1)` modes and indexed
+  `data[l, v]`, which for a 3-D `RRR` `ibasis` (`b_jDim, b_kDim, nvars`) misses the
+  `b_kDim` factor and collapses onto the `k = 1` slice via partial linear indexing. The
+  kernels now use `n_modes = length(ibasis.data) ÷ nvars` with
+  `reshape(ibasis.data, :, nvars)`, so `RR` (2-D) and `RRR` (3-D) share one index —
+  column-major order makes the flattened index exact. This was structurally broken
+  independent of `createMultiGrid`. The test helper `_snapshot_patch` collapsed the same
+  way and so never checked `RRR`'s `k > 1` modes in the round trip; it is fixed, and an
+  explicit per-k-plane coupling assertion was added.
+
+#### Integration and reference states
+
+- **The generic `IInttransform` was mis-anchored on spline columns.** The basis-agnostic
+  `IInttransform(spline, [uMish,] C0)` wrappers delegated to `SIInttransform`, whose
+  Ooyama (2002) antiderivative coefficients carry their own gauge (zero near the domain
+  center) with `C0` added uniformly, while the Chebyshev `IInttransform` anchors the result
+  to `C0` at `zmin`. Cross-basis callers meaning "`C0` = value at the bottom" — the
+  hydrostatic reference-state integrations, and boundary-layer `w`-from-divergence — got a
+  silently mis-anchored profile: on a 20 km column,
+  `calculate_pressure_reference_state` returned a 2247 hPa surface pressure from a
+  1014.8 hPa sounding. The generic wrappers now evaluate the antiderivative at `xmin` and
+  shift so the result equals `C0` there, matching Chebyshev. The spline-native
+  `SIInttransform`/`SIInttransform!` keep their original gauge and are untouched.
+- **The hydrostatic reference-state sweep did not converge, and the pressure
+  antiderivative was thrown away.** Both defects are behind `hydrostatic = true` and
+  bitwise inert when off.
+  - The fixed-point sweep in `calculate_pressure_reference_state` *oscillates* before it
+    settles, and a hard-coded `for _ in 1:5` stopped it mid-swing. On a 50-cell / 25 km TC
+    grid with the Dunion moist-tropical sounding the lid pressure ran
+    1912 → 4010 → 1512 → 3550 → 2273 → … → 2707 Pa, so the returned `p` was 16% below
+    convergence and the returned `(p, ρ_d)` pair was mutually inconsistent by 27%. The
+    sweep now iterates to 1e-12 or throws.
+  - `_pressure_reference` built `p` by `IInttransform` of the fitted `−g·ρ_t` and then
+    discarded that spline, re-fitting its *values*. A 0.03% value-fit error on 1e5 Pa is
+    ~30 Pa, which across a 500 m cell is ~0.06 Pa/m — 10–17% of `g·ρ_t` where `p` is
+    small. `_hydrostatic_pressure_profile` now keeps the antiderivative for the value slot
+    and snaps the derivative slots to `−g·ρ_tbar`, so discrete hydrostatic balance is
+    exact. Measured on the TC grid, `−(dp/dz + g·ρ_t)/ρ_t` went from −2.0e−01 at 0.06 km /
+    +1.67e+00 at 22.6 km to 0.0 at every level. Since `_pressure_reference` is the shared
+    entry point for both the calculate and exact builders, the values-only `.ref` round
+    trip now carries a balanced reference with no file-format change: `p` is re-integrated
+    from `ρ_t`, and the file's pressure is only the anchor and the accuracy check
+    (rejected above 1%).
+- Reference-state builder: copy the `Itransform!` result and recompute saturation
+  pressure (correctness fix in the new reference-state path).
+
+#### IO and grid construction
+
+- **`read_netcdf` threw on files with a CF time coordinate.** A time axis
+  written by `write_netcdf(...; time=t)` (units `"seconds since ..."`, a
+  `calendar`) is decoded by NCDatasets to `DateTime`, which the reader tried to
+  store in a `Dict{String, Vector{Float64}}` — a `convert` error. The
+  `"coordinates"`/`"variables"` containers are now `Any`-valued, so the decoded
+  time is preserved (`data["coordinates"]["time"]::Vector{DateTime}`) alongside
+  the `Float64` spatial coordinates.
 - **`grid_from_regular_data` (and `grid_from_netcdf`, which forwards to it) never accepted
   `BoundaryConditions` structs.** Its BC keyword arguments were annotated `::Dict`, so a bare
   `DirichletBC()` — which is not a `Dict` — raised a `MethodError`. The struct-BC API simply
@@ -163,73 +407,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected the `grid_from_regular_data` examples in `docs/src/tutorial.md` and
   `docs/src/interpolation.md`, which additionally passed `vars` as a `Dict("u" => 1)` where the
   signature takes a `Vector{String}`. All three documented examples now execute verbatim.
-- `_create_tile_from_patch` did not propagate a patch's spline j/k cell counts, so a tile
-  re-derived them from its own narrower i-domain. This was latent (the auto-default is
-  tile-invariant) but would have produced mismatched coefficient-array shapes across
-  tiles as soon as a patch set `num_cells_j` explicitly.
 
-## [1.1.0] - 2026-06-27
+#### Test-suite hygiene
 
-`v1.0.0 → v1.1.0` is a MINOR bump: every change is a backward-compatible addition
-(new geometry, two new submodules, new transform/tiling methods, performance) or a
-fix. No public API was removed or changed in a breaking way.
-
-### Added
-
-- **First-class grid transforms for six previously solver-only geometries** —
-  `Z`, `ZZ`, `ZZZ` (pure-Chebyshev Cartesian) and `L`, `LL`, `LLZ` (Fourier, and
-  Fourier × Fourier × Chebyshev). Each gains the full transform surface
-  (`getGridpoints`, `spectralTransform`/`spectralTransform!`,
-  `gridTransform`/`gridTransform!`, `getRegularGridpoints`, and both
-  `regularGridTransform` overloads). These grids now round-trip and emit
-  regular-grid output like the spline families; previously they raised
-  `MethodError` for every transform entry point and only worked through the solver
-  assembly path.
-- **RiRk geometry** — a 2-D Cartesian grid with a cubic-B-spline vertical
-  (`Spline-i × Spline-k`; exports `RiRk_Grid`, and `RiRj_Grid` as an alias of
-  `RR`). Full support: forward/inverse transforms, tiling, regular-grid output
-  (`getRegularGridpoints`/`regularGridTransform`), NetCDF/CSV IO, and inhomogeneous
-  R3X boundary conditions (`set_boundary_values!`). Transforms are zero-allocation.
-- **`Thermodynamics` submodule** — basis-agnostic atmospheric thermodynamics
-  (physical equation of state + diagnostics), shared by Springsteel-grid clients;
-  imported explicitly, e.g. `using Springsteel.Thermodynamics`.
-- **Hydrostatic reference-state module** — physical-density reference (base) state
-  types and builders: `AbstractReferenceState`, `DryReferenceState`,
-  `MoistReferenceState`, `CondensateReferenceState`, with hydrostatic builders and
-  a physical-format exact reference builder (including condensate).
-- **RZ tiling transforms** — tiled transform support for the `RZ`
-  (Spline × Chebyshev) geometry.
-- **Geometry-aware regular-output sizing** — regular-grid output dimensions are now
-  derived per geometry and preserve explicitly-provided values.
-- **Chebyshev solver parity test** — the unified solver is checked against the
-  legacy `Chebyshev.bvp` reference; documentation grid-type tables and the v1.1
-  roadmap were refreshed (RiRk documented; "available but untested" grid claims
-  corrected).
-- **New test groups:** `thermodynamics`, `reference_state` (added to the suite and
-  CI).
-
-### Performance
-
-- **Batched Cartesian unstructured evaluation** — `evaluate_unstructured` on the
-  `RR`, `RZ`, `RiRk`, and `RRR` spline grids now hoists the per-stripe
-  `SAtransform!` out of the per-output-point loop and batch-evaluates into a
-  per-call buffer. Allocation count is now constant in the number of query points
-  (was ~2 per point), removing a multi-threaded GC-pressure hazard. Roughly
-  **17–21× faster** for `RR`/`RZ` and **~12×** for `RRR` at 1000 query points.
-  Results are unchanged.
-
-### Fixed
-
-- Reference-state builder: copy the `Itransform!` result and recompute saturation
-  pressure (correctness fix in the new reference-state path).
-- RZ tiling: restored physical-column `num_columns` semantics.
-- Test-suite hygiene: an operator-algebra testset titled "ZZ grid" actually
-  constructed a `ZZZ` grid — title corrected.
+- An operator-algebra testset titled "ZZ grid" actually constructed a `ZZZ` grid — title
+  corrected.
 
 ### Maintenance
 
-- CI: added the `reference_state` and `thermodynamics` test groups; TagBot now
-  receives the token and SSH key.
+- CI: added the `reference_state`, `thermodynamics`, `cell_counts`, `nesting_support`,
+  and `positivity` test groups to the matrix; TagBot now receives the token and SSH key.
+- CI gained a `parity-check` job (`.github/scripts/check_test_group_parity.jl`) that the
+  test matrix `needs:`, so a group wired into `test/runtests.jl` but missing from the
+  `CI.yml` matrix fails fast with a named diff instead of silently going unrun.
 - Removed stale top-level dev scripts (`test_ci.sh`, `test_regular_grid.jl`,
   `.actrc`).
 
@@ -240,5 +430,6 @@ mixed CubicBSpline / Fourier / Chebyshev bases, the solver framework, grid-to-gr
 interpolation, spectral filtering, multi-patch grid connections, basis-template
 caching, and grid relocation. See the Git tag history for releases prior to 1.1.0.
 
+[Unreleased]: https://github.com/csu-tropical/Springsteel.jl/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/csu-tropical/Springsteel.jl/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/csu-tropical/Springsteel.jl/releases/tag/v1.0.0
