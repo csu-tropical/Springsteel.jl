@@ -180,7 +180,8 @@ SpringsteelProblem(grid, L * u => rhs;
 ```
 
 Build a problem from an operator expression. `backend` can be a
-`Symbol` (`:auto`, `:dense`, `:sparse`, `:krylov`) or a backend instance.
+`Symbol` (`:auto`, `:dense`, `:sparse`, `:krylov`, `:svd`) or a backend
+instance; an unrecognised symbol is an `ArgumentError` naming the valid set.
 The default `:auto` picks `LocalLinearBackend` for pure-Chebyshev grids
 (where structural sparsity is low) and `SparseLinearBackend` everywhere
 else.
@@ -233,7 +234,8 @@ solve
 
 Both entry points work with every linear backend
 ([`LocalLinearBackend`](@ref), [`SparseLinearBackend`](@ref),
-[`KrylovLinearBackend`](@ref)). For [`OptimizationBackend`](@ref), only
+[`KrylovLinearBackend`](@ref), [`SVDLinearBackend`](@ref)). For
+[`OptimizationBackend`](@ref), only
 `solve` is defined (via the `Optimization.jl` package extension).
 
 ```@docs
@@ -295,6 +297,31 @@ prob = SpringsteelProblem(grid, L * u => :f;
 Preconditioner options: `nothing` (no preconditioner), `:diag` (diagonal
 of the assembled operator), or an explicit left-inverse.
 
+### `SVDLinearBackend` — pseudo-inverse
+
+```@docs
+SVDLinearBackend
+```
+
+Factorises the assembled operator with `LinearAlgebra.svd` and solves through
+the pseudo-inverse, $a = V \Sigma^{+} U^{T} b$. This is the backend for systems
+that are rank-deficient or ill-conditioned enough that a direct factorisation is
+untrustworthy, and for regularised least-squares:
+
+```julia
+# Truncate singular values below 1e-10 · σ_max
+prob = SpringsteelProblem(grid, L * u => :f;
+                           backend = SVDLinearBackend(rtol = 1e-10))
+```
+
+`rtol = 0.0` (the default, also what `backend = :svd` gives) keeps LAPACK's
+natural precision — the SVD object's `\` already handles tiny singular values
+correctly, so raise `rtol` only when you specifically want truncation.
+
+The dense SVD is $O(N^3)$, which is appropriate up to systems of a few thousand
+rows. Beyond that, use a partial or iterative SVD outside the framework
+(e.g. `KrylovKit.svdsolve`) rather than this backend.
+
 ### `AbstractLinearBackend`
 
 ```@docs
@@ -302,8 +329,8 @@ AbstractSolverBackend
 AbstractLinearBackend
 ```
 
-Supertype for the three linear backends above. `solve` and `solve!`
-dispatch on `{<:AbstractLinearBackend}` so that all three share one
+Supertype for the four linear backends above. `solve` and `solve!`
+dispatch on `{<:AbstractLinearBackend}` so that all four share one
 implementation and `OptimizationBackend` cleanly hits its own method in
 the extension.
 

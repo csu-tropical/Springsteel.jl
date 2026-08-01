@@ -417,6 +417,15 @@ function save_grid(filename::String, grid::SpringsteelGrid; compress::Bool=true)
     return nothing
 end
 
+# `save_grid` serialises the whole `params` struct. When SpringsteelGridParameters
+# gains a field, JLD2 can no longer reconstruct archives written before it and
+# hands back a `JLD2.ReconstructedStatic` instead. Its fields are still readable
+# by name, so rebuild through the @kwdef constructor and let the new fields take
+# their defaults — `createGrid` then re-derives them.
+_upgrade_params(p::SpringsteelGridParameters) = p
+_upgrade_params(p) = SpringsteelGridParameters(;
+    (name => getproperty(p, name) for name in propertynames(p))...)
+
 """
     load_grid(filename::String) -> SpringsteelGrid
 
@@ -427,17 +436,21 @@ then copies the archived arrays into the fresh grid.
 
 The returned grid is fully functional — transforms, interpolation, and
 the solver can all be applied to it immediately.
+
+Archives written before a `SpringsteelGridParameters` field existed still load.
+The upgrade is driven by **type dispatch**, not by the archive's
+`format_version` tag: JLD2 hands back a reconstructed type when a field is
+missing, and `_upgrade_params` rebuilds it through the keyword constructor so
+the new fields take their defaults. `load_grid` does not read `format_version`
+at all.
+
+# Example
+
+```julia
+save_grid("output.jld2", grid)
+grid2 = load_grid("output.jld2")
+```
 """
-
-# `save_grid` serialises the whole `params` struct. When SpringsteelGridParameters
-# gains a field, JLD2 can no longer reconstruct archives written before it and
-# hands back a `JLD2.ReconstructedStatic` instead. Its fields are still readable
-# by name, so rebuild through the @kwdef constructor and let the new fields take
-# their defaults — `createGrid` then re-derives them.
-_upgrade_params(p::SpringsteelGridParameters) = p
-_upgrade_params(p) = SpringsteelGridParameters(;
-    (name => getproperty(p, name) for name in propertynames(p))...)
-
 function load_grid(filename::String)
     params, spectral, physical = jldopen(filename, "r") do f
         f["params"], f["spectral"], f["physical"]
