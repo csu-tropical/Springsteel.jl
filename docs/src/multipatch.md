@@ -95,6 +95,25 @@ createMultiGrid
 SpringsteelMultiGrid
 ```
 
+### Supported geometries
+
+`createMultiGrid` decomposes along the **i** direction only; any j/k axes are shared
+and are copied unchanged into every patch.
+
+| Geometry family | Notes |
+|:---|:---|
+| `R`, `RL`, `RLZ`, `SL`, `SLZ`, `RZ` | Cylindrical / spherical / Chebyshev-vertical, `patchOffsetL` auto-derived where applicable |
+| `RR`, `RRR`, `RiRk` | Cartesian spline j/k axes must be given **explicitly** — a spline axis has no sensible default domain, so `_validate_multigrid_config` requires it. `BCU`/`BCD`/`BCB`/`BCT` default to natural |
+| `RLR`, `SLR` | Spline vertical in the k slot; included in the cylindrical offset path |
+
+2-D and 3-D *patch* decomposition (splitting j or k as well as i) is not yet supported.
+
+!!! note "Spline j/k axes on `RR`/`RRR`"
+    Before v1.1, `createMultiGrid` advertised `RR`/`RRR` but never plumbed their spline
+    j/k axes, so a patch silently inherited the `@kwdef` default `jMax = 2π` with
+    periodic Fourier BCs on what is actually a cubic B-spline axis. Supplying the axes
+    is now mandatory and validated.
+
 ### Chain topology
 
 A chain links N patches along the radial / i direction. You pass N+1
@@ -181,6 +200,90 @@ PatchEmbedded
 Both take a vector of pre-constructed `SpringsteelGrid`s and build the
 interface list, validating DX ratios and auto-computing coupling
 matrices.
+
+## Two-way nesting
+
+The interface machinery above is one-way: the primary patch donates its border trio and
+the secondary patch reads it. A two-way nest adds a **subcycling child** (which advances
+several short steps per parent step) and **fine → coarse feedback** (the parent's
+tendencies see the child's solution). Both follow DeMaria et al. (1992) and Ooyama (2001).
+
+### Temporal interpolation for a subcycling child
+
+A child taking `n` substeps per parent step needs a boundary condition at each substep,
+but the parent only supplies one at each of its own steps. [`lerp_payload!`](@ref)
+linearly interpolates two [`InterfacePayload`](@ref)s in time and is bitwise-exact at the
+endpoints, so substep 0 and substep `n` reproduce the parent's donated trio exactly:
+
+```julia
+# Parent bracketing payloads p0 (at t) and p1 (at t + Δt_parent)
+for j in 0:n-1
+    θ = j / n
+    lerp_payload!(payload, p0, p1, θ)
+    apply_interface_payload!(meta, child, payload)   # meta::PatchInterfaceMetadata
+    step!(child, Δt_child)
+end
+```
+
+`lerp_payload!` validates that both endpoints match `dest` in scheme, side, and variable
+count, and `apply_interface_payload!` re-validates the payload against the interface
+metadata, so a mismatched pairing throws rather than writing the wrong border.
+
+### Collar interfaces
+
+Feedback must not be routed through the child's boundary condition. A rank-3 spline's
+border trio *is* its `ahat`, so writing the child's own solution back into the parent's
+border and re-donating it is degenerate — the interface freezes. The `test/nesting_support.jl`
+suite carries an explicit anti-freeze regression against this.
+
+The correct construction is a **collar**: extend the parent patch one cell past the
+nominal junction, into the child's domain, so that the trio the child's R3X boundary reads
+consists of *interior*, freely-fitted parent amplitudes. This is the existing
+`PatchInterface(...; is_stacked=true)` path — no new interface type is needed.
+
+### Fine → coarse feedback
+
+Feedback then goes through the **tendencies**, not through a boundary condition
+(DeMaria et al. 1992, eq. 2.22): the coarse patch's collar quadrature points are evaluated
+on the fine grid, and the results are injected into the coarse Galerkin loads. The
+per-geometry evaluators for that injection are:
+
+| Function | Grids | Returns |
+|:---|:---|:---|
+| [`evaluate_grid_ipoints`](@ref) (and `!`) | `R`, `RiRk` | Values at arbitrary i-direction points, in `grid.physical`'s variable/derivative-slice layout |
+| [`evaluate_grid_points`](@ref) | `RL` | Value plus ∂r, ∂²r, ∂λ, ∂²λ at arbitrary `(r, λ)` |
+| [`evaluate_grid_points`](@ref) | `RLR` | Whole vertical columns at arbitrary `(r, λ)` and arbitrary `z`, 7 slices, z-fastest per column |
+
+The `RL` and `RLR` forms take an optional per-point `kmax` wavenumber truncation. This is
+the azimuthal analogue of ring transmissibility: an injected value must not carry
+wavenumbers the target ring cannot support. All three are registry-aware, so a nested
+patch's R3X borders are honoured during evaluation.
+
+### Nest-annulus grids
+
+An `RL` patch may set `patchOffsetL` explicitly (leaving `spectralIndexL` patch-relative)
+so that its ring point counts and wavenumber support follow the **global** ring numbering
+rather than its own. `_create_tile_from_patch` composes the patch's `patchOffsetL` into
+each of its tiles; for an ordinary patch this composition is the identity.
+
+!!! warning "Tiled transforms and the wavenumber registry"
+    On the tiled (distributed) path, the per-wavenumber coupled-border coefficients that
+    `apply_interface_payload!` registers must be reloaded for every wavenumber block. A
+    transform that reuses one spline object across wavenumbers without reloading its
+    `ahat` will silently carry the last-applied wavenumber's border on every mode. This
+    was fixed for `RL` and `RLR` in v1.1; it is the failure mode to suspect first if a
+    nested run diverges from its single-grid control while the single-tile case matches.
+
+```@docs
+lerp_payload!
+InterfacePayload
+PatchInterfaceMetadata
+compute_interface_payload
+compute_interface_payload!
+apply_interface_payload!
+evaluate_grid_ipoints
+evaluate_grid_points
+```
 
 ## Relocating a multi-patch grid
 

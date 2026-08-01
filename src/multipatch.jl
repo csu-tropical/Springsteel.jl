@@ -1859,7 +1859,7 @@ RLR `physical` slice layout (1=value, 2=∂r, 3=∂²r, 4=∂λ, 5=∂²λ, 6=�
 z-fastest within each column — the same row ordering as `physical`.
 
 `kmax` (optional, length N) is the per-COLUMN azimuthal transmissibility
-truncation of [`evaluate_grid_points(::_RLGrid, ...)`](@ref). This is the
+truncation of the RL `evaluate_grid_points` method. This is the
 fine→coarse collar-feedback primitive for radially-nested RLR models. Honors
 the per-wavenumber coupled-border registry via `_get_ahat_cache_rlz`.
 

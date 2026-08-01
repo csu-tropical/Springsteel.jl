@@ -1508,7 +1508,7 @@ Exact integrals `wᵢ = ∫Bᵢ dx` of every basis function over the spline's do
 Read straight off the SB projection matrix: `_sb_matrix[i, j] = DX·qw·Bᵢ(xⱼ)`, so the row sum
 is the Gauss quadrature of `Bᵢ` on the mish — exact, because Gauss with `mubar ≥ 2` integrates
 a cubic exactly. All entries are strictly positive, which the conservative redistribution in
-[`_apply_lower_bound!`](@ref) relies on.
+`_apply_lower_bound!` relies on.
 """
 basis_integrals(spline::Spline1D) = vec(sum(spline._sb_matrix, dims = 2))
 
@@ -1601,7 +1601,7 @@ end
 
 Accumulated mass the constrained solve could not place conservatively, because the column's
 total mass was below the minimum an admissible field can carry (`θ > 1` in
-[`_apply_lower_bound!`](@ref)). Nonzero means the limiter has created mass; it should stay at
+`_apply_lower_bound!`). Nonzero means the limiter has created mass; it should stay at
 or near zero for a physically sensible bound.
 """
 bound_shortfall(spline::Spline1D) = spline._bound_shortfall[]
@@ -1742,7 +1742,7 @@ end
 """
     SAtransform_bounded!(spline) -> spline.a
 
-[`SAtransform!`](@ref), followed by the positivity limiter when a bound is installed.
+`SAtransform!`, followed by the positivity limiter when a bound is installed.
 
 With no bound (the default for every spline) this is `SAtransform!` plus one `isempty` check,
 so it is bit-identical to the unconstrained transform. Call it only where the VALUE of the

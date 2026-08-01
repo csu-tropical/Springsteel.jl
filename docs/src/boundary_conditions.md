@@ -191,6 +191,29 @@ required by the basis on that dimension:
 The conversion is per-dimension and happens once at [`createGrid`](@ref)
 time, so there is no per-transform cost for BC handling.
 
+## Inhomogeneous spline boundaries
+
+Two cubic-B-spline BC families carry a **nonzero** boundary value. Both keep
+$\Gamma_{BC}$ — and therefore the admissible subspace and the solver's stability
+properties — identical to their homogeneous counterparts, and carry the data in an
+affine `ahat` offset instead. Setting the offset to zero reproduces the homogeneous fit
+bitwise.
+
+| Family | Homogeneous twin | Carries | Set with |
+|:---|:---|:---|:---|
+| `R3X` (`FixedBC()`) | `R3` | The border coefficient trio donated by a parent patch | [`set_boundary_values!`](@ref), or the multi-patch interface machinery |
+| `R1T1X` | `R1T1` | A prescribed wall first derivative $\mathrm{d}u$ | [`set_wall_derivatives!`](@ref) |
+
+`R3X` is the nesting boundary — see [Multi-Patch Grids](multipatch.md). `R1T1X` is for a
+rigid wall whose flux is state-dependent (the canonical case being
+$\partial p'/\partial z = -g\rho_t'$ at a compressible model's lower boundary, which no
+homogeneous BC can express). Both are documented in full, with the reasoning behind
+choosing `R1T1X` over `R1T2`, on the [CubicBSpline](cubicbspline.md) page.
+
+```@docs
+set_wall_derivatives!
+```
+
 ## Legacy `Dict` boundary specs
 
 Pre-v0.3 code specified BCs as raw Dicts from the submodules:
@@ -211,6 +234,7 @@ per-basis Dict keys.
 ## Inspecting a BC
 
 ```@docs
+BCSpec
 bc_rank
 is_periodic
 is_inhomogeneous

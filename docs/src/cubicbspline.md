@@ -150,6 +150,61 @@ The base-folding coefficients used inside `calcGammaBC` (Ooyama 2002, Table 1):
 | `R2T10` | 1 | −0.5 |
 | `R2T20` | −1 | 0 |
 
+### Inhomogeneous boundary families: `R3X` and `R1T1X`
+
+The constants above are all *homogeneous* — they constrain a derivative to **zero**.
+Two families carry a nonzero boundary value instead, by adding an affine offset
+`spline.ahat` to the folded solve rather than by changing $\Gamma$:
+
+| Constant | Rank | Condition | Offset set by | Physical use |
+|:---|:---:|:---|:---|:---|
+| `R3X` | 3 | border trio pinned to donated values | [`set_ahat_r3x!`](@ref) | Patch nesting: a child reads its parent's border amplitudes |
+| `R1T1X` | 1 | $u'(x_0) = \mathrm{d}u$ (prescribed) | [`set_ahat_neumann!`](@ref) | Rigid wall with a state-dependent flux |
+
+`R1T1X` deserves a note, because the obvious alternative is worse. A rigid wall in a
+compressible atmosphere needs a pressure condition that no homogeneous BC supplies:
+with $w$ Dirichlet at the wall, $w \equiv 0$ there for all time, so the vertical
+momentum equation collapses to the exact identity $\partial p'/\partial z = -g\rho_t'$
+— nonzero and state-dependent. Meanwhile the semi-implicit acoustic solve eliminates
+$w$, so it cannot see a wall derivative that a refit injects, and needs the `R1T1`
+subspace to stay operator-consistent. `R1T1` gets the second property and loses the
+first; `R1T2` gets the first and loses the second, at a measured factor of ~2.7 in
+stable timestep.
+
+`R1T1X` resolves this by using the **same** `gammaBC` as `R1T1` — hence the same
+admissible subspace and the same solver stability — and carrying the boundary
+derivative in `ahat`. Setting $\mathrm{d}u = 0$ reproduces the homogeneous `R1T1` fit
+*bitwise*, so nothing that does not opt in can change.
+
+For a k-direction basis the wall data is per-column, and one spline object is shared
+across every column, so it cannot live on the spline. It lives on the
+[`SplineBasisArray`](@ref) as `wall_du`, indexed `[column, variable, side, dr+1]`, and
+is installed inside the transform's column loop. The `dr` axis is load-bearing: a 2-D
+transform differentiates in `i` *before* fitting in `k`, so the `dr = 1`/`dr = 2`
+passes need $\partial(\mathrm{d}u)/\partial i$ and $\partial^2(\mathrm{d}u)/\partial i^2$.
+[`set_wall_derivatives!`](@ref) fills all three levels, differentiating the wall profile
+through the variable's own i-basis:
+
+```julia
+gp = SpringsteelGridParameters(
+    geometry = "RiRk",
+    iMin = 0.0, iMax = 10.0e3, num_cells = 20, mubar = 3,
+    kMin = 0.0, kMax = 10.0e3, num_cells_k = 20, kDim = 60,
+    BCB = Dict("p" => CubicBSpline.R1T1X),   # bottom wall carries dp/dz
+    BCT = Dict("p" => CubicBSpline.R1T1),
+    vars = Dict("p" => 1))
+grid = createGrid(gp)
+
+# dp/dz = -g·ρ_t at the wall: one value per i-direction gridpoint (length iDim)
+xs = grid.ibasis.data[1, 1].mishPoints
+set_wall_derivatives!(grid, :bottom, "p", [-9.81 * rho_t(x) for x in xs])
+gridTransform!(grid)
+```
+
+The argument order is `(grid, side, var, du)`, `side` being `:bottom` or `:top`. Setting a
+derivative on a wall whose variable did not declare `R1T1X` throws rather than being
+silently ignored.
+
 ---
 
 ## Boundary Condition Constants
@@ -162,7 +217,95 @@ CubicBSpline.R1T2
 CubicBSpline.R2T10
 CubicBSpline.R2T20
 CubicBSpline.R3
+CubicBSpline.R3X
+CubicBSpline.R1T1X
 CubicBSpline.PERIODIC
+```
+
+---
+
+## Positivity-Constrained Fits
+
+A least-squares cubic fit to a sharply-peaked positive field **undershoots on the
+flanks** — mixing ratios go negative, and a model that takes a logarithm or a square
+root of them fails. `SAtransform_bounded!` removes this by imposing a per-coefficient
+lower bound on the SA solve.
+
+The reason a bound on *coefficients* is enough is the **convex-hull property**: the
+B-spline basis is non-negative and forms a partition of unity, so
+$u(x) = \sum_n a_n \varphi_n(x) \ge \min_n a_n$ everywhere. Constraining
+$a_n \ge \ell_n$ therefore bounds the *reconstruction* at every point of the domain,
+not merely at the mish points where the fit was sampled.
+
+The clip is **conservative**: the mass a column must shed is redistributed within that
+same column, and any deficit that cannot be placed is accumulated into
+[`bound_shortfall`](@ref) rather than silently created. A nonzero shortfall is a
+diagnostic that the column was infeasible — see RULE 2 below.
+
+### Opting in
+
+Set the `positivity` field on the grid parameters, keyed by variable name and then by
+direction:
+
+```julia
+gp = SpringsteelGridParameters(
+    geometry = "RiRk",
+    iMin = 0.0, iMax = 30.0e3, num_cells = 30, mubar = 3,
+    kMin = 0.0, kMax = 10.0e3, num_cells_k = 20, kDim = 60,
+    BCL = Dict("default" => CubicBSpline.R0),
+    BCR = Dict("default" => CubicBSpline.R0),
+    BCB = Dict("default" => CubicBSpline.R0),
+    BCT = Dict("default" => CubicBSpline.R0),
+    vars = Dict("qr" => 1, "u" => 2),
+    positivity = Dict("qr" => Dict(:i => 0.0, :k => 0.0)))   # rain is non-negative
+```
+
+Only the named variable is constrained; `u` above is fitted exactly as before. On a
+bare `Spline1D` the equivalent is the `lower` keyword, or
+[`set_lower_bound!`](@ref) / [`set_lower_bound_from_profile!`](@ref) /
+[`clear_lower_bound!`](@ref) after construction.
+
+### Which legs to bound
+
+A multi-dimensional transform fits one direction at a time. Two rules govern the choice:
+
+**RULE 1 (sufficiency).** Bounding the **last** leg puts the field above the bound
+everywhere the model evaluates it, because by then every earlier direction has already
+been collapsed to a physical coordinate.
+
+**RULE 2 (feasibility).** Bounding the **earlier** legs is what keeps the last one
+solvable. By partition of unity $\sum_m b_m = \int u$, and $\sum_m a_m w_m = \int u$
+because the $\ell_q$ penalty has zero third derivative on $\sum_m \varphi_m \equiv 1$.
+So a componentwise non-negative $b$ entering a leg guarantees that leg's column mass is
+non-negative, hence always conservatively fixable. Without it, a column made entirely of
+ringing (empty air beside a narrow rain shaft) is infeasible and the limiter must create
+mass — which shows up as a nonzero `bound_shortfall`.
+
+In practice: bound the last leg for correctness, and the earlier legs to drive the
+shortfall to zero.
+
+### What is rejected, and why
+
+A box constraint on coefficients cannot express positivity in every setting, so the
+unsupported cases throw at construction rather than mis-clipping:
+
+| Case | Why |
+|:---|:---|
+| `R1T0`, `R3` boundaries | Dirichlet folds $a_1 = -4a_2 - a_3$; a box on the free coefficients says nothing about the slaved one |
+| `R3X` borders | The border trio is pinned to the parent's donated `ahat` — there is nothing left to adjust |
+| Fourier / Chebyshev directions | No convex-hull property, so no coefficient box expresses positivity |
+| A **nonzero** bound on an intermediate leg | An intermediate leg fits the remaining directions' inner products, not the field; a bound of zero carries through unchanged (the basis is non-negative), but a nonzero physical bound would pick up that direction's basis integral |
+
+A fully-spline geometry (`R`, `RR`, `RiRk`, `RRR`) has neither problem on any leg.
+
+```@docs
+CubicBSpline.SAtransform_bounded!
+CubicBSpline.SAtransform_bounded
+CubicBSpline.set_lower_bound!
+CubicBSpline.set_lower_bound_from_profile!
+CubicBSpline.clear_lower_bound!
+CubicBSpline.bound_shortfall
+CubicBSpline.basis_integrals
 ```
 
 ## Parameter and Data Structures
@@ -199,6 +342,7 @@ CubicBSpline.SIIntcoefficients!
 CubicBSpline.SIInttransform
 CubicBSpline.SIInttransform!
 CubicBSpline.set_ahat_r3x!
+CubicBSpline.set_ahat_neumann!
 ```
 
 ## Matrix Representations
@@ -213,6 +357,18 @@ CubicBSpline.spline_2nd_derivative_matrix
 
 No-prefix wrappers that delegate to the `S`-prefixed functions above, enabling
 basis-type-agnostic code.
+
+`Ixtransform` and `Ixxtransform` each have a two-argument in-place form
+(`Ixtransform(spline, dest)`) alongside the allocating one-argument form. Per-column hot
+paths should prefer the in-place form: it is bit-for-bit identical to the allocating
+version and allocates nothing once warm. The same two-argument spelling works on the
+Chebyshev basis, so cross-basis column loops need no branch.
+
+`IInttransform(spline, [uMish,] C0)` anchors its result so that the antiderivative equals
+`C0` at `xmin`, matching the Chebyshev basis. This is the gauge a caller means by "`C0` is
+the value at the bottom". The spline-native `SIInttransform` keeps the Ooyama (2002)
+gauge (zero near the domain centre, `C0` added uniformly) and is *not* interchangeable
+with the generic wrapper.
 
 ```@docs
 CubicBSpline.Btransform

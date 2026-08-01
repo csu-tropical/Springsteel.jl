@@ -4,7 +4,8 @@ using Documenter
 DocMeta.setdocmeta!(Springsteel, :DocTestSetup, :(using Springsteel); recursive=true)
 
 makedocs(;
-    modules=[Springsteel, Springsteel.CubicBSpline, Springsteel.Fourier, Springsteel.Chebyshev],
+    modules=[Springsteel, Springsteel.CubicBSpline, Springsteel.Fourier, Springsteel.Chebyshev,
+             Springsteel.Thermodynamics],
     authors="Michael Bell <mmbell@colostate.edu> and contributors",
     sitename="Springsteel.jl",
     checkdocs=:exports,
@@ -29,6 +30,7 @@ makedocs(;
         "Interpolation" => "interpolation.md",
         "Grid Relocation" => "relocation.md",
         "Spectral Filtering" => "filtering.md",
+        "Thermodynamics & Reference States" => "reference_states.md",
         "CubicBSpline" => "cubicbspline.md",
         "Fourier" => "fourier.md",
         "Chebyshev" => "chebyshev.md",
