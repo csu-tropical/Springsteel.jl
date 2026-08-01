@@ -127,13 +127,34 @@ since `data` has fully specified type `Array{Spline1D, N}`.
 
 # Fields
 - `data::Array{CubicBSpline.Spline1D, N}`: N-dimensional array of spline objects.
+- `wall_du::Array{Float64, 4}`: per-column inhomogeneous Neumann wall derivatives
+  for a k-basis whose variables use [`CubicBSpline.R1T1X`](@ref), indexed
+  `[column, variable, side, dr+1]` with side 1 = left/bottom, 2 = right/top. A
+  k-basis holds ONE spline per variable shared across every column, so unlike the
+  i-direction (where each spectral mode owns a spline and carries its own `ahat`)
+  the per-column boundary data has to live here and be applied inside the
+  transform's column loop.
+
+  The `dr` axis is not optional bookkeeping. A 2-D transform evaluates the
+  i-direction derivative FIRST and then fits in k, once per derivative order, so
+  the `dr = 1` and `dr = 2` passes are fitting `∂u/∂i` and `∂²u/∂i²` — and the
+  `ahat` they need is `∂(wall data)/∂i` and `∂²(wall data)/∂i²`, NOT the wall data
+  itself. Reusing level 1 for all three passes asserts `∂g/∂i = g` and corrupts
+  the i-derivative slots at the boundary cell (measured: a 2500x jump in a
+  gradient-wind residual). Levels 2 and 3 are filled by the caller.
 
 See also: [`FourierBasisArray`](@ref), [`ChebyshevBasisArray`](@ref),
 [`NoBasisArray`](@ref)
 """
 struct SplineBasisArray{N}
     data::Array{CubicBSpline.Spline1D, N}
+    wall_du::Array{Float64, 4}
 end
+
+# Default: no inhomogeneous wall data. Every existing construction site passes
+# only `data`, so they keep working and allocate nothing extra.
+SplineBasisArray(data::Array{CubicBSpline.Spline1D, N}) where {N} =
+    SplineBasisArray{N}(data, Array{Float64,4}(undef, 0, 0, 0, 0))
 
 """
     FourierBasisArray{N}

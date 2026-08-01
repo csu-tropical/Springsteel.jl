@@ -1049,6 +1049,44 @@ using Springsteel.Chebyshev
             @test r_fill[2, 1] == 99.0
         end
 
+        @testset "RLR asymmetric (halfcomplex sine sign)" begin
+            # The FFTW halfcomplex "imag" slots carry the NEGATIVE sine sum; a
+            # `+ sin` synthesis silently mirror-images every odd-in-λ component
+            # (the latent bug fixed in _eval_unstructured_rl/_rlz). An
+            # axisymmetric field cannot see it — this one can.
+            rMin, rMax = 0.0, 30.0
+            zMin, zMax = 0.0, 10.0
+            gp = SpringsteelGridParameters(
+                geometry = "RLR",
+                iMin = rMin, iMax = rMax, num_cells = 6,
+                patchOffsetL = 0,
+                kMin = zMin, kMax = zMax, kDim = 12,
+                vars = Dict("u" => 1),
+                BCL = Dict("u" => CubicBSpline.R0),
+                BCR = Dict("u" => CubicBSpline.R0),
+                BCB = Dict("u" => CubicBSpline.R0),
+                BCT = Dict("u" => CubicBSpline.R0))
+            grid = createGrid(gp)
+            f(r, λ, z) = (0.2 * r + 0.1 * r * cos(λ) + 0.5 * r * sin(λ)) * (1.0 + z / zMax)
+            mish_pts = getGridpoints(grid)
+            for i in 1:size(mish_pts, 1)
+                grid.physical[i, 1, 1] = f(mish_pts[i, 1], mish_pts[i, 2], mish_pts[i, 3])
+            end
+            spectralTransform!(grid)
+
+            test_pts = Float64[
+                10.0  π/3   2.0;
+                15.0  1.0   5.0;
+                20.0  4.0   7.5;
+                25.0  5.5   9.0;
+            ]
+            result = Springsteel.evaluate_unstructured(grid, test_pts)
+            for i in 1:size(test_pts, 1)
+                expected = f(test_pts[i, 1], test_pts[i, 2], test_pts[i, 3])
+                @test result[i, 1] ≈ expected atol=0.1
+            end
+        end
+
         @testset "SLR axisymmetric" begin
             zMin, zMax = 0.0, 10.0
             gp = SpringsteelGridParameters(

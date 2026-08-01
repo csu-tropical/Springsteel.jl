@@ -49,21 +49,21 @@ using LinearAlgebra
         @test all(spline.ahat .== 0.0)
     end
 
-    @testset "_has_r3x helper" begin
+    @testset "_has_ahat helper" begin
         sp_r3x = CubicBSpline.SplineParameters(
             xmin=0.0, xmax=1.0, num_cells=5,
             BCL=CubicBSpline.R3X, BCR=CubicBSpline.R0)
-        @test CubicBSpline._has_r3x(sp_r3x) == true
+        @test CubicBSpline._has_ahat(sp_r3x) == true
 
         sp_r3 = CubicBSpline.SplineParameters(
             xmin=0.0, xmax=1.0, num_cells=5,
             BCL=CubicBSpline.R3, BCR=CubicBSpline.R3)
-        @test CubicBSpline._has_r3x(sp_r3) == false
+        @test CubicBSpline._has_ahat(sp_r3) == false
 
         sp_r0 = CubicBSpline.SplineParameters(
             xmin=0.0, xmax=1.0, num_cells=5,
             BCL=CubicBSpline.R0, BCR=CubicBSpline.R0)
-        @test CubicBSpline._has_r3x(sp_r0) == false
+        @test CubicBSpline._has_ahat(sp_r0) == false
     end
 
     @testset "_border_matrix" begin

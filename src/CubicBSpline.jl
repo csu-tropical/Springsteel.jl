@@ -18,7 +18,9 @@ export SBtransform, SBtransform!, SAtransform!, SItransform!
 export SAtransform, SBxtransform, SItransform, SIxtransform, SIxxtransform
 export SIIntcoefficients, SIInttransform, SIIntcoefficients!, SIInttransform!, SBxtransform!
 export setMishValues
-export set_ahat_r3x!
+export set_ahat_r3x!, set_ahat_neumann!
+export SAtransform_bounded!, SAtransform_bounded, set_lower_bound!, set_lower_bound_from_profile!
+export clear_lower_bound!, bound_shortfall, basis_integrals
 # Generic (no-prefix) wrappers for abstract 1D basis dispatch
 export Btransform, Btransform!, Bxtransform
 export Atransform, Atransform!
@@ -107,6 +109,25 @@ from an outer grid that changes each timestep. Set boundary values via
 [`set_ahat_r3x!`](@ref).
 """
 const R3X = Dict("R3X" => 0)
+
+"""
+Rank-1, **inhomogeneous Neumann** boundary condition: ``u'(x_0) = g`` with `g`
+supplied at RUNTIME rather than baked into the basis. Identical to R1T1
+(`α1 = 0, β1 = 1`) in the `gammaBC` matrix — so the admissible subspace, and
+therefore every stability property of a solver built on this basis, is exactly
+R1T1's — but the SAtransform adds the background coefficient vector `ahat`,
+which carries `g`. Set it with [`set_ahat_neumann!`](@ref).
+
+The motivating case is a rigid wall in a compressible atmosphere. `w ≡ 0` at the
+wall makes ``∂p'/∂z = -g ρ_t'`` an exact identity there, so the pressure needs a
+*nonzero, state-dependent* wall derivative — while the semi-implicit acoustic
+solve, which eliminates `w` and cannot see that derivative, needs the R1T1
+subspace to stay operator-consistent. Homogeneous R1T1 gets the second and loses
+the first; R1T2 gets the first and loses the second (measurably: it costs a
+factor ~2.7 in stable timestep). R1T1X gets both, because `ahat` is an AFFINE
+offset and leaves the homogeneous subspace — hence the stability — untouched.
+"""
+const R1T1X = Dict("α1" => 0.0, "β1" => 1.0, "X1" => 1)
 
 """
 Periodic boundary condition (Ooyama 2002, section 3e): couples the left and
@@ -518,6 +539,8 @@ One-dimensional cubic B-spline object.  Construct via `Spline1D(sp::SplineParame
 - `b::Vector{Float64}`: B-vector (result of SB transform, inner products ⟨φₘ, u⟩)
 - `a::Vector{Float64}`: Spectral coefficient vector (result of SA transform)
 - `ahat::Vector{Float64}`: Background coefficient vector for inhomogeneous R3X boundary conditions (length `bDim`). Initialised to zeros; set via [`set_ahat_r3x!`](@ref) for grid nesting.
+- `lower::Vector{Float64}`: Per-coefficient lower bound for the positivity-constrained solve, or **empty** (the default) for the ordinary unconstrained solve. Set via [`set_lower_bound!`](@ref). See [`SAtransform_bounded!`](@ref).
+- `ibwt::Vector{Float64}`: Exact basis-function integrals `wᵢ = ∫Bᵢ dx`, populated alongside `lower`; empty when unbounded. These make the constrained solve conservative, since `∫f = Σᵢ aᵢ wᵢ`.
 
 # Notes
 - Constructing `Spline1D` builds `gammaBC` and factorises the `(P + Q)` matrix, which is the
@@ -556,6 +579,16 @@ struct Spline1D
     # Sparse with at most 4*mubar nonzeros per row; entries bake in DX, qwts,
     # and basis values. Built once at construction.
     _sb_matrix::SparseMatrixCSC{real, int}
+    # Positivity support. EMPTY is the sentinel for "unconstrained", so the fast path in
+    # `SAtransform_bounded!` is a single `isempty` on a concretely-typed field and every
+    # existing configuration is bit-identical. Both are resized together by
+    # `set_lower_bound!` and emptied by `clear_lower_bound!`.
+    lower::Vector{real}
+    ibwt::Vector{real}
+    # Mass that the constrained solve could NOT place because the column was infeasible
+    # (its total mass is below the minimum an admissible field can have). Accumulated, not
+    # reset; read it to know whether the limiter is silently creating mass.
+    _bound_shortfall::Base.RefValue{real}
 end
 
 """
@@ -976,7 +1009,7 @@ function _spline_cache_size()
     end
 end
 
-function Spline1D(sp::SplineParameters)
+function Spline1D(sp::SplineParameters; lower::Union{Nothing,AbstractVector} = nothing)
     t = _get_spline_template(sp)
     Minterior = size(t.gammaBC, 1)
     spline = Spline1D(t.params, t.quadpoints, t.quadweights, t.gammaBC,
@@ -989,7 +1022,9 @@ function Spline1D(sp::SplineParameters)
                       zeros(real, Minterior),
                       zeros(real, Minterior),
                       zeros(real, sp.bDim),
-                      t._sb_matrix)
+                      t._sb_matrix,
+                      real[], real[], Ref(zero(real)))
+    lower === nothing || set_lower_bound!(spline, lower)
     return spline
 end
 
@@ -1358,7 +1393,7 @@ function SAtransform(spline::Spline1D, b::AbstractVector)
     # spline.ahat; honor them exactly as the in-place SAtransform! does. The
     # tiled b→a path (3-arg splineTransform!) relies on this so that patch
     # splines coupled to a nest neighbor reconstruct with the donated border.
-    if _has_r3x(spline.params)
+    if _has_ahat(spline.params)
         btilde = spline.gammaBC * (b .- (spline.pq * spline.ahat))
         return (spline.gammaBC' * (spline.pqFactor \ btilde)) .+ spline.ahat
     end
@@ -1367,11 +1402,16 @@ function SAtransform(spline::Spline1D, b::AbstractVector)
 end
 
 """
-    _has_r3x(sp::SplineParameters) -> Bool
+    _has_ahat(sp::SplineParameters) -> Bool
 
-Return `true` if either boundary condition is R3X (inhomogeneous rank-3).
+Return `true` if either boundary condition is inhomogeneous, i.e. carries its
+boundary data in the background coefficient vector `ahat` rather than in the
+basis: R3X (rank-3, [`set_ahat_r3x!`](@ref)) or R1T1X (rank-1 Neumann,
+[`set_ahat_neumann!`](@ref)).
 """
-_has_r3x(sp::SplineParameters) = haskey(sp.BCL, "R3X") || haskey(sp.BCR, "R3X")
+_has_ahat(sp::SplineParameters) =
+    haskey(sp.BCL, "R3X") || haskey(sp.BCR, "R3X") ||
+    haskey(sp.BCL, "X1")  || haskey(sp.BCR, "X1")
 
 function SAtransform!(spline::Spline1D)
     # In-place SA transform: writes spline.a from spline.b (and spline.ahat for R3X).
@@ -1381,7 +1421,7 @@ function SAtransform!(spline::Spline1D)
     #   Non-R3X path:    a = γ' (PQ \ (γ b))
     #   R3X path:        a = γ' (PQ \ (γ (b - pq·ahat))) + ahat
     γ = spline.gammaBC
-    if _has_r3x(spline.params)
+    if _has_ahat(spline.params)
         # _scratch_btilde = b - pq·ahat   (bDim-length)
         mul!(spline._scratch_btilde, spline.pq, spline.ahat)
         @. spline._scratch_btilde = spline.b - spline._scratch_btilde
@@ -1401,6 +1441,318 @@ function SAtransform!(spline::Spline1D)
         mul!(spline.a, γ', spline._scratch_Mout)
     end
     return spline.a
+end
+
+# ── Positivity-constrained SA solve ───────────────────────────────────────────
+#
+# Cubic B-splines are non-negative and partition unity:
+#
+#     f(x) = Σᵢ aᵢ Bᵢ(x),   Bᵢ ≥ 0,   Σᵢ Bᵢ ≡ 1     ⟹     aᵢ ≥ Lᵢ ∀i  ⟹  f(x) ≥ min Lᵢ
+#
+# so a pointwise lower bound on the reconstructed field follows from a LINEAR box constraint
+# on the coefficients. The mass is likewise linear, ∫f = Σᵢ aᵢ wᵢ with wᵢ = ∫Bᵢ, so a clip
+# plus a proportional shrink of the surplus enforces the bound while conserving mass exactly.
+#
+# WHY THIS LIVES IN THE FIT and not on the reconstructed field: the projection is idempotent,
+# so a deficit that reaches the state is never removed and the next step deposits another one
+# on top. Constraining the coefficients makes an admissible state a FIXED POINT of the refit,
+# which is what breaks that accumulation. See
+# Scythe.jl/reference/FINDINGS_NEGATIVE_WATER_ATTRIBUTION.md (CORRECTION section).
+#
+# ── MULTI-DIMENSIONAL DESIGN (read before extending to a new geometry) ───────────────────
+#
+# A tensor-product inverse transform collapses one direction at a time, each leg turning one
+# spectral index into physical values. Two rules follow, and together they are the whole
+# design:
+#
+#   RULE 1 (sufficiency) — bounding the LAST leg guarantees the reconstructed field is above
+#   the bound at every point the model ever evaluates. By the time the last leg runs, every
+#   earlier direction has already been collapsed to a physical coordinate, so the convex-hull
+#   property in that one remaining direction covers the whole field.
+#
+#   RULE 2 (feasibility) — bounding the EARLIER legs is what keeps the last leg solvable.
+#   A leg can only be fixed conservatively if the quantity it represents has non-negative
+#   total mass; there is no non-negative spline with negative mass. Bounding leg n-1 supplies
+#   exactly that guarantee for leg n, because Σₘ bₘ = ∫u (partition of unity) and
+#   Σₘ aₘ wₘ = ∫u (the fit preserves the integral — the l_q penalty contributes nothing since
+#   Σₘ φₘ ≡ 1 has zero third derivative). So `b ≥ 0` componentwise ⟹ the next leg's column
+#   mass is ≥ 0 ⟹ it never hits the infeasible branch. Skip an early leg and the deficit it
+#   would have paid locally has to be paid by the last leg instead, out of a donor pool that
+#   may be empty — which is precisely how `bound_shortfall` becomes nonzero.
+#
+# WHAT AN INTERMEDIATE LEG REPRESENTS. Only the last leg fits the field itself. Leg n fits the
+# remaining directions' B-coefficients, i.e. inner products ⟨φₘ, u⟩. Because the basis is
+# non-negative, `u ≥ c` maps to `⟨φₘ, u⟩ ≥ c·wₘ` — so a bound of ZERO carries through every
+# leg unchanged, while a nonzero physical bound picks up that direction's basis integral, and
+# a bound that varies along a not-yet-collapsed direction becomes that direction's B-coefficient
+# of the bounding profile. Get this wrong and the constraint is silently the wrong one.
+#
+# NON-SPLINE DIRECTIONS (Fourier, Chebyshev). There is no convex-hull property — the basis
+# functions change sign — so no box constraint on their coefficients can express positivity.
+#   * If such a leg is LAST, Rule 1 does not apply and this machinery cannot make the field
+#     non-negative; the direction needs a conservative clip in PHYSICAL space instead, using
+#     that direction's quadrature weights (uniform for Fourier).
+#   * If it is INTERMEDIATE (the Fourier ring in RLR/SLR, where the leg order is
+#     radial spline → Fourier ring → vertical spline), it can inject negatives that only the
+#     last leg can repair, so Rule 2 is weakened and some shortfall is expected. An
+#     untruncated Fourier transform is interpolatory and rings not at all; only
+#     `max_wavenumber` truncation generates the deficit.
+# A fully spline geometry (RiRk, RR, RRR) has neither problem: bound every leg and both rules
+# hold exactly.
+
+"""
+    basis_integrals(spline) -> Vector{Float64}
+
+Exact integrals `wᵢ = ∫Bᵢ dx` of every basis function over the spline's domain.
+
+Read straight off the SB projection matrix: `_sb_matrix[i, j] = DX·qw·Bᵢ(xⱼ)`, so the row sum
+is the Gauss quadrature of `Bᵢ` on the mish — exact, because Gauss with `mubar ≥ 2` integrates
+a cubic exactly. All entries are strictly positive, which the conservative redistribution in
+[`_apply_lower_bound!`](@ref) relies on.
+"""
+basis_integrals(spline::Spline1D) = vec(sum(spline._sb_matrix, dims = 2))
+
+# A boundary condition is bound-safe when Γᵀ maps free coefficients to slaved ones by COPYING
+# (so a box constraint in free space implies the box constraint on every coefficient):
+#   R0        — no slaved coefficients at all, Γ is the identity block
+#   R1T1/α1   — the Neumann mirror a[1] = a[3], a[end] = a[end-2] (α = 0, β = 1)
+# Dirichlet-like (α1 with α = -4, β = -1), rank-2, R3/R3X and periodic all form slaved
+# coefficients from signed COMBINATIONS, for which no box constraint in free space suffices.
+# R3X additionally pins the border trio to `ahat`, which a child patch does not own.
+_bound_safe_side(kind::Int8, α::Float64, β::Float64) =
+    kind == _GBC_R0 || (kind == _GBC_α1 && α == 0.0 && β == 1.0)
+
+_bound_safe(γ::GammaBC) = _bound_safe_side(γ.leftKind, γ.αL, γ.βL) &&
+                          _bound_safe_side(γ.rightKind, γ.αR, γ.βR)
+
+"""
+    set_lower_bound!(spline, L) -> spline
+
+Install a per-coefficient lower bound `L` (length `bDim`) for [`SAtransform_bounded!`](@ref),
+and precompute the basis integrals the conservative solve needs.
+
+`L` is in coefficient space. For a variable carried as a total (`ρ_r`) it is `zeros(bDim)`; for
+one carried as a perturbation from a reference (`ρ_c`, `ρ_d`, `ρ_t`) it is `-ā`, the negated
+reference coefficients — use [`set_lower_bound_from_profile!`](@ref) to build that from a
+profile sampled on the mish.
+
+Throws for boundary conditions where a box constraint on the free coefficients does not imply
+the bound on the slaved ones (Dirichlet, rank-2, R3/R3X, periodic) — see `_bound_safe`.
+"""
+function set_lower_bound!(spline::Spline1D, L::AbstractVector)
+    bDim = spline.params.bDim
+    length(L) == bDim ||
+        throw(DimensionMismatch("lower bound has length $(length(L)), expected bDim = $bDim"))
+    _bound_safe(spline.gammaBC) ||
+        error("positivity bound is not supported for BCL = $(spline.params.BCL), " *
+              "BCR = $(spline.params.BCR): the boundary condition forms slaved coefficients " *
+              "from signed combinations of the free ones, so a box constraint in free space " *
+              "does not imply the bound on the reconstruction. Supported: R0 (NaturalBC) and " *
+              "R1T1 (NeumannBC).")
+    resize!(spline.lower, bDim)
+    copyto!(spline.lower, L)
+    resize!(spline.ibwt, bDim)
+    copyto!(spline.ibwt, basis_integrals(spline))
+    return spline
+end
+
+"""
+    set_lower_bound_from_profile!(spline, u_ref) -> spline
+
+Install the lower bound implied by a physical reference profile `u_ref` sampled at the mish
+points, for a variable carried as a perturbation from it (`a ≥ -ā`).
+
+Uses the SUPPORT-MINIMUM rule: coefficient `i` influences `f` only on the cells its basis
+function covers, and `f(x) ≥ min` of the coefficients whose support contains `x`, so requiring
+
+    L[i] = -min(u_ref over the cells that Bᵢ covers)
+
+is sufficient for `f + u_ref ≥ 0` everywhere. It is slightly conservative where `u_ref` varies
+within a basis function's 4-cell support, which is the safe direction.
+"""
+function set_lower_bound_from_profile!(spline::Spline1D, u_ref::AbstractVector)
+    sp = spline.params
+    length(u_ref) == sp.mishDim ||
+        throw(DimensionMismatch("reference profile has length $(length(u_ref)), " *
+                                "expected mishDim = $(sp.mishDim)"))
+    L = zeros(real, sp.bDim)
+    @inbounds for mi in 1:sp.bDim
+        m = mi - 2                                   # basis index; support is cells m-2 … m+1
+        lo_cell = max(0, m - 2)
+        hi_cell = min(sp.num_cells - 1, m + 1)
+        umin = Inf
+        for mc in lo_cell:hi_cell, j in (sp.mubar * mc + 1):(sp.mubar * (mc + 1))
+            umin = min(umin, u_ref[j])
+        end
+        L[mi] = isfinite(umin) ? -umin : 0.0
+    end
+    return set_lower_bound!(spline, L)
+end
+
+"""Remove the positivity bound, restoring the ordinary unconstrained solve."""
+function clear_lower_bound!(spline::Spline1D)
+    empty!(spline.lower)
+    empty!(spline.ibwt)
+    return spline
+end
+
+"""
+    bound_shortfall(spline) -> Float64
+
+Accumulated mass the constrained solve could not place conservatively, because the column's
+total mass was below the minimum an admissible field can carry (`θ > 1` in
+[`_apply_lower_bound!`](@ref)). Nonzero means the limiter has created mass; it should stay at
+or near zero for a physically sensible bound.
+"""
+bound_shortfall(spline::Spline1D) = spline._bound_shortfall[]
+
+"""
+    _apply_lower_bound!(spline) -> spline.a
+
+Enforce `a ≥ lower` while preserving `Σᵢ aᵢ wᵢ` exactly. Single pass, no iteration.
+
+Works in FREE (interior) space `y`, where `a = Γᵀy (+ ahat)`: the mass functional there is
+`w_eff = Γw` and the box bound is `Ly`, the tightest of the bounds on the coefficients each
+`y` entry feeds. Then, with `D` the mass the clip must add and `H` the surplus available,
+
+    clip violators to the bound;  θ = D/H;  surplus ← (1-θ)·surplus
+
+removes exactly `θ·H = D`, so the round-off is one ulp of the column mass. Feasibility after
+the shrink is immediate (`Ly + (1-θ)(y-Ly) ≥ Ly` for `θ ≤ 1`), so there is nothing to iterate.
+`θ > 1` is infeasible by construction rather than by algorithm failure — the column is set to
+its minimum-mass admissible state and the deficit is added to `_bound_shortfall`.
+"""
+function _apply_lower_bound!(spline::Spline1D)
+    # `_scratch_Mout` already holds the unconstrained interior solution y.
+    _bound_free_space!(spline, spline._scratch_Mout)
+    mul!(spline.a, spline.gammaBC', spline._scratch_Mout)
+    _has_ahat(spline.params) && (@. spline.a += spline.ahat)
+    return spline.a
+end
+
+"""
+    _apply_lower_bound_to!(spline, a) -> a
+
+The same limiter applied to an EXTERNALLY held coefficient vector, for the allocating
+`SAtransform(spline, b)` path that `splineTransform!` uses on the i-leg.
+
+The free-space vector is recovered from `a` by the base shift `y[i] = a[i + rankL]`, which is
+exact for every bound-safe Γ (R0 and the R1T1 mirror both leave the interior block an
+identity), so this is the same computation as [`_apply_lower_bound!`](@ref) without needing the
+solve's scratch to still be live.
+"""
+function _apply_lower_bound_to!(spline::Spline1D, a::AbstractVector)
+    γ = spline.gammaBC
+    y = spline._scratch_Mout
+    @inbounds for i in 1:γ.Minterior
+        y[i] = a[i + γ.rankL] - (_has_ahat(spline.params) ? spline.ahat[i + γ.rankL] : 0.0)
+    end
+    _bound_free_space!(spline, y) || return a
+    mul!(a, γ', y)
+    _has_ahat(spline.params) && (@. a += spline.ahat)
+    return a
+end
+
+"""
+    _bound_free_space!(spline, y) -> Bool
+
+Clip-and-shrink `y` in place; returns `true` if anything was changed. Shared core of
+[`_apply_lower_bound!`](@ref) and [`_apply_lower_bound_to!`](@ref).
+"""
+function _bound_free_space!(spline::Spline1D, y::AbstractVector)
+    γ = spline.gammaBC
+    L = spline.lower
+    rankL = γ.rankL
+    Min = γ.Minterior
+
+    # Bounds and mass weights in free space. Both are cheap enough to form on the fly and
+    # only run on columns that actually violate, which is the rare case.
+    w_eff = spline._scratch_Min     # safe to clobber: the pqFactor solve is done
+    Leff = spline._scratch_bx       # bDim-length; only the SIInt path uses it otherwise
+
+    mul!(w_eff, γ, spline.ibwt)
+
+    # The inhomogeneous branch solves a = Γᵀy + ahat, so the constraint on the free space is
+    # Γᵀy ≥ L - ahat. `ahat` is a constant offset, so the mass functional is unaffected.
+    if _has_ahat(spline.params)
+        @. Leff = L - spline.ahat
+    else
+        copyto!(Leff, L)
+    end
+
+    D = 0.0
+    H = 0.0
+    viol = false
+    @inbounds for i in 1:Min
+        # Tightest bound on the coefficients this free entry feeds: the base shift always,
+        # plus the mirrored border coefficient when the BC copies one.
+        Ly = Leff[i + rankL]
+        if γ.leftKind == _GBC_α1 && i == 2
+            Ly = max(Ly, Leff[1])
+        end
+        if γ.rightKind == _GBC_α1 && i == Min - 1
+            Ly = max(Ly, Leff[γ.Mdim])
+        end
+        d = y[i] - Ly
+        if d < 0.0
+            D -= d * w_eff[i]
+            viol = true
+            y[i] = Ly
+        else
+            H += d * w_eff[i]
+        end
+        # Stash the bound so the second pass does not recompute it.
+        spline._scratch_btilde[i] = Ly
+    end
+    viol || return false
+
+    if H > 0.0 && D <= H
+        θ = D / H
+        @inbounds for i in 1:Min
+            Ly = spline._scratch_btilde[i]
+            d = y[i] - Ly
+            d > 0.0 && (y[i] = Ly + (1.0 - θ) * d)
+        end
+    else
+        # Infeasible: no admissible field in this space carries so little mass. Take the
+        # minimum-mass admissible state and record what that created.
+        @inbounds for i in 1:Min
+            y[i] = spline._scratch_btilde[i]
+        end
+        spline._bound_shortfall[] += D - H
+    end
+    return true
+end
+
+"""
+    SAtransform_bounded(spline, b) -> Vector{Float64}
+
+Allocating [`SAtransform`](@ref) followed by the positivity limiter when a bound is installed.
+
+This is the i-leg counterpart of [`SAtransform_bounded!`](@ref): `splineTransform!` builds the
+patch A-coefficients through the allocating form, and bounding there is what puts the constraint
+on the STATE rather than only on a reconstruction.
+"""
+function SAtransform_bounded(spline::Spline1D, b::AbstractVector)
+    a = SAtransform(spline, b)
+    isempty(spline.lower) && return a
+    return _apply_lower_bound_to!(spline, a)
+end
+
+"""
+    SAtransform_bounded!(spline) -> spline.a
+
+[`SAtransform!`](@ref), followed by the positivity limiter when a bound is installed.
+
+With no bound (the default for every spline) this is `SAtransform!` plus one `isempty` check,
+so it is bit-identical to the unconstrained transform. Call it only where the VALUE of the
+field is reconstructed — applying it to a derivative pass would clip a derivative, which is
+meaningless.
+"""
+@inline function SAtransform_bounded!(spline::Spline1D)
+    SAtransform!(spline)
+    isempty(spline.lower) && return spline.a
+    return _apply_lower_bound!(spline)
 end
 
 function SAtransform(spline::Spline1D, b::Vector{real}, ahat::Vector{real})
@@ -1475,6 +1827,53 @@ function set_ahat_r3x!(spline::Spline1D, u0::Real, u1::Real, u2::Real, side::Sym
     else
         throw(ArgumentError("side must be :left or :right, got :$side"))
     end
+end
+
+"""
+    set_ahat_neumann!(spline::Spline1D, du::Real, side::Symbol)
+
+Set the inhomogeneous Neumann boundary derivative `u'(x₀) = du` on an
+[`R1T1X`](@ref) spline, by storing the single border coefficient that produces
+it in `spline.ahat`.
+
+Only the eliminated border coefficient is written (index 1 for `:left`,
+`end` for `:right`), because that is precisely the coefficient the R1T1
+`gammaBC` relation determines from the interior. The homogeneous part of the
+fit contributes zero boundary derivative by construction, so the whole of `du`
+comes from `ahat` and the two are exactly separable:
+
+    a = γ'(PQ \\ (γ (b - pq·ahat))) + ahat        (SAtransform!)
+
+Consequences worth relying on: `du = 0` reproduces the homogeneous R1T1 fit
+bit-for-bit, `du` may be changed between fits at no cost beyond this call, and
+because `ahat` is an affine offset it does not alter the admissible subspace —
+a solver's stability is R1T1's regardless of `du`.
+
+Cheap enough to call per column per timestep: one `basis` evaluation and one
+store.
+
+# Arguments
+- `spline::Spline1D`: spline whose BC on `side` is [`R1T1X`](@ref)
+- `du::Real`: desired first derivative at the boundary
+- `side::Symbol`: `:left` (x = xmin) or `:right` (x = xmax)
+
+See also: [`set_ahat_r3x!`](@ref), [`R1T1X`](@ref)
+"""
+function set_ahat_neumann!(spline::Spline1D, du::Real, side::Symbol)
+    sp = spline.params
+    # The border basis function whose coefficient the R1T1 relation eliminates,
+    # and its slope at the wall. Taken from `basis` rather than the uniform-mesh
+    # closed form (±1/2DX) so this stays correct if the normalisation changes.
+    if side === :left
+        slope = basis(sp, -1, sp.xmin, 1)
+        spline.ahat[1] = du / slope
+    elseif side === :right
+        slope = basis(sp, sp.num_cells + 1, sp.xmax, 1)
+        spline.ahat[end] = du / slope
+    else
+        throw(ArgumentError("side must be :left or :right, got :$side"))
+    end
+    return spline
 end
 
 """

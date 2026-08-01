@@ -793,7 +793,7 @@ function _build_ahat_total(grid::AbstractGrid, var_idx::Int)
     has_r3x = false
     if i_active
         obj = _get_basis_object(grid, :i, var_idx)
-        if obj isa CubicBSpline.Spline1D && CubicBSpline._has_r3x(obj.params)
+        if obj isa CubicBSpline.Spline1D && CubicBSpline._has_ahat(obj.params)
             has_r3x = true
         end
     end

@@ -396,6 +396,7 @@ function _update_gp(gp::SpringsteelGridParameters;
         fourier_filter = gp.fourier_filter,
         chebyshev_filter = gp.chebyshev_filter,
         spline_filter  = gp.spline_filter,
+        positivity     = gp.positivity,
         spectralIndexL = gp.spectralIndexL,
         spectralIndexR = spectralIndexR,
         patchOffsetL   = gp.patchOffsetL,
@@ -727,7 +728,10 @@ function _create_cartesian_2d_rirk(gp::SpringsteelGridParameters)
     columns  = Array{Spline1D}(undef, nvars)
     ibasis   = SplineBasisArray(splines)
     jbasis   = NoBasisArray()
-    kbasis   = SplineBasisArray(columns)
+    # Per-column R1T1X wall derivatives (see `SplineBasisArray.wall_du`). Always
+    # allocated — iDim x nvars x 2 doubles is negligible — and only consulted for
+    # variables whose k-BC actually declares X1, so nothing else pays for it.
+    kbasis   = SplineBasisArray(columns, zeros(Float64, gp.iDim, nvars, 2, 3))
 
     spec_dim = gp.b_kDim * gp.b_iDim
     phys_dim = gp.iDim * gp.kDim
@@ -742,29 +746,59 @@ function _create_cartesian_2d_rirk(gp::SpringsteelGridParameters)
         v = gp.vars[key]
         var_l_q   = get(gp.l_q, key, get(gp.l_q, "default", 2.0))
         var_l_q_k = get(gp.l_q, string(key, "_k"), var_l_q)
-        # One horizontal spline per vertical spline mode
+        # One horizontal spline per vertical spline mode. NOTE what an i-leg coefficient
+        # bound constrains here: this leg fits the k-direction B-coefficients ⟨φ_z, u⟩ as
+        # functions of x, not the field itself. A bound of 0 carries through unchanged (the
+        # basis is non-negative, so u ≥ 0 ⟹ ⟨φ_z, u⟩ ≥ 0); a NONZERO bound would have to be
+        # scaled by the k-direction basis integral, so it is rejected rather than silently
+        # applied as the wrong constraint. See the MULTI-DIMENSIONAL DESIGN note in
+        # CubicBSpline.jl.
+        i_lower = _positivity_bound(gp, key, :i, gp.num_cells + 3)
+        (i_lower === nothing || all(iszero, i_lower)) || error(
+            "positivity[\"$key\"][:i] must be 0.0 on a RiRk grid: the i-leg fits the " *
+            "k-direction B-coefficients, so a nonzero physical bound does not carry " *
+            "through unscaled. Bound the k-leg instead.")
         for z in 1:gp.b_kDim
             grid.ibasis.data[z, v] = Spline1D(SplineParameters(
-                xmin      = gp.iMin,
-                xmax      = gp.iMax,
-                num_cells = gp.num_cells,
-                mubar     = gp.mubar,
-                quadrature = gp.quadrature,
-                l_q       = var_l_q,
-                BCL       = _get_spline_bc(gp.BCL, key),
-                BCR       = _get_spline_bc(gp.BCR, key)))
+                    xmin      = gp.iMin,
+                    xmax      = gp.iMax,
+                    num_cells = gp.num_cells,
+                    mubar     = gp.mubar,
+                    quadrature = gp.quadrature,
+                    l_q       = var_l_q,
+                    BCL       = _get_spline_bc(gp.BCL, key),
+                    BCR       = _get_spline_bc(gp.BCR, key));
+                lower = i_lower)
         end
         grid.kbasis.data[v] = Spline1D(SplineParameters(
-            xmin      = gp.kMin,
-            xmax      = gp.kMax,
-            num_cells = nc_k,
-            mubar     = gp.mubar,
-            quadrature = gp.quadrature,
-            l_q       = var_l_q_k,
-            BCL       = _get_spline_bc(gp.BCB, key),
-            BCR       = _get_spline_bc(gp.BCT, key)))
+                xmin      = gp.kMin,
+                xmax      = gp.kMax,
+                num_cells = nc_k,
+                mubar     = gp.mubar,
+                quadrature = gp.quadrature,
+                l_q       = var_l_q_k,
+                BCL       = _get_spline_bc(gp.BCB, key),
+                BCR       = _get_spline_bc(gp.BCT, key));
+            lower = _positivity_bound(gp, key, :k, nc_k + 3))
     end
     return grid
+end
+
+"""
+    _positivity_bound(gp, var_name, dir, bDim) -> Vector{Float64} or nothing
+
+Resolve `gp.positivity` for one variable and direction into a coefficient-space lower bound.
+
+A uniform physical bound `c` maps to the constant coefficient vector `fill(c, bDim)`: cubic
+B-splines partition unity, so a constant field has every coefficient equal to it, and
+`aᵢ ≥ c ∀i` gives `f(x) ≥ c` everywhere. Returns `nothing` when no rule matches, which leaves
+the spline unconstrained and the transform bit-identical.
+"""
+function _positivity_bound(gp::SpringsteelGridParameters, var_name::String,
+                           dir::Symbol, bDim::Int)
+    bound = _resolve_spline_filter(gp.positivity, var_name, dir)
+    bound === nothing && return nothing
+    return fill(Float64(bound), bDim)
 end
 
 # 2D Cartesian Spline×Spline (RR, Spline2D)
@@ -1607,6 +1641,7 @@ function _subgrid_for_solution(grid::SpringsteelGrid, var_names::Vector{String})
         fourier_filter = _narrow_var_dict(p.fourier_filter, var_names),
         chebyshev_filter = _narrow_var_dict(p.chebyshev_filter, var_names),
         spline_filter  = _narrow_var_dict(p.spline_filter, var_names),
+        positivity     = _narrow_var_dict(p.positivity, var_names),
         spectralIndexL = p.spectralIndexL,
         spectralIndexR = p.spectralIndexR,
         patchOffsetL   = p.patchOffsetL,
