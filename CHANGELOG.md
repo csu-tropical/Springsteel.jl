@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job, so the resolve itself is the test. It is one job rather than a second pass over all
   23 groups, and is deliberately not gated on `parity-check` so a group-name typo cannot
   hide a dependency-resolution regression.
+- **Three test-suite portability problems, found by that new job on its first run.** The
+  package itself is fine on Julia 1.10; the suite was not:
+  - `test/operator_algebra.jl` did `const OperatorTerm = Springsteel.OperatorTerm`, but
+    `OperatorTerm` is exported, so `using Springsteel` already bound it. Rebinding an
+    imported name is an error on 1.10 (`cannot assign a value to imported variable`). The
+    redundant `const` is removed; `_lower`, which really is unexported, stays.
+  - `test/grids.jl` used `Base.infer_return_type`, which is Julia 1.11+. It now falls back
+    to `Base.return_types` on older versions.
+  - `test/basis.jl` asserted `(@allocations Chebyshev.Ixtransform(col, buf)) == 0`. Julia
+    1.11+ elides that last allocation but 1.10 does not, so the strict zero is now pinned
+    only where it holds, with a `<= 1` bound on 1.10 that still catches a regression into
+    per-element allocation. Note this qualifies the v1.1.0 claim that the generic in-place
+    `Ix`/`Ixx` forms "allocate nothing once warm" — true on 1.11+, one allocation on 1.10.
 
 ## [1.1.0] - 2026-08-01
 

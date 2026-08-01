@@ -1635,7 +1635,13 @@
 
             # The point of the whole exercise: a slot lookup infers as Int64, not Any.
             lookup(gp) = gp.vars["u"]
-            @test Base.infer_return_type(lookup, (SpringsteelGridParameters,)) === Int64
+            # `Base.infer_return_type` is Julia 1.11+; `Base.return_types` is the
+            # portable spelling and gives the same answer for a call this simple.
+            @static if VERSION >= v"1.11"
+                @test Base.infer_return_type(lookup, (SpringsteelGridParameters,)) === Int64
+            else
+                @test only(Base.return_types(lookup, (SpringsteelGridParameters,))) === Int64
+            end
 
             # The six BC fields deliberately stay untyped — they must accept both the
             # legacy Dict-valued BC constants and the BoundaryConditions struct, whose

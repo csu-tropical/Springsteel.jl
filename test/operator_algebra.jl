@@ -11,10 +11,11 @@ using Test
 using Springsteel
 using Springsteel.CubicBSpline, Springsteel.Chebyshev
 
-# Unexported internals needed for the parity comparison — the test is
-# deliberately white-box.
+# Unexported internal needed for the parity comparison — the test is
+# deliberately white-box. `OperatorTerm` is exported by Springsteel, so `using`
+# above already binds it; rebinding it here is redundant and is an error on
+# Julia 1.10 ("cannot assign a value to imported variable").
 const _lower = Springsteel._lower
-const OperatorTerm = Springsteel.OperatorTerm
 
 # Order-insensitive comparison of term vectors. Dict iteration in DerivMono is
 # not stable, so term order is not guaranteed.
