@@ -70,19 +70,51 @@ grid_from_netcdf
 ```
 
 Reads a NetCDF file and builds a grid from one or more variables. You
-pass a tuple of dimension names in i/j/k order and a list of variable
-names (or `nothing` to import every variable). The factory handles
-dimension permutation so Springsteel's i-outer / k-inner layout is
-respected regardless of how the file was written.
+pass a `Vector{String}` of dimension names in i/j/k order and a list of
+variable names (or `nothing` to import every variable). The factory
+handles dimension permutation so Springsteel's i-outer / k-inner layout
+is respected regardless of how the file was written.
 
 ```julia
 grid = grid_from_netcdf("rainfall.nc";
-    dim_names = ("lon", "lat"),
+    dim_names = ["lon", "lat"],
     var_names = ["precip_mm"],
     BCL = NaturalBC(), BCR = NaturalBC(),
     BCD = NaturalBC(), BCU = NaturalBC(),
 )
 ```
+
+!!! warning "Files with a time axis are not supported yet"
+    `grid_from_netcdf` builds a **single** spatial grid and has no notion of a
+    time dimension. On a file carrying one:
+
+    - A CF-compliant time axis (`units = "seconds since ..."`) is decoded to
+      `DateTime` and raises `MethodError: no method matching Float64(::DateTime)`.
+      This includes files written by `write_netcdf(grid; time=t)`. Passing
+      `dim_names` alone does **not** avoid it — you must pass **both**
+      `dim_names` and `var_names`, so that the time variable is excluded from the
+      data-variable inference as well.
+    - A time axis with no CF `units` attribute decodes to `Float64` and is
+      silently adopted as a **spatial** dimension, fitting a spline through time.
+      There is no error or warning; check the returned grid's dimensions if your
+      file has an undecorated time coordinate.
+    - Multi-timestep files cannot be loaded at all — there is no slice selector
+      yet.
+
+    Use [`read_netcdf`](@ref) to read such a file; it decodes and preserves a CF
+    time coordinate correctly. Tracked in
+    [issue #22](https://github.com/csu-tropical/Springsteel.jl/issues/22),
+    targeted at v1.1.1.
+
+!!! note "Round-tripping `write_netcdf` output"
+    `write_netcdf` emits `num_cells + 1` regular gridpoints, while this factory
+    requires the coordinate length be a multiple of `mubar`. With the default
+    `mubar = 3` those agree only when `num_cells ≡ 2 (mod 3)`, so most grids do
+    not round-trip through NetCDF. Set `i_regular_out` (and the j/k equivalents)
+    to a multiple of `mubar` when building the grid to make its output readable.
+    Tracked in
+    [issue #24](https://github.com/csu-tropical/Springsteel.jl/issues/24),
+    targeted at v1.1.1.
 
 ## Layer 2 — Same-geometry interpolation
 

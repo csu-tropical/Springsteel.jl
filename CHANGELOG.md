@@ -439,6 +439,33 @@ returned a spectral block count rather than physical columns).
   cross-reference, or unincluded-docstring warnings.
 - The docs `size_threshold` was raised from 300 KB to 512 KB. `springsteel_grid.md`
   renders to ~285 KB, so the old ceiling was 15 KB from failing the build outright.
+- Corrected the `grid_from_netcdf` example in `docs/src/interpolation.md`, which passed
+  `dim_names` as a tuple where the signature takes a `Vector{String}` — the documented
+  call raised a `TypeError`.
+
+### Known limitations
+
+Both are pre-existing (not v1.1 regressions), both fail loudly, and both are targeted
+at v1.1.1.
+
+- **`grid_from_netcdf` does not support a time axis**
+  ([#22](https://github.com/csu-tropical/Springsteel.jl/issues/22)). It builds a single
+  spatial grid and has no notion of a time dimension. A CF time axis is decoded to
+  `DateTime` and raises `MethodError: no method matching Float64(::DateTime)` — including
+  on files written by `write_netcdf(grid; time=t)`. Passing `dim_names` alone does not
+  work around it: the data-variable inference excludes only the caller's chosen dims, so
+  the time variable is picked up as a data variable and hits the same conversion. Both
+  `dim_names` and `var_names` must be given. A time axis carrying no CF `units` attribute
+  decodes to `Float64` and is **silently adopted as a spatial dimension**, fitting a
+  spline through time with no error or warning. Multi-timestep files cannot be loaded at
+  all. `read_netcdf` handles CF time correctly and is the workaround for reading such
+  files.
+- **`write_netcdf` output does not round-trip through `grid_from_netcdf` for most cell
+  counts** ([#24](https://github.com/csu-tropical/Springsteel.jl/issues/24)).
+  `write_netcdf` emits `num_cells + 1` regular gridpoints, while `grid_from_regular_data`
+  requires the coordinate length be a multiple of `mubar`; with the default `mubar = 3`
+  those agree only when `num_cells ≡ 2 (mod 3)`. Setting `i_regular_out` (and the j/k
+  equivalents) to a multiple of `mubar` produces readable output.
 
 ## [1.0.0] - 2025
 
