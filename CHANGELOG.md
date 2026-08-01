@@ -423,6 +423,23 @@ returned a spectral block count rather than physical columns).
 - Removed stale top-level dev scripts (`test_ci.sh`, `test_regular_grid.jl`,
   `.actrc`).
 
+### Documentation
+
+- **New page: Thermodynamics & Reference States.** The `Thermodynamics` submodule and the
+  reference-state module had no documentation page at all; `Thermodynamics` is now also in
+  `makedocs(modules=...)`, so its docstrings appear in the manual.
+- The `R3X`/`R1T1X` inhomogeneous boundary families, positivity-constrained fits, and
+  two-way nesting (subcycling, collar interfaces, the fine→coarse evaluators) are now
+  documented narratively, not just in docstrings.
+- `RLR`, `SLR`, `RiRk`, and `RiRj_Grid` were missing from the grid-type reference table.
+- **`load_grid`'s docstring was never attached to `load_grid`.** It was separated from the
+  function by the `_upgrade_params` definitions, so Julia bound it to `_upgrade_params` —
+  an internal function — and the text rendered nowhere. `SVDLinearBackend` and `BCSpec`
+  had docstrings but no `@docs` block. The manual now has no missing-docs, unresolved
+  cross-reference, or unincluded-docstring warnings.
+- The docs `size_threshold` was raised from 300 KB to 512 KB. `springsteel_grid.md`
+  renders to ~285 KB, so the old ceiling was 15 KB from failing the build outright.
+
 ## [1.0.0] - 2025
 
 Initial stable release: the unified `SpringsteelGrid{G, I, J, K}` type system over
