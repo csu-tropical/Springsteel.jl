@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`[compat] julia` corrected from `"1.9"` to `"1.10"` — it was never satisfiable.**
+  `Krylov = "0.10.6"` requires `julia >= 1.10`, so `Pkg.add("Springsteel")` on Julia 1.9
+  failed with `Unsatisfiable requirements detected for package Krylov`. The declared
+  floor has been wrong for the whole v1.x line (v1.0.0 carries the same
+  `Krylov = "0.10.6 - 0.10"` bound), so this drops no support that ever worked — it makes
+  the manifest honest about what already resolved. Found by General's AutoMerge, which
+  resolves on the lowest compatible version; nothing in this repo was testing the floor.
+
+### Maintenance
+
+- **CI now exercises the compat floor.** A `minimum-julia` job resolves, loads, and runs
+  the full suite on the lowest supported Julia. The rest of the matrix runs on `'1'`
+  (latest stable), so the declared lower bound was previously a claim nothing checked —
+  which is exactly how the unsatisfiable `julia = "1.9"` above survived two releases.
+  Because `Manifest.toml` is gitignored, `Pkg.instantiate()` resolves from scratch in that
+  job, so the resolve itself is the test. It is one job rather than a second pass over all
+  23 groups, and is deliberately not gated on `parity-check` so a group-name typo cannot
+  hide a dependency-resolution regression.
+
 ## [1.1.0] - 2026-08-01
 
 `v1.0.0 → v1.1.0` is a MINOR bump: every change is a backward-compatible addition

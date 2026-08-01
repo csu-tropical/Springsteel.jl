@@ -97,3 +97,42 @@ jobs:
           file: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # Exercises the lowest Julia version [compat] claims to support. The rest of the
+  # matrix runs on '1' (latest stable), so without this job the declared floor is a
+  # claim nothing checks. It went wrong exactly that way once: Project.toml declared
+  # julia = "1.9" while Krylov 0.10 requires >= 1.10, so `Pkg.add("Springsteel")` was
+  # unsatisfiable on 1.9 for the whole v1.0/v1.1 line, and only General's AutoMerge
+  # (which resolves on the lowest compatible version) noticed.
+  #
+  # Manifest.toml is gitignored, so Pkg.instantiate() resolves from scratch here —
+  # that resolve IS the test. Keep this version in step with [compat] julia; if the
+  # floor is raised and this is not, instantiate fails because the compat bound
+  # excludes the runner's version, so the two cannot silently drift.
+  #
+  # Deliberately not gated on parity-check: a group-name typo should not be able to
+  # hide a dependency-resolution regression.
+  minimum-julia:
+    name: Minimum supported Julia (1.10) - full suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.10'
+          arch: x64
+
+      - uses: julia-actions/cache@v2
+
+      - name: Resolve and instantiate on the compat floor
+        shell: julia --color=yes --project {0}
+        run: |
+          using Pkg
+          Pkg.instantiate()
+
+      - name: Load the package
+        run: julia --color=yes --project -e 'using Springsteel; println("loaded Springsteel on ", VERSION)'
+
+      - name: Run the full test suite
+        run: julia --color=yes --project test/runtests.jl
