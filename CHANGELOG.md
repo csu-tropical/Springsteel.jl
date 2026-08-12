@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ice thermodynamic primitives, for the ISHMAEL microphysics port.** `L_f0`
+  (3.34e5 J/kg; Rogers & Yau 1989, Pruppacher & Klett 1997) and `L_s0`, defined as
+  `L_v0 + L_f0` so that Kirchhoff's identity `L_s = L_v + L_f` is exact by construction
+  rather than approximate. `L_s(T)` and `L_f(T)` are linear with the matching Kirchhoff
+  slopes `Cpv - Ci` and `Cl - Ci`; those sum to `L_v`'s `Cpv - Cl`, so the identity holds
+  at every temperature and not just at `T_0`. Also adds `sat_pressure_ice_buck_dT`, the
+  analytic temperature derivative of the Buck (1981) ice saturation vapor pressure
+  (verified against a central finite difference to `rtol=1e-6`), and `rho_i_sat`,
+  mirroring the existing `rho_v_sat`. All are exported from `Springsteel.Thermodynamics`.
+
 ### Fixed
 
 - **`[compat] julia` corrected from `"1.9"` to `"1.10"` — it was never satisfiable.**
