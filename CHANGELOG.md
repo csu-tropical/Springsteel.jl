@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Krylov = "0.10.6 - 0.10"` bound), so this drops no support that ever worked — it makes
   the manifest honest about what already resolved. Found by General's AutoMerge, which
   resolves on the lowest compatible version; nothing in this repo was testing the floor.
+- **FFTW plans are now built with `FFTW.ESTIMATE` rather than `FFTW.PATIENT`, so the plan
+  choice is reproducible run to run.** `PATIENT` and `MEASURE` select an algorithm by
+  timing candidate plans, so two identical runs on a differently loaded machine could get
+  different plans, and therefore a different floating-point summation order in every
+  Fourier and Chebyshev transform of the run. `ESTIMATE` chooses by a fixed heuristic.
+  Measured on Scythe's `bf02_dry` quick RZ benchmark (Chebyshev vertical), two `ESTIMATE`
+  runs are bitwise identical to each other and to the two `PATIENT` runs made just before
+  — at these sizes the heuristic picks the same plan, so this is a guarantee rather than
+  an answer change. Planning is also cheaper, and the spline-only RiRk grid has no FFTW
+  leg and is unaffected either way.
 
 ### Maintenance
 
