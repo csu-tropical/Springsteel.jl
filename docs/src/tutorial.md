@@ -270,11 +270,13 @@ lengths compatible with the internal quadrature. 2D and 3D overloads
 take `(x, y, data)` or `(x, y, z, data)` respectively.
 
 For netCDF inputs, [`grid_from_netcdf`](@ref) handles dimension
-permutation and per-variable import:
+permutation and per-variable import. A time axis is excluded from the spatial
+dimensions automatically; pass `time_index` to pick a step when the file has
+more than one:
 
 ```julia
 grid = grid_from_netcdf("rainfall.nc";
-    dim_names = ("lon", "lat"),
+    dim_names = ["lon", "lat"],
     var_names = ["precip_mm"],
     BCL = NaturalBC(), BCR = NaturalBC(),
     BCD = NaturalBC(), BCU = NaturalBC(),

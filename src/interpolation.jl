@@ -348,13 +348,29 @@ grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
 
 """
     grid_from_netcdf(filename::String; dim_names=nothing, var_names=nothing,
-        kwargs...) -> SpringsteelGrid
+        time_index=nothing, kwargs...) -> SpringsteelGrid
 
 Load regularly-spaced data from a NetCDF file into a CubicBSpline grid.
 
 If `dim_names` is not specified, infers coordinate dimensions from the file
 (variables whose names match dimension names, up to 3). If `var_names` is not
-specified, reads all non-coordinate variables.
+specified, reads every variable that is not a coordinate, a time axis, or
+auxiliary metadata (0-dimensional `grid_mapping` scalars and non-numeric
+variables are skipped).
+
+# Time axis
+
+A time axis is never a spatial dimension. It is detected, excluded from the grid
+dimensions, and sliced out of each data variable at its own position in that
+variable's dimension list. `time_index` selects the step (1-based):
+
+- no time axis: `time_index` must be `nothing`;
+- exactly one step: `time_index` is optional and defaults to that step;
+- more than one step: `time_index` is **required** — a slice is never chosen
+  silently.
+
+An axis named `time`/`t` that carries no CF metadata is still excluded, with a
+warning, rather than being fitted with a spline through time.
 
 All remaining keyword arguments are forwarded to [`grid_from_regular_data`](@ref).
 
@@ -363,43 +379,131 @@ See also: [`grid_from_regular_data`](@ref), [`read_netcdf`](@ref)
 function grid_from_netcdf(filename::String;
         dim_names::Union{Nothing, Vector{String}}=nothing,
         var_names::Union{Nothing, Vector{String}}=nothing,
+        time_index::Union{Nothing, Integer}=nothing,
         kwargs...)
 
     NCDataset(filename, "r") do ds
+        # ── Snapshot the file's own dimensions ────────────────────────────
+        # Used for the data-variable exclusion below: the test must be "is this a
+        # coordinate variable in the FILE", not "is this one of the dims the
+        # caller happened to name".
+        file_dims = Dict{String, Int}()
+        for (name, len) in ds.dim
+            file_dims[name] = len
+        end
+
+        # ── Detect time axes ──────────────────────────────────────────────
+        time_axes = NamedTuple[]
+        for (name, _) in ds.dim
+            t = _nc_time_axis(ds, name)
+            t === nothing || push!(time_axes, t)
+        end
+        # A scalar (dimensionless) time variable has no entry in ds.dim, but would
+        # otherwise be picked up as a data variable.
+        for name in keys(ds)
+            (haskey(file_dims, name) || ndims(ds[name]) != 0) && continue
+            t = _nc_time_axis(ds, name)
+            t === nothing || push!(time_axes, t)
+        end
+
+        dim_time = filter(t -> haskey(file_dims, t.name), time_axes)
+        length(dim_time) <= 1 || throw(ArgumentError(
+            "Multiple time dimensions found in $filename " *
+            "($(join((t.name for t in dim_time), ", "))); grid_from_netcdf " *
+            "supports at most one"))
+
+        for t in time_axes
+            t.cf && continue
+            # No maxlog here: maxlog is per call site per session, which would
+            # silence this for every test after the first in the same run.
+            @warn "grid_from_netcdf: treating \"$(t.name)\" in $filename as a time " *
+                  "axis on the strength of its name alone — it carries no CF time " *
+                  "metadata (no `units = \"… since …\"`, `standard_name = \"time\"` " *
+                  "or `axis = \"T\"`), so it decoded as plain numbers. It is " *
+                  "excluded from the spatial dimensions rather than fitted with a " *
+                  "spline through time. Add CF `units` if it is a time axis, or " *
+                  "rename it if it is a spatial coordinate."
+        end
+
+        time_names = Set(t.name for t in time_axes)
+        time_dim   = isempty(dim_time) ? nothing : dim_time[1].name
+
         # ── Identify coordinate dimensions ────────────────────────────────
+        # Time is dropped here, before the rank check, so a 2-D + time file is a
+        # 2-D grid rather than a rejected 3-D one.
         if dim_names === nothing
-            # Use dimensions that have a matching coordinate variable
-            dim_names_found = String[]
-            for (name, _) in ds.dim
-                if haskey(ds, name)
-                    push!(dim_names_found, name)
-                end
-            end
-            if isempty(dim_names_found)
-                throw(ArgumentError("No coordinate dimensions found in $filename"))
-            end
-            # Sort to maintain file order (NCDatasets preserves insertion order)
-            dim_names_local = dim_names_found
+            # Iterate ds.dim rather than a Dict: dimension order determines the
+            # i/j/k assignment, so file order must be preserved.
+            dim_names_local = String[name for (name, _) in ds.dim
+                                     if haskey(ds, name) && !(name in time_names)]
+            isempty(dim_names_local) && throw(ArgumentError(
+                "No spatial coordinate dimensions found in $filename"))
         else
-            dim_names_local = dim_names
+            dim_names_local = String[n for n in dim_names if !(n in time_names)]
+            if length(dim_names_local) != length(dim_names)
+                why = Dict(t.name => t.evidence for t in time_axes)
+                dropped = ["$n ($(get(why, n, "time axis")))"
+                           for n in dim_names if n in time_names]
+                @info "grid_from_netcdf: dropped $(join(dropped, ", ")) from " *
+                      "`dim_names` — a time axis is not a spatial dimension. Select a " *
+                      "step with `time_index`."
+            end
+            isempty(dim_names_local) && throw(ArgumentError(
+                "`dim_names` contains only time axes; at least one spatial " *
+                "dimension is required"))
         end
 
         ndims_spatial = length(dim_names_local)
         if ndims_spatial > 3
-            throw(ArgumentError("At most 3 spatial dimensions supported, found $ndims_spatial"))
+            throw(ArgumentError("At most 3 spatial dimensions supported, found " *
+                "$ndims_spatial ($(join(dim_names_local, ", ")))"))
+        end
+
+        # ── Resolve the time slice ────────────────────────────────────────
+        if time_dim === nothing
+            time_index === nothing || throw(ArgumentError(
+                "`time_index = $time_index` was given, but $filename has no time " *
+                "dimension"))
+            tstep = 0
+        else
+            nt = file_dims[time_dim]
+            if time_index === nothing
+                nt == 1 || throw(ArgumentError(
+                    "$filename has $nt steps on time dimension \"$time_dim\" " *
+                    "($(_nc_time_range(ds, time_dim))). grid_from_netcdf builds a " *
+                    "single spatial grid — pass `time_index` in 1:$nt to choose a " *
+                    "step."))
+                tstep = 1
+            else
+                1 <= time_index <= nt || throw(ArgumentError(
+                    "`time_index = $time_index` is out of range for time dimension " *
+                    "\"$time_dim\" of $filename, which has $nt " *
+                    "step$(nt == 1 ? "" : "s") (valid range 1:$nt)"))
+                tstep = Int(time_index)
+            end
         end
 
         # ── Read coordinate vectors ───────────────────────────────────────
-        coords = [Float64.(Array(ds[name])) for name in dim_names_local]
+        for name in dim_names_local
+            haskey(ds, name) || throw(ArgumentError(
+                "Dimension \"$name\" has no coordinate variable in $filename"))
+            ndims(ds[name]) == 1 || throw(ArgumentError(
+                "Coordinate variable \"$name\" is $(ndims(ds[name]))-dimensional; " *
+                "grid_from_netcdf requires 1-D (rectilinear) coordinates"))
+        end
+        coords = [_nc_float64(Array(ds[name]), "coordinate variable \"$name\"")
+                  for name in dim_names_local]
 
         # ── Identify data variables ───────────────────────────────────────
         if var_names === nothing
-            coord_set = Set(dim_names_local)
             var_names_local = String[]
             for name in keys(ds)
-                if !(name in coord_set)
-                    push!(var_names_local, name)
-                end
+                haskey(file_dims, name) && continue   # any coordinate variable
+                name in time_names      && continue   # scalar time variable
+                v = ds[name]
+                ndims(v) == 0           && continue   # crs / grid_mapping scalars
+                nonmissingtype(eltype(v)) <: Real || continue
+                push!(var_names_local, name)
             end
         else
             var_names_local = var_names
@@ -416,7 +520,47 @@ function grid_from_netcdf(filename::String;
         data = zeros(Float64, total_points, nvars)
 
         for (vi, vname) in enumerate(var_names_local)
-            raw = Float64.(Array(ds[vname]))
+            haskey(ds, vname) || throw(ArgumentError(
+                "Variable \"$vname\" not found in $filename"))
+            v     = ds[vname]
+            vdims = collect(dimnames(v))
+
+            # Slice the chosen step out at the time dimension's position in THIS
+            # variable's own dimension list — write_netcdf puts time first,
+            # hand-built files often put it last. Done before the permutation
+            # below, so that logic only ever sees spatial dimensions.
+            if time_dim !== nothing && time_dim in vdims
+                tpos = findfirst(==(time_dim), vdims)
+                idx  = ntuple(d -> d == tpos ? tstep : Colon(), ndims(v))
+                raw  = v[idx...]
+                deleteat!(vdims, tpos)
+            else
+                raw = Array(v)
+            end
+            raw = _nc_float64(raw, "variable \"$vname\"")
+
+            ndims(raw) == ndims_spatial || throw(ArgumentError(
+                "Variable \"$vname\" is stored on ($(join(dimnames(v), ", "))), " *
+                "leaving $(ndims(raw)) dimension(s) after the time slice, but " *
+                "$ndims_spatial grid dimension(s) were requested " *
+                "($(join(dim_names_local, ", ")))"))
+
+            # Reorder the file's storage order into dim_names_local (i/j/k) order.
+            # Identity when they already agree, so anything that loads today is
+            # unaffected; without it a variable stored (y, x) is silently transposed.
+            if vdims != dim_names_local
+                Set(vdims) == Set(dim_names_local) || throw(ArgumentError(
+                    "Variable \"$vname\" is stored on ($(join(vdims, ", "))), which " *
+                    "does not match the grid dimensions " *
+                    "($(join(dim_names_local, ", ")))"))
+                raw = permutedims(raw,
+                    [findfirst(==(n), vdims) for n in dim_names_local])
+            end
+
+            size(raw) == (coord_sizes...,) || throw(ArgumentError(
+                "Variable \"$vname\" has size $(size(raw)) after slicing, but the " *
+                "coordinates give $(Tuple(coord_sizes))"))
+
             # Permute from Julia column-major (1st dim fastest) to
             # Springsteel convention (last dim fastest / i-outer j-inner)
             if ndims_spatial == 1

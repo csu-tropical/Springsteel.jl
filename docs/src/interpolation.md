@@ -84,27 +84,39 @@ grid = grid_from_netcdf("rainfall.nc";
 )
 ```
 
-!!! warning "Files with a time axis are not supported yet"
-    `grid_from_netcdf` builds a **single** spatial grid and has no notion of a
-    time dimension. On a file carrying one:
+### Files with a time axis
 
-    - A CF-compliant time axis (`units = "seconds since ..."`) is decoded to
-      `DateTime` and raises `MethodError: no method matching Float64(::DateTime)`.
-      This includes files written by `write_netcdf(grid; time=t)`. Passing
-      `dim_names` alone does **not** avoid it — you must pass **both**
-      `dim_names` and `var_names`, so that the time variable is excluded from the
-      data-variable inference as well.
-    - A time axis with no CF `units` attribute decodes to `Float64` and is
-      silently adopted as a **spatial** dimension, fitting a spline through time.
-      There is no error or warning; check the returned grid's dimensions if your
-      file has an undecorated time coordinate.
-    - Multi-timestep files cannot be loaded at all — there is no slice selector
-      yet.
+`grid_from_netcdf` builds a **single spatial grid**, so a time axis is never
+treated as a spatial dimension. It is detected, excluded from the grid
+dimensions, and sliced out of each data variable. `time_index` chooses the step
+(1-based):
 
-    Use [`read_netcdf`](@ref) to read such a file; it decodes and preserves a CF
-    time coordinate correctly. Tracked in
-    [issue #22](https://github.com/csu-tropical/Springsteel.jl/issues/22),
-    targeted at v1.1.1.
+```julia
+# One step: time_index is optional. This includes anything written by
+# write_netcdf(grid; time = t).
+grid = grid_from_netcdf("analysis.nc")
+
+# Several steps: time_index is required — a slice is never chosen for you.
+grid = grid_from_netcdf("forecast.nc"; time_index = 6)
+```
+
+Omitting `time_index` on a file with more than one step raises an `ArgumentError`
+naming the time variable and the valid range, rather than silently picking one.
+
+A time axis is recognised from its CF metadata — a `units` attribute of the form
+`"<unit> since <origin>"`, `standard_name = "time"`, `axis = "T"`, or a value
+NCDatasets has already decoded to a date/time type. The slice is taken at the
+time dimension's position in each variable's own dimension list, so it does not
+matter whether the file stores `(time, y, x)` or `(y, x, time)`.
+
+!!! note "Limitations"
+    - Only one step is loaded. To read every step, or to keep the time
+      coordinate itself, use [`read_netcdf`](@ref).
+    - The selected time value is not carried onto the returned grid.
+    - A coordinate merely *named* `time` or `t` that carries no CF metadata is
+      still excluded, but with a warning — it cannot be distinguished from a
+      spatial axis with an unfortunate name. Add CF `units` if it is a time axis,
+      or rename it if it is not.
 
 !!! note "Round-tripping `write_netcdf` output"
     `write_netcdf` emits `num_cells + 1` regular gridpoints, while this factory
@@ -113,8 +125,7 @@ grid = grid_from_netcdf("rainfall.nc";
     not round-trip through NetCDF. Set `i_regular_out` (and the j/k equivalents)
     to a multiple of `mubar` when building the grid to make its output readable.
     Tracked in
-    [issue #24](https://github.com/csu-tropical/Springsteel.jl/issues/24),
-    targeted at v1.1.1.
+    [issue #24](https://github.com/csu-tropical/Springsteel.jl/issues/24).
 
 ## Layer 2 — Same-geometry interpolation
 
