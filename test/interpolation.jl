@@ -115,7 +115,7 @@ using Springsteel.Chebyshev
         f = sin.(2π .* x ./ L)
         data = reshape(f, :, 1)
 
-        grid = grid_from_regular_data(x, data; mubar=1, vars=["u"])
+        grid = grid_from_regular_data(x, data; mubar=1, samples=:midpoint, vars=["u"])
         @test grid isa R_Grid
         @test grid.params.num_cells == 15
         @test grid.params.mubar == 1
@@ -135,17 +135,20 @@ using Springsteel.Chebyshev
         f3 = sin.(2π .* x3 ./ L)
         data3 = reshape(f3, :, 1)
 
-        grid3 = grid_from_regular_data(x3, data3; mubar=3, vars=["u"])
+        grid3 = grid_from_regular_data(x3, data3; mubar=3, samples=:midpoint, vars=["u"])
         @test grid3.params.num_cells == 4
         @test grid3.params.mubar == 3
         @test grid3.params.iDim == 12
 
-        # Test error for non-divisible mubar
-        @test_throws ArgumentError grid_from_regular_data(x, data; mubar=4, vars=["u"])
+        # Divisibility is scoped to the :midpoint convention, where the input IS the
+        # mish. :nodal projects instead, so it has no such requirement.
+        @test_throws ArgumentError grid_from_regular_data(x, data; mubar=4,
+            samples=:midpoint, vars=["u"])
+        @test grid_from_regular_data(x, data; mubar=4, vars=["u"]) isa R_Grid
 
         # Test error for non-uniform spacing
         x_bad = [1.0, 2.0, 3.5]
-        @test_throws ArgumentError grid_from_regular_data(x_bad, ones(3, 1); mubar=1)
+        @test_throws ArgumentError grid_from_regular_data(x_bad, ones(3, 1); mubar=1, samples=:midpoint)
     end
 
     @testset "grid_from_regular_data 2D" begin
@@ -164,7 +167,7 @@ using Springsteel.Chebyshev
             end
         end
 
-        grid = grid_from_regular_data(x, y, data; mubar=3, vars=["u"])
+        grid = grid_from_regular_data(x, y, data; mubar=3, samples=:midpoint, vars=["u"])
         @test grid isa RR_Grid
         @test grid.params.iDim == 6
         @test grid.params.jDim == 9
@@ -196,7 +199,7 @@ using Springsteel.Chebyshev
             end
         end
 
-        grid = grid_from_regular_data(x, y, z, data; mubar=1, vars=["u"])
+        grid = grid_from_regular_data(x, y, z, data; mubar=1, samples=:midpoint, vars=["u"])
         @test grid isa RRR_Grid
         @test grid.params.iDim == 3
         @test grid.params.jDim == 3
@@ -206,7 +209,7 @@ using Springsteel.Chebyshev
     @testset "grid_from_regular_data auto var names" begin
         x = collect(LinRange(0.5, 4.5, 5))
         data = hcat(sin.(x), cos.(x))
-        grid = grid_from_regular_data(x, data; mubar=1)
+        grid = grid_from_regular_data(x, data; mubar=1, samples=:midpoint)
         @test haskey(grid.params.vars, "v1")
         @test haskey(grid.params.vars, "v2")
     end
@@ -218,7 +221,7 @@ using Springsteel.Chebyshev
         x = collect(0.5:1.0:29.5)
         data = reshape(sin.(x), :, 1)
 
-        grid = grid_from_regular_data(x, data; mubar=1,
+        grid = grid_from_regular_data(x, data; mubar=1, samples=:midpoint,
                                       BCL=DirichletBC(), BCR=DirichletBC(), vars=["u"])
         @test grid isa R_Grid
         # A bare BC is broadcast to every variable
@@ -226,20 +229,20 @@ using Springsteel.Chebyshev
         @test grid.params.BCR["u"] == DirichletBC()
 
         # A per-variable Dict of struct BCs passes through untouched
-        grid2 = grid_from_regular_data(x, data; mubar=1,
+        grid2 = grid_from_regular_data(x, data; mubar=1, samples=:midpoint,
                                        BCL=Dict("u" => NeumannBC()),
                                        BCR=Dict("u" => DirichletBC()), vars=["u"])
         @test grid2.params.BCL["u"] == NeumannBC()
         @test grid2.params.BCR["u"] == DirichletBC()
 
         # Legacy Dict BCs still work, and still broadcast
-        grid3 = grid_from_regular_data(x, data; mubar=1, BCL=CubicBSpline.R1T1, vars=["u"])
+        grid3 = grid_from_regular_data(x, data; mubar=1, samples=:midpoint, BCL=CubicBSpline.R1T1, vars=["u"])
         @test grid3.params.BCL["u"] == CubicBSpline.R1T1
         @test grid3.params.BCR["u"] == CubicBSpline.R0        # untouched default
 
         # The 2D and 3D overloads take struct BCs on every axis too
         y = collect(0.5:1.0:11.5)
-        grid4 = grid_from_regular_data(x, y, reshape(ones(30 * 12), :, 1); mubar=1,
+        grid4 = grid_from_regular_data(x, y, reshape(ones(30 * 12), :, 1); mubar=1, samples=:midpoint,
                                        BCL=DirichletBC(), BCU=NaturalBC(), vars=["u"])
         @test grid4 isa RR_Grid
         @test grid4.params.BCU["u"] == NaturalBC()
@@ -249,7 +252,7 @@ using Springsteel.Chebyshev
         # exactly -- NaturalBC() == R0 (unconstrained), DirichletBC(0) == R1T0 (u -> 0).
         flat = reshape(ones(length(x)), :, 1)
         edge(bc) = begin
-            g = grid_from_regular_data(x, flat; mubar=1, BCL=bc, BCR=bc, vars=["u"])
+            g = grid_from_regular_data(x, flat; mubar=1, samples=:midpoint, BCL=bc, BCR=bc, vars=["u"])
             spectralTransform!(g); gridTransform!(g)
             g.physical[1, 1, 1]
         end
@@ -266,8 +269,8 @@ using Springsteel.Chebyshev
         vec_data = @. exp(-(x - 0.5)^2 / 0.01)
         mat_data = reshape(vec_data, :, 1)
 
-        gv = grid_from_regular_data(x, vec_data; mubar=1, vars=["u"])
-        gm = grid_from_regular_data(x, mat_data; mubar=1, vars=["u"])
+        gv = grid_from_regular_data(x, vec_data; mubar=1, samples=:midpoint, vars=["u"])
+        gm = grid_from_regular_data(x, mat_data; mubar=1, samples=:midpoint, vars=["u"])
         @test gv isa R_Grid
         # isequal, not ==: the derivative slots are filled with NaN, and NaN != NaN
         @test isequal(gv.physical, gm.physical)
@@ -275,17 +278,19 @@ using Springsteel.Chebyshev
 
         # 2D and 3D take vector data too
         y = collect(0.0:0.25:0.75)
-        g2 = grid_from_regular_data(x, y, ones(length(x) * length(y)); mubar=1, vars=["u"])
+        g2 = grid_from_regular_data(x, y, ones(length(x) * length(y)); mubar=1,
+                                    samples=:midpoint, vars=["u"])
         @test g2 isa RR_Grid
         @test g2.physical[:, 1, 1] == ones(length(x) * length(y))
 
         z = collect(0.0:0.5:0.5)
         n3 = length(x) * length(y) * length(z)
-        g3 = grid_from_regular_data(x, y, z, ones(n3); mubar=1, vars=["u"])
+        g3 = grid_from_regular_data(x, y, z, ones(n3); mubar=1, samples=:midpoint,
+                                    vars=["u"])
         @test g3 isa RRR_Grid
 
         # ... and vector data composes with the struct BCs
-        g4 = grid_from_regular_data(x, vec_data; mubar=1,
+        g4 = grid_from_regular_data(x, vec_data; mubar=1, samples=:midpoint,
                                     BCL=DirichletBC(), BCR=DirichletBC(), vars=["u"])
         @test g4.params.BCL["u"] == DirichletBC()
     end
@@ -295,9 +300,9 @@ using Springsteel.Chebyshev
     # ════════════════════════════════════════════════════════════════════════
 
     @testset "grid_from_netcdf 1D roundtrip" begin
-        # Create a source grid, write to netcdf, read back with grid_from_netcdf
-        # Note: write_netcdf outputs on regular grid with i_regular_out points,
-        # so we need to make the output grid size compatible with the desired mubar.
+        # Hand-built file on MIDPOINT coordinates, so it pins the :midpoint path.
+        # The write_netcdf -> grid_from_netcdf round trip (nodal) is covered
+        # separately in "nodal round trip" below.
         N = 12
         L = 6.0
         h = L / N
@@ -305,7 +310,7 @@ using Springsteel.Chebyshev
         f = sin.(2π .* x ./ L)
         data = reshape(f, :, 1)
 
-        source = grid_from_regular_data(x, data; mubar=3, vars=["temperature"])
+        source = grid_from_regular_data(x, data; mubar=3, samples=:midpoint, vars=["temperature"])
 
         # Write a simple netcdf file manually for testing
         tmpfile = tempname() * ".nc"
@@ -318,13 +323,175 @@ using Springsteel.Chebyshev
                 ncf[:] = f
             end
 
-            loaded = grid_from_netcdf(tmpfile; mubar=3)
+            loaded = grid_from_netcdf(tmpfile; mubar=3, samples=:midpoint)
             @test loaded isa R_Grid
             @test loaded.params.num_cells == 4  # 12/3
             @test loaded.params.iDim == 12
             @test loaded.physical[:, 1, 1] ≈ f atol=1e-12
         finally
             isfile(tmpfile) && rm(tmpfile)
+        end
+    end
+
+
+    @testset "nodal round trip (issue #24)" begin
+        # write_netcdf emits `num_cells + 1` endpoint-inclusive nodes. Under the
+        # :nodal convention those nodes become the cell boundaries, so num_cells and
+        # the domain come back exactly -- for EVERY cell count, with no mubar
+        # divisibility requirement. On main, 10/12/13/15/16 threw an ArgumentError
+        # and 11/14 silently returned num_cells=4/5 on a domain widened by h/2.
+        f(x) = sin(2π * x / 10) + 0.3cos(5π * x / 10)
+        R0 = CubicBSpline.R0
+
+        @testset "structure is exact for every cell count" begin
+            for nc in (10, 11, 12, 13, 14, 15, 16, 25)
+                gp = SpringsteelGridParameters(geometry="R", iMin=0.0, iMax=10.0,
+                    num_cells=nc, vars=Dict("u" => 1),
+                    BCL=Dict("u" => R0), BCR=Dict("u" => R0))
+                src = createGrid(gp)
+                src.physical[:, 1, 1] .= f.(getGridpoints(src))
+                spectralTransform!(src); gridTransform!(src)
+                fn = tempname() * ".nc"
+                try
+                    write_netcdf(fn, src)
+                    loaded = grid_from_netcdf(fn)
+                    @test loaded.params.num_cells == nc
+                    @test loaded.params.iMin ≈ 0.0 atol=1e-12
+                    @test loaded.params.iMax ≈ 10.0 atol=1e-12
+                    @test loaded.params.mubar == 3
+
+                    # Values are interpolated, not assigned: compare against the
+                    # source spline evaluated on the reconstructed mish. Tolerance
+                    # is measured, and tightens with resolution (1.6e-2 at nc=10,
+                    # 2.7e-4 at nc=25) -- see the convergence test below.
+                    ref = regularGridTransform(src, collect(getGridpoints(loaded)))[:, 1, 1]
+                    # elementwise, not the 2-norm `≈` would use
+                    @test maximum(abs.(loaded.physical[:, 1, 1] .- ref)) < 2e-2
+                finally
+                    isfile(fn) && rm(fn)
+                end
+            end
+        end
+
+        @testset "accuracy improves with resolution" begin
+            errs = Float64[]
+            for nc in (10, 16, 25)
+                gp = SpringsteelGridParameters(geometry="R", iMin=0.0, iMax=10.0,
+                    num_cells=nc, vars=Dict("u" => 1),
+                    BCL=Dict("u" => R0), BCR=Dict("u" => R0))
+                src = createGrid(gp)
+                src.physical[:, 1, 1] .= f.(getGridpoints(src))
+                spectralTransform!(src); gridTransform!(src)
+                fn = tempname() * ".nc"
+                try
+                    write_netcdf(fn, src)
+                    loaded = grid_from_netcdf(fn)
+                    ref = regularGridTransform(src, collect(getGridpoints(loaded)))[:, 1, 1]
+                    push!(errs, maximum(abs.(loaded.physical[:, 1, 1] .- ref)))
+                finally
+                    isfile(fn) && rm(fn)
+                end
+            end
+            @test issorted(errs, rev=true)   # strictly improving
+            @test errs[end] < errs[1] / 10
+        end
+
+        @testset "input length need not relate to mubar" begin
+            # Every one of these is a different residue mod 3; none may throw.
+            for N in 13:19
+                x = collect(range(0.0, 10.0, length=N))
+                g = grid_from_regular_data(x, reshape(f.(x), :, 1); mubar=3, vars=["u"])
+                @test g isa R_Grid
+                @test g.params.num_cells == N - 1
+                @test g.params.iMin ≈ 0.0 atol=1e-12
+                @test g.params.iMax ≈ 10.0 atol=1e-12
+            end
+        end
+
+        @testset "linear data reconstructs to roundoff" begin
+            # A straight line lies in the spline space and is unaffected by the
+            # natural-BC closure, so it pins the projection itself rather than the
+            # interpolation error. This is also the guard for the extended-grid BC
+            # choice: with R1T0 instead of R0 the error jumps to ~8e-2.
+            N = 21
+            x = collect(range(0.0, 4.0, length=N))
+            g = grid_from_regular_data(x, reshape(2.5 .* x .+ 1.0, :, 1);
+                                       mubar=3, vars=["u"])
+            @test maximum(abs.(g.physical[:, 1, 1] .- (2.5 .* getGridpoints(g) .+ 1.0))) < 1e-5
+        end
+
+        @testset "mubar is free" begin
+            N = 17
+            x = collect(range(0.0, 6.0, length=N))
+            d = reshape(sin.(x), :, 1)
+            for mb in (1, 2, 3, 5)
+                g = grid_from_regular_data(x, d; mubar=mb, vars=["u"])
+                @test g.params.num_cells == N - 1
+                @test g.params.iDim == (N - 1) * mb
+                @test maximum(abs.(g.physical[:, 1, 1] .- sin.(getGridpoints(g)))) < 5e-3
+            end
+        end
+
+        @testset "explicit num_cells decouples grid from input resolution" begin
+            N = 41
+            x = collect(range(0.0, 8.0, length=N))
+            d = reshape(sin.(x), :, 1)
+            g = grid_from_regular_data(x, d; mubar=3, num_cells=7, vars=["u"])
+            @test g.params.num_cells == 7
+            @test g.params.iDim == 21
+            @test maximum(abs.(g.physical[:, 1, 1] .- sin.(getGridpoints(g)))) < 5e-3
+            @test_throws ArgumentError grid_from_regular_data(x, d; num_cells=0, vars=["u"])
+        end
+
+        @testset "very short input falls back to linear" begin
+            # Two nodes carry exactly a straight line, and the mubar=1 fit is not
+            # usable below three nodes (its PQ factorisation is erratic at N=2).
+            x = [0.0, 2.0]
+            g = grid_from_regular_data(x, reshape([1.0, 5.0], :, 1); mubar=2, vars=["u"])
+            @test g isa R_Grid
+            @test g.params.num_cells == 1
+            @test maximum(abs.(g.physical[:, 1, 1] .- (1.0 .+ 2.0 .* getGridpoints(g)))) < 1e-12
+        end
+
+        @testset "samples is validated" begin
+            x = collect(range(0.0, 1.0, length=9))
+            d = reshape(sin.(x), :, 1)
+            @test_throws ArgumentError grid_from_regular_data(x, d; samples=:cell_edge)
+        end
+
+        @testset "2-D and 3-D with non-divisible sizes" begin
+            Nx, Ny = 14, 11
+            xs = collect(range(0.0, 3.0, length=Nx))
+            ys = collect(range(0.0, 5.0, length=Ny))
+            # linear in x only: exact under a correct tensor product, and wildly
+            # wrong if the two axes were crossed (the domains differ)
+            d2 = zeros(Nx * Ny, 1)
+            for i in 1:Nx, j in 1:Ny
+                d2[(i - 1) * Ny + j, 1] = xs[i]
+            end
+            g2 = grid_from_regular_data(xs, ys, d2; mubar=3, vars=["u"])
+            @test g2 isa RR_Grid
+            @test g2.params.num_cells_i == Nx - 1
+            @test g2.params.num_cells_j == Ny - 1
+            @test g2.params.iMax ≈ 3.0 atol=1e-12
+            @test g2.params.jMax ≈ 5.0 atol=1e-12
+            p2 = getGridpoints(g2)
+            @test maximum(abs.(g2.physical[:, 1, 1] .- p2[:, 1])) < 1e-4
+
+            Nx3, Ny3, Nz3 = 8, 7, 10
+            x3 = collect(range(0.0, 2.0, length=Nx3))
+            y3 = collect(range(0.0, 3.0, length=Ny3))
+            z3 = collect(range(0.0, 4.0, length=Nz3))
+            d3 = zeros(Nx3 * Ny3 * Nz3, 1)
+            for i in 1:Nx3, j in 1:Ny3, k in 1:Nz3
+                d3[((i - 1) * Ny3 + (j - 1)) * Nz3 + k, 1] = z3[k]   # linear in z only
+            end
+            g3 = grid_from_regular_data(x3, y3, z3, d3; mubar=3, vars=["u"])
+            @test g3 isa RRR_Grid
+            @test (g3.params.num_cells_i, g3.params.num_cells_j, g3.params.num_cells_k) ==
+                  (Nx3 - 1, Ny3 - 1, Nz3 - 1)
+            p3 = getGridpoints(g3)
+            @test maximum(abs.(g3.physical[:, 1, 1] .- p3[:, 3])) < 1e-4
         end
     end
 
@@ -364,7 +531,7 @@ using Springsteel.Chebyshev
         @testset "CF time, single step, loads with no keywords" begin
             f = cf_time_file(1; offset=false)
             try
-                loaded = grid_from_netcdf(f; mubar=3)
+                loaded = grid_from_netcdf(f; mubar=3, samples=:midpoint)
                 @test loaded isa R_Grid
                 @test loaded.params.iDim == N
                 @test loaded.physical[:, 1, 1] ≈ fv
@@ -383,7 +550,7 @@ using Springsteel.Chebyshev
             # keywords were required; they are not.
             f = cf_time_file(1; offset=false)
             try
-                loaded = grid_from_netcdf(f; dim_names=["x"], mubar=3)
+                loaded = grid_from_netcdf(f; dim_names=["x"], mubar=3, samples=:midpoint)
                 @test collect(keys(loaded.params.vars)) == ["u"]
                 @test loaded.physical[:, 1, 1] ≈ fv
             finally
@@ -405,7 +572,7 @@ using Springsteel.Chebyshev
                 NCDatasets.defVar(ds, "u", Float64, ("time", "x"))[:, :] = reshape(fv, 1, N)
             end
             try
-                loaded = @test_logs (:warn,) match_mode=:any grid_from_netcdf(f; mubar=3)
+                loaded = @test_logs (:warn,) match_mode=:any grid_from_netcdf(f; mubar=3, samples=:midpoint)
                 @test loaded isa R_Grid          # NOT RR_Grid
                 @test !(loaded isa RR_Grid)
                 @test loaded.params.iDim == N    # grid is over x alone
@@ -419,12 +586,12 @@ using Springsteel.Chebyshev
             f = cf_time_file(NT)
             try
                 # slices are distinguishable: u[t, :] == fv .+ t
-                @test grid_from_netcdf(f; time_index=1, mubar=3).physical[:, 1, 1] ≈ fv .+ 1.0
-                @test grid_from_netcdf(f; time_index=3, mubar=3).physical[:, 1, 1] ≈ fv .+ 3.0
+                @test grid_from_netcdf(f; time_index=1, mubar=3, samples=:midpoint).physical[:, 1, 1] ≈ fv .+ 1.0
+                @test grid_from_netcdf(f; time_index=3, mubar=3, samples=:midpoint).physical[:, 1, 1] ≈ fv .+ 3.0
 
                 # a slice is never chosen silently
                 err = try
-                    grid_from_netcdf(f; mubar=3); nothing
+                    grid_from_netcdf(f; mubar=3, samples=:midpoint); nothing
                 catch e; e end
                 @test err isa ArgumentError
                 msg = sprint(showerror, err)
@@ -432,8 +599,8 @@ using Springsteel.Chebyshev
                 @test occursin("time_index", msg)
                 @test occursin("4", msg)
 
-                @test_throws ArgumentError grid_from_netcdf(f; time_index=0, mubar=3)
-                @test_throws ArgumentError grid_from_netcdf(f; time_index=NT + 1, mubar=3)
+                @test_throws ArgumentError grid_from_netcdf(f; time_index=0, mubar=3, samples=:midpoint)
+                @test_throws ArgumentError grid_from_netcdf(f; time_index=NT + 1, mubar=3, samples=:midpoint)
             finally
                 isfile(f) && rm(f)
             end
@@ -444,7 +611,7 @@ using Springsteel.Chebyshev
             # last. The slice is located by position in the variable's own dims.
             f = cf_time_file(NT; tfirst=false)
             try
-                @test grid_from_netcdf(f; time_index=3, mubar=3).physical[:, 1, 1] ≈ fv .+ 3.0
+                @test grid_from_netcdf(f; time_index=3, mubar=3, samples=:midpoint).physical[:, 1, 1] ≈ fv .+ 3.0
             finally
                 isfile(f) && rm(f)
             end
@@ -456,7 +623,7 @@ using Springsteel.Chebyshev
             f = cf_time_file(1; offset=false)
             try
                 loaded = @test_logs (:info,) match_mode=:any grid_from_netcdf(
-                    f; dim_names=["time", "x"], mubar=3)
+                    f; dim_names=["time", "x"], mubar=3, samples=:midpoint)
                 @test loaded isa R_Grid
                 @test loaded.params.iDim == N
                 @test loaded.physical[:, 1, 1] ≈ fv
@@ -473,7 +640,7 @@ using Springsteel.Chebyshev
                 NCDatasets.defVar(ds, "u", Float64, ("x",))[:] = fv
             end
             try
-                @test_throws ArgumentError grid_from_netcdf(f; time_index=1, mubar=3)
+                @test_throws ArgumentError grid_from_netcdf(f; time_index=1, mubar=3, samples=:midpoint)
             finally
                 isfile(f) && rm(f)
             end
@@ -500,7 +667,7 @@ using Springsteel.Chebyshev
                 NCDatasets.defVar(ds, "u", Float64, ("time", "x", "y"))[1, :, :] = u2
             end
             try
-                loaded = grid_from_netcdf(f; mubar=3)
+                loaded = grid_from_netcdf(f; mubar=3, samples=:midpoint)
                 @test loaded isa RR_Grid
                 @test loaded.params.iDim == Nx
                 @test loaded.params.jDim == Ny
@@ -532,7 +699,7 @@ using Springsteel.Chebyshev
                 NCDatasets.defVar(ds, "u", Float64, ("time", "x", "y", "z"))[1, :, :, :] = u3
             end
             try
-                loaded = grid_from_netcdf(f; mubar=3)
+                loaded = grid_from_netcdf(f; mubar=3, samples=:midpoint)
                 @test loaded isa RRR_Grid
                 @test loaded.params.iDim == Nx
                 @test loaded.params.jDim == Ny
@@ -561,7 +728,7 @@ using Springsteel.Chebyshev
                 NCDatasets.defVar(ds, "u", Float64, ("y", "x"))[:, :] = permutedims(u2, (2, 1))
             end
             try
-                loaded = grid_from_netcdf(f; dim_names=["x", "y"], mubar=3)
+                loaded = grid_from_netcdf(f; dim_names=["x", "y"], mubar=3, samples=:midpoint)
                 @test loaded.params.iDim == Nx
                 @test loaded.params.jDim == Ny
                 @test loaded.physical[(2 - 1) * Ny + 3, 1, 1] ≈ u2[2, 3]
@@ -587,7 +754,7 @@ using Springsteel.Chebyshev
                     fillvalue=NaN)[:, :] = reshape(gappy, 1, N)
             end
             try
-                loaded = grid_from_netcdf(f; mubar=3)
+                loaded = grid_from_netcdf(f; mubar=3, samples=:midpoint)
                 @test isnan(loaded.physical[4, 1, 1])
                 @test loaded.physical[5, 1, 1] ≈ fv[5]
             finally
@@ -604,7 +771,7 @@ using Springsteel.Chebyshev
                 NCDatasets.defVar(ds, "crs", Int32, ())[:] = Int32(0)
             end
             try
-                loaded = grid_from_netcdf(f; mubar=3)
+                loaded = grid_from_netcdf(f; mubar=3, samples=:midpoint)
                 @test collect(keys(loaded.params.vars)) == ["u"]
             finally
                 isfile(f) && rm(f)
@@ -623,7 +790,7 @@ using Springsteel.Chebyshev
             end
             try
                 err = try
-                    grid_from_netcdf(f; dim_names=["x"], mubar=3); nothing
+                    grid_from_netcdf(f; dim_names=["x"], mubar=3, samples=:midpoint); nothing
                 catch e; e end
                 @test err isa ArgumentError
                 @test occursin("u", sprint(showerror, err))
@@ -646,7 +813,7 @@ using Springsteel.Chebyshev
         f = sin.(2π .* x ./ L)
         data = reshape(f, :, 1)
 
-        source = grid_from_regular_data(x, data; mubar=3, vars=["u"])
+        source = grid_from_regular_data(x, data; mubar=3, samples=:midpoint, vars=["u"])
         spectralTransform!(source)
 
         # Create target: Gauss-Legendre grid with different resolution
@@ -684,7 +851,7 @@ using Springsteel.Chebyshev
         x = [(i - 0.5) * h for i in 1:N]
         data_src = hcat(sin.(x), cos.(x))
 
-        source = grid_from_regular_data(x, data_src; mubar=3, vars=["u", "v"])
+        source = grid_from_regular_data(x, data_src; mubar=3, samples=:midpoint, vars=["u", "v"])
         spectralTransform!(source)
 
         # Target has only "u" + extra "w"
@@ -714,7 +881,7 @@ using Springsteel.Chebyshev
         x = [(i - 0.5) * h for i in 1:N]
         data = reshape(ones(N), :, 1)
 
-        source = grid_from_regular_data(x, data; mubar=3, vars=["u"])
+        source = grid_from_regular_data(x, data; mubar=3, samples=:midpoint, vars=["u"])
         spectralTransform!(source)
 
         # Target extends beyond source domain
@@ -761,7 +928,7 @@ using Springsteel.Chebyshev
             end
         end
 
-        source = grid_from_regular_data(x, y, data; mubar=3, vars=["u"])
+        source = grid_from_regular_data(x, y, data; mubar=3, samples=:midpoint, vars=["u"])
         spectralTransform!(source)
 
         # Target: Gauss-Legendre grid
@@ -815,7 +982,7 @@ using Springsteel.Chebyshev
             end
         end
 
-        source = grid_from_regular_data(x, y, z, data; mubar=3, vars=["u"])
+        source = grid_from_regular_data(x, y, z, data; mubar=3, samples=:midpoint, vars=["u"])
         spectralTransform!(source)
 
         # Target: Gauss-Legendre RRR grid (exercises the same-geometry 3D path,
