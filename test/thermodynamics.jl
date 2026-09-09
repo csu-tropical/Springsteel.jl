@@ -32,6 +32,54 @@
         @test L_v(300.0) ≈ L_v0 + (Cpv - Cl) * (300.0 - T_0)
     end
 
+    @testset "Ice latent heats (Kirchhoff consistency)" begin
+        # L_s0 is defined literally as L_v0 + L_f0, so the identity holds identically
+        # (to roundoff) across a wide temperature range, not just at T_0.
+        for Tk in (180.0, 200.0, 220.0, 240.0, 260.0, 273.16, 280.0, 300.0)
+            @test L_s(Tk) ≈ L_v(Tk) + L_f(Tk)
+        end
+        @test L_s(T_0) ≈ L_s0
+        @test L_f(T_0) ≈ L_f0
+        @test L_s0 ≈ L_v0 + L_f0
+    end
+
+    @testset "Ice saturation vapor pressure" begin
+        # At the triple point, liquid and ice saturation vapor pressure formulas
+        # converge to (approximately) the same ~6.11 hPa value.
+        el = sat_pressure_liquid_buck(T_0, 1000.0)
+        ei = sat_pressure_ice_buck(T_0, 1000.0)
+        @test el ≈ 6.11 atol=0.1
+        @test ei ≈ el rtol=0.005
+
+        # Ice Buck dT matches a central finite difference
+        for (Tk, p) in ((250.0, 800.0), (263.0, 900.0), (240.0, 500.0))
+            dfd = (sat_pressure_ice_buck(Tk + 1e-4, p) - sat_pressure_ice_buck(Tk - 1e-4, p)) / 2e-4
+            @test sat_pressure_ice_buck_dT(Tk, p) ≈ dfd rtol=1e-6
+        end
+
+        # Finite / sane at negative-Celsius and triple-point edge cases
+        @test isfinite(sat_pressure_ice_buck(253.15, 1000.0))
+        @test isfinite(sat_pressure_ice_buck(T_0, 1000.0))
+        @test isfinite(sat_pressure_ice_buck_dT(253.15, 1000.0))
+        @test isfinite(sat_pressure_ice_buck_dT(T_0, 1000.0))
+    end
+
+    @testset "rho_i_sat" begin
+        # -20 C, 700 hPa: physically sensible order of magnitude (~1e-3 kg/m^3)
+        Tk, p = 253.15, 700.0
+        ri = rho_i_sat(Tk, p)
+        @test 1.0e-4 < ri < 1.0e-2
+
+        # Saturated-over-ice air: rho_d*q_sat_ice == rho_i_sat identically (Buck algebra)
+        ei = sat_pressure_ice_buck(Tk, p)
+        rho_d = 100.0 * (p - ei) / (Rd * Tk)
+        @test rho_d * q_sat_ice(Tk, p) ≈ rho_i_sat(Tk, p) rtol = 1e-14
+
+        # Ice saturation vapor pressure/density is less than the liquid value at the
+        # same (T, p): liquid-saturated air is supersaturated with respect to ice.
+        @test rho_i_sat(Tk, p) < rho_v_sat(Tk, p)
+    end
+
     @testset "Entropy <-> temperature round trip" begin
         for (Tk, rho_d, q_v) in ((300.0, 1.0, 0.01), (280.0, 1.1, 0.0),
                                  (250.0, 0.7, 0.002), (305.0, 1.15, 0.018))

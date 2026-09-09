@@ -22,6 +22,8 @@ client code.
 | `Ci`     | 2106.0 | J/(kg·K) | Specific heat of ice |
 | `gravity`| 9.81   | m/s² | Gravitational acceleration |
 | `L_v0`   | 2.501e6 | J/kg | Latent heat of vaporization at T₀ |
+| `L_f0`   | 3.34e5 | J/kg | Latent heat of fusion at T₀ |
+| `L_s0`   | L_v0+L_f0 | J/kg | Latent heat of sublimation at T₀ (Kirchhoff, exact by construction) |
 | `rho_l`  | 1000.0 | kg/m³ | Density of liquid water |
 | `rho_i`  | 917.0  | kg/m³ | Density of ice |
 | `T_0`    | 273.16 | K | Reference temperature (triple point of water) |
@@ -34,14 +36,15 @@ client code.
 """
 module Thermodynamics
 
-export Rd, Rv, Eps, Cvd, Cvv, Cpd, Cpv, Cl, Ci, gravity, L_v0, rho_l, rho_i,
+export Rd, Rv, Eps, Cvd, Cvv, Cpd, Cpv, Cl, Ci, gravity, L_v0, L_f0, L_s0, rho_l, rho_i,
     T_0, p_0, q0, rho_d0, rho_v0
 export sat_pressure_liquid, sat_pressure_ice, sat_pressure_liquid_buck,
-    sat_pressure_liquid_buck_dT, sat_pressure_ice_buck, q_sat_liquid, q_sat_ice,
-    L_v, dewpoint, entropy, vapor_entropy, temperature, pressure, vapor_pressure,
+    sat_pressure_liquid_buck_dT, sat_pressure_ice_buck, sat_pressure_ice_buck_dT,
+    q_sat_liquid, q_sat_ice,
+    L_v, L_f, L_s, dewpoint, entropy, vapor_entropy, temperature, pressure, vapor_pressure,
     mixing_ratio, dry_density, log_dry_density, P_s, P_xi, P_qv, P_rhod, P_rhov,
     potential_temperature, reversible_theta_e, theta_rho,
-    rho_v_sat, internal_energy_bf02
+    rho_v_sat, rho_i_sat, internal_energy_bf02
 
 # Constants from Emanuel (1994)
 const Rd = 287.04
@@ -55,6 +58,11 @@ const Cl = 4186.0
 const Ci = 2106.0 # Ice heat capacity
 const gravity = 9.81
 const L_v0 = 2.501e6
+const L_f0 = 3.34e5 # Latent heat of fusion at T_0 (Rogers & Yau 1989; Pruppacher & Klett 1997),
+                     # the standard value used alongside the Emanuel (1994)/Bryan & Fritsch (2002)
+                     # constant family adopted elsewhere in this module.
+const L_s0 = L_v0 + L_f0 # Latent heat of sublimation at T_0, defined by Kirchhoff's law
+                          # L_s = L_v + L_f so the identity is exact by construction.
 const rho_l = 1000.0 # Density of liquid water in kg/m^3
 const rho_i = 917.0 # Density of ice in kg/m^3
 
@@ -102,6 +110,35 @@ Latent heat of vaporization [J/kg] as a linear function of temperature.
 function L_v(Tk::Float64)
 
     return L_v0 + ((Cpv - Cl) * (Tk - T_0))
+end
+
+"""
+    L_s(Tk)
+
+Latent heat of sublimation [J/kg] as a linear function of temperature, with
+Kirchhoff slope `dL_s/dT = Cpv - Ci`. Since `L_s0 = L_v0 + L_f0` by construction,
+`L_s(Tk) == L_v(Tk) + L_f(Tk)` holds identically for all `Tk`.
+
+# References
+- Emanuel, K. A. (1994). *Atmospheric Convection*. Oxford University Press.
+"""
+function L_s(Tk::Float64)
+
+    return L_s0 + ((Cpv - Ci) * (Tk - T_0))
+end
+
+"""
+    L_f(Tk)
+
+Latent heat of fusion [J/kg] as a linear function of temperature, with Kirchhoff
+slope `dL_f/dT = Cl - Ci`.
+
+# References
+- Emanuel, K. A. (1994). *Atmospheric Convection*. Oxford University Press.
+"""
+function L_f(Tk::Float64)
+
+    return L_f0 + ((Cl - Ci) * (Tk - T_0))
 end
 
 """
@@ -282,6 +319,34 @@ function sat_pressure_ice_buck(Tk::Float64, phPa::Float64)
 end
 
 """
+    sat_pressure_ice_buck_dT(Tk, phPa)
+
+Derivative of the Buck (1981) saturation vapor pressure over ice with respect to
+temperature at constant pressure [hPa/K].
+"""
+function sat_pressure_ice_buck_dT(Tk::Float64, phPa::Float64)
+
+    Tc = Tk - 273.15
+
+    A = 2.2e-4
+    B = 3.83e-6
+    C = 6.4e-10
+    fi4 = 1.0 + A + (phPa * (B + (C * Tc^2)))
+    d_fi4 = 2.0 * phPa * C * Tc
+
+    a = 6.1115
+    b = 23.036
+    c = 279.82
+    d = 333.7
+    ei3 = a * exp( (b - (Tc / d)) * Tc / (Tc + c) )
+    T1 = (d * b - (2.0 * Tc)) * (d * (Tc + c)) - d* ((d * b * Tc) - Tc^2)
+    T2 =  (d * (Tc + c))^2
+    d_ei3 = ei3 * T1 / T2
+
+    return ei3 * d_fi4 + fi4 * d_ei3
+end
+
+"""
     q_sat_liquid(Tk, phPa)
 
 Saturation mixing ratio over liquid water [kg/kg] from the Buck (1981) formula.
@@ -315,6 +380,18 @@ For saturated air this equals `rho_d * q_sat_liquid(Tk, phPa)` identically.
 function rho_v_sat(Tk::Float64, phPa::Float64)
 
     return 100.0 * sat_pressure_liquid_buck(Tk, phPa) / (Rv * Tk)
+end
+
+"""
+    rho_i_sat(Tk, phPa)
+
+Saturation vapor density over ice [kg/m³], ρ_i* = e_i*/(R_v T) with the Buck (1981)
+saturation vapor pressure over ice (pressure-enhanced, e_i* converted from hPa to Pa).
+For ice-saturated air this equals `rho_d * q_sat_ice(Tk, phPa)` identically.
+"""
+function rho_i_sat(Tk::Float64, phPa::Float64)
+
+    return 100.0 * sat_pressure_ice_buck(Tk, phPa) / (Rv * Tk)
 end
 
 """
