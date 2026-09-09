@@ -1,4 +1,8 @@
+# Claude Code: agent instruction files, local settings, and project instructions
 agent_files/
+CLAUDE.md
+.claude/
+
 src/.ipynb_checkpoints/*
 notebooks/.ipynb_checkpoints/*
 .DS_Store
