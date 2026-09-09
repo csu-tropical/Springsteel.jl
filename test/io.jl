@@ -887,6 +887,88 @@ using DataFrames
                 @test_throws Exception read_netcdf("/nonexistent/path/file.nc")
             end
 
+            # ── CF time-axis detection ────────────────────────────────────
+
+            @testset "_nc_time_axis detection" begin
+                # The load-bearing case: Springsteel's own output. _netcdf_add_time_dim!
+                # writes units/calendar/long_name but NO standard_name and NO axis="T",
+                # so a detector keyed on those would miss every file this package
+                # writes. This test is the regression guard for that trap.
+                @testset "Springsteel's own write_netcdf(; time=)" begin
+                    gp = SpringsteelGridParameters(geometry="R", num_cells=5,
+                        iMin=0.0, iMax=10.0, vars=Dict("u" => 1),
+                        BCL=Dict("u" => CubicBSpline.R0),
+                        BCR=Dict("u" => CubicBSpline.R0))
+                    grid = createGrid(gp)
+                    spectralTransform!(grid); gridTransform!(grid)
+                    f = tempname() * ".nc"
+                    try
+                        write_netcdf(f, grid; time=3600.0)
+                        NCDatasets.NCDataset(f, "r") do ds
+                            t = Springsteel._nc_time_axis(ds, "time")
+                            @test t !== nothing
+                            @test t.cf
+                            @test t.decoded
+                            # and a spatial coordinate is not mistaken for one
+                            @test Springsteel._nc_time_axis(ds, "x") === nothing
+                        end
+                    finally
+                        isfile(f) && rm(f)
+                    end
+                end
+
+                @testset "detection signals" begin
+                    f = tempname() * ".nc"
+                    try
+                        NCDatasets.NCDataset(f, "c") do ds
+                            NCDatasets.defDim(ds, "valid_time", 2)
+                            NCDatasets.defDim(ds, "tau", 2)
+                            NCDatasets.defDim(ds, "time", 2)
+                            NCDatasets.defDim(ds, "height", 2)
+                            NCDatasets.defDim(ds, "bnds", 2)   # dim with no variable
+
+                            # CF units, non-standard name
+                            v1 = NCDatasets.defVar(ds, "valid_time", Float64, ("valid_time",))
+                            v1.attrib["units"] = "hours since 2020-01-01"
+                            v1[:] = [0.0, 1.0]
+
+                            # axis = "T" only
+                            v2 = NCDatasets.defVar(ds, "tau", Float64, ("tau",))
+                            v2.attrib["axis"] = "T"
+                            v2[:] = [0.0, 1.0]
+
+                            # name only, no attributes at all
+                            NCDatasets.defVar(ds, "time", Float64, ("time",))[:] = [0.0, 1.0]
+
+                            # a genuine spatial coordinate
+                            v4 = NCDatasets.defVar(ds, "height", Float64, ("height",))
+                            v4.attrib["units"] = "m"
+                            v4[:] = [0.0, 1.0]
+                        end
+                        NCDatasets.NCDataset(f, "r") do ds
+                            t1 = Springsteel._nc_time_axis(ds, "valid_time")
+                            @test t1 !== nothing && t1.cf && t1.decoded
+
+                            t2 = Springsteel._nc_time_axis(ds, "tau")
+                            @test t2 !== nothing && t2.cf && !t2.decoded
+
+                            # name-only match: detected, but flagged as non-CF so the
+                            # caller warns instead of accepting it silently
+                            t3 = Springsteel._nc_time_axis(ds, "time")
+                            @test t3 !== nothing
+                            @test !t3.cf
+                            @test !t3.decoded
+
+                            @test Springsteel._nc_time_axis(ds, "height") === nothing
+                            # a dimension with no coordinate variable
+                            @test Springsteel._nc_time_axis(ds, "bnds") === nothing
+                        end
+                    finally
+                        isfile(f) && rm(f)
+                    end
+                end
+            end
+
             # ── New keyword arguments ─────────────────────────────────────
 
             @testset "write_netcdf coordinate_attributes 1D" begin

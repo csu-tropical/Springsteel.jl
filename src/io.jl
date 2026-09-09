@@ -1094,6 +1094,95 @@ end
 # ════════════════════════════════════════════════════════════════════════════
 
 # ────────────────────────────────────────────────────────────────────────────
+# CF time-axis detection (shared by read_netcdf and grid_from_netcdf)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Names that conventionally denote a time axis, compared case-insensitively.
+const _NC_TIME_NAMES = ("time", "t")
+
+"""
+    _nc_time_axis(ds, name) -> NamedTuple or nothing
+
+Classify the variable `name` in the open dataset `ds` as a time axis.
+
+Returns `nothing` when `name` has no variable, or shows no evidence of being a
+time axis. Otherwise returns `(; name, cf, decoded, evidence)`:
+
+- `decoded` — NCDatasets already decoded the variable to a date/time type.
+  `CFTime.AbstractCFDateTime <: Dates.TimeType <: Dates.AbstractTime`, as does
+  `Dates.DateTime`, so this single test covers the standard calendar and every
+  CF calendar without depending on CFTime directly. `eltype` reports the decoded
+  type without reading any data.
+- `cf` — the file *states* this is a time axis, via a `units` attribute of the CF
+  form `"<unit> since <origin>"`, `standard_name = "time"`, or `axis = "T"`.
+  `decoded` implies `cf`.
+- `cf == false` with a non-`nothing` return means only the **name** matched. That
+  is the silent-corruption shape: a numeric axis carrying no CF metadata, which
+  was previously adopted as a spatial dimension and splined through. Callers must
+  warn rather than accept it quietly.
+
+`units` is deliberately a first-class signal: `_netcdf_add_time_dim!` writes only
+`units`, `calendar` and `long_name`, so Springsteel's own files carry neither
+`standard_name` nor `axis` and a detector keyed on those would miss them.
+"""
+function _nc_time_axis(ds, name::AbstractString)
+    haskey(ds, name) || return nothing
+    v = ds[name]
+
+    units     = get(v.attrib, "units", nothing)
+    has_since = units isa AbstractString && occursin(r"\bsince\b"i, units)
+    stdname   = get(v.attrib, "standard_name", nothing)
+    axisattr  = get(v.attrib, "axis", nothing)
+    decoded   = nonmissingtype(eltype(v)) <: Dates.AbstractTime
+
+    cf    = decoded || has_since || stdname == "time" || axisattr == "T"
+    named = lowercase(String(name)) in _NC_TIME_NAMES
+    (cf || named) || return nothing
+
+    evidence = decoded           ? "decoded to $(nonmissingtype(eltype(v)))" :
+               has_since         ? "units = \"$units\""                      :
+               stdname == "time" ? "standard_name = \"time\""                :
+               axisattr == "T"   ? "axis = \"T\""                            :
+                                   "variable name only"
+    return (name = String(name), cf = cf, decoded = decoded, evidence = evidence)
+end
+
+# Human-readable summary of a time coordinate's values, for error messages.
+# Never throws: a bad message must not mask the error it is describing.
+function _nc_time_range(ds, name::AbstractString)
+    haskey(ds, name) || return "values unavailable"
+    try
+        t = Array(ds[name])
+        isempty(t)     ? "empty"       :
+        length(t) == 1 ? string(t[1])  :
+                         "$(first(t)) … $(last(t))"
+    catch
+        "values unreadable"
+    end
+end
+
+"""
+    _nc_float64(a, what) -> Array{Float64}
+
+Convert a decoded NetCDF array to `Float64`, mapping `missing` to `NaN`.
+
+`write_netcdf` writes `fillvalue = NaN` on every data variable, so NCDatasets
+decodes Springsteel's own output back as `Union{Missing,Float64}` and a bare
+`Float64.(...)` throws on it. `what` names the variable for the error message.
+"""
+function _nc_float64(a::AbstractArray, what::AbstractString)
+    T = nonmissingtype(eltype(a))
+    T <: Real || throw(ArgumentError(
+        "$what has element type $(eltype(a)), which has no Float64 conversion. " *
+        (T <: Dates.AbstractTime ?
+            "This is a CF time axis; select a step with `time_index` rather than " *
+            "using it as a spatial dimension." :
+            "grid_from_netcdf requires numeric coordinates and data variables.")))
+    return Missing <: eltype(a) ? [ismissing(x) ? NaN : Float64(x) for x in a] :
+                                  Float64.(a)
+end
+
+# ────────────────────────────────────────────────────────────────────────────
 # read_netcdf
 # ────────────────────────────────────────────────────────────────────────────
 

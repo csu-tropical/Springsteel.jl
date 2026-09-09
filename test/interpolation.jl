@@ -328,6 +328,311 @@ using Springsteel.Chebyshev
         end
     end
 
+    @testset "grid_from_netcdf time axis" begin
+        # Shared 1-D fixture: N must be a multiple of mubar for the midpoint
+        # convention grid_from_regular_data expects.
+        N  = 12
+        L  = 6.0
+        h  = L / N
+        xs = [(i - 0.5) * h for i in 1:N]
+        fv = sin.(2π .* xs ./ L)
+        NT = 4
+
+        # Write a file with a CF-compliant time axis. `tfirst` controls whether the
+        # variable is stored (time, x) — as write_netcdf does — or (x, time), as
+        # many hand-built and model-output files do.
+        function cf_time_file(nt::Int; tfirst::Bool=true, offset::Bool=true)
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "time", nt)
+                NCDatasets.defDim(ds, "x", N)
+                tv = NCDatasets.defVar(ds, "time", Float64, ("time",))
+                tv.attrib["units"]    = "seconds since 1970-01-01T00:00:00Z"
+                tv.attrib["calendar"] = "gregorian"
+                tv[:] = collect(0.0:3600.0:3600.0 * (nt - 1))
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xs
+                dims = tfirst ? ("time", "x") : ("x", "time")
+                u = NCDatasets.defVar(ds, "u", Float64, dims)
+                for t in 1:nt
+                    slice = offset ? fv .+ t : fv
+                    tfirst ? (u[t, :] = slice) : (u[:, t] = slice)
+                end
+            end
+            return f
+        end
+
+        @testset "CF time, single step, loads with no keywords" begin
+            f = cf_time_file(1; offset=false)
+            try
+                loaded = grid_from_netcdf(f; mubar=3)
+                @test loaded isa R_Grid
+                @test loaded.params.iDim == N
+                @test loaded.physical[:, 1, 1] ≈ fv
+                @test haskey(loaded.params.vars, "u")
+                # the time coordinate must not become a field
+                @test !haskey(loaded.params.vars, "time")
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "dim_names without var_names (issue #22 defect 2)" begin
+            # Previously this still raised MethodError(Float64, ::DateTime): the
+            # data-variable inference excluded only the caller's chosen dims, so
+            # `time` was adopted as a data variable. The docs told users both
+            # keywords were required; they are not.
+            f = cf_time_file(1; offset=false)
+            try
+                loaded = grid_from_netcdf(f; dim_names=["x"], mubar=3)
+                @test collect(keys(loaded.params.vars)) == ["u"]
+                @test loaded.physical[:, 1, 1] ≈ fv
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "numeric time with no CF metadata (issue #22 defect 3)" begin
+            # The silent-corruption case: a time axis carrying no CF `units`
+            # decodes to Float64 and used to be adopted as a *spatial* dimension,
+            # producing a 2-D grid with a cubic spline fitted through time — no
+            # error, no warning. It must now be excluded, with a warning.
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "time", 1)
+                NCDatasets.defDim(ds, "x", N)
+                NCDatasets.defVar(ds, "time", Float64, ("time",))[:] = [0.0]
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xs
+                NCDatasets.defVar(ds, "u", Float64, ("time", "x"))[:, :] = reshape(fv, 1, N)
+            end
+            try
+                loaded = @test_logs (:warn,) match_mode=:any grid_from_netcdf(f; mubar=3)
+                @test loaded isa R_Grid          # NOT RR_Grid
+                @test !(loaded isa RR_Grid)
+                @test loaded.params.iDim == N    # grid is over x alone
+                @test loaded.physical[:, 1, 1] ≈ fv
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "time_index selection" begin
+            f = cf_time_file(NT)
+            try
+                # slices are distinguishable: u[t, :] == fv .+ t
+                @test grid_from_netcdf(f; time_index=1, mubar=3).physical[:, 1, 1] ≈ fv .+ 1.0
+                @test grid_from_netcdf(f; time_index=3, mubar=3).physical[:, 1, 1] ≈ fv .+ 3.0
+
+                # a slice is never chosen silently
+                err = try
+                    grid_from_netcdf(f; mubar=3); nothing
+                catch e; e end
+                @test err isa ArgumentError
+                msg = sprint(showerror, err)
+                @test occursin("time", msg)
+                @test occursin("time_index", msg)
+                @test occursin("4", msg)
+
+                @test_throws ArgumentError grid_from_netcdf(f; time_index=0, mubar=3)
+                @test_throws ArgumentError grid_from_netcdf(f; time_index=NT + 1, mubar=3)
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "time dimension stored last" begin
+            # write_netcdf puts time first; hand-built and model files often put it
+            # last. The slice is located by position in the variable's own dims.
+            f = cf_time_file(NT; tfirst=false)
+            try
+                @test grid_from_netcdf(f; time_index=3, mubar=3).physical[:, 1, 1] ≈ fv .+ 3.0
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "time axis named in dim_names is dropped, with an explanation" begin
+            # A caller who asks for the time axis as a spatial dimension gets it
+            # dropped and told why, rather than a spline fitted through time.
+            f = cf_time_file(1; offset=false)
+            try
+                loaded = @test_logs (:info,) match_mode=:any grid_from_netcdf(
+                    f; dim_names=["time", "x"], mubar=3)
+                @test loaded isa R_Grid
+                @test loaded.params.iDim == N
+                @test loaded.physical[:, 1, 1] ≈ fv
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "time_index given but file has no time axis" begin
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "x", N)
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xs
+                NCDatasets.defVar(ds, "u", Float64, ("x",))[:] = fv
+            end
+            try
+                @test_throws ArgumentError grid_from_netcdf(f; time_index=1, mubar=3)
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "2-D plus time yields a 2-D grid" begin
+            # Guards that time is dropped BEFORE the "at most 3 dimensions" check:
+            # this file has 3 named dimensions but is a 2-D grid.
+            Nx, Ny = 6, 6
+            hx, hy = 3.0 / Nx, 3.0 / Ny
+            xv = [(i - 0.5) * hx for i in 1:Nx]
+            yv = [(j - 0.5) * hy for j in 1:Ny]
+            u2 = [sin(x) * cos(y) for x in xv, y in yv]
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "time", 1)
+                NCDatasets.defDim(ds, "x", Nx)
+                NCDatasets.defDim(ds, "y", Ny)
+                tv = NCDatasets.defVar(ds, "time", Float64, ("time",))
+                tv.attrib["units"] = "seconds since 1970-01-01T00:00:00Z"
+                tv[:] = [0.0]
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xv
+                NCDatasets.defVar(ds, "y", Float64, ("y",))[:] = yv
+                NCDatasets.defVar(ds, "u", Float64, ("time", "x", "y"))[1, :, :] = u2
+            end
+            try
+                loaded = grid_from_netcdf(f; mubar=3)
+                @test loaded isa RR_Grid
+                @test loaded.params.iDim == Nx
+                @test loaded.params.jDim == Ny
+                # i-outer, j-inner
+                @test loaded.physical[(2 - 1) * Ny + 3, 1, 1] ≈ u2[2, 3]
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "3-D plus time yields a 3-D grid" begin
+            Nx = Ny = Nz = 6
+            xv = [(i - 0.5) * (3.0 / Nx) for i in 1:Nx]
+            yv = [(j - 0.5) * (3.0 / Ny) for j in 1:Ny]
+            zv = [(k - 0.5) * (3.0 / Nz) for k in 1:Nz]
+            u3 = [sin(x) * cos(y) + z for x in xv, y in yv, z in zv]
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "time", 1)
+                NCDatasets.defDim(ds, "x", Nx)
+                NCDatasets.defDim(ds, "y", Ny)
+                NCDatasets.defDim(ds, "z", Nz)
+                tv = NCDatasets.defVar(ds, "time", Float64, ("time",))
+                tv.attrib["units"] = "seconds since 1970-01-01T00:00:00Z"
+                tv[:] = [0.0]
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xv
+                NCDatasets.defVar(ds, "y", Float64, ("y",))[:] = yv
+                NCDatasets.defVar(ds, "z", Float64, ("z",))[:] = zv
+                NCDatasets.defVar(ds, "u", Float64, ("time", "x", "y", "z"))[1, :, :, :] = u3
+            end
+            try
+                loaded = grid_from_netcdf(f; mubar=3)
+                @test loaded isa RRR_Grid
+                @test loaded.params.iDim == Nx
+                @test loaded.params.jDim == Ny
+                @test loaded.params.kDim == Nz
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "variable stored in a different dimension order" begin
+            # docs/src/interpolation.md promises the factory "handles dimension
+            # permutation ... regardless of how the file was written". Before this
+            # change the variable's own dimension order was never consulted, so a
+            # variable stored (y, x) was silently transposed.
+            Nx, Ny = 6, 9
+            xv = [(i - 0.5) * (3.0 / Nx) for i in 1:Nx]
+            yv = [(j - 0.5) * (4.0 / Ny) for j in 1:Ny]
+            u2 = [10.0 * i + j for i in 1:Nx, j in 1:Ny]   # deliberately asymmetric
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "x", Nx)
+                NCDatasets.defDim(ds, "y", Ny)
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xv
+                NCDatasets.defVar(ds, "y", Float64, ("y",))[:] = yv
+                # stored (y, x) — the transpose of the requested dim order
+                NCDatasets.defVar(ds, "u", Float64, ("y", "x"))[:, :] = permutedims(u2, (2, 1))
+            end
+            try
+                loaded = grid_from_netcdf(f; dim_names=["x", "y"], mubar=3)
+                @test loaded.params.iDim == Nx
+                @test loaded.params.jDim == Ny
+                @test loaded.physical[(2 - 1) * Ny + 3, 1, 1] ≈ u2[2, 3]
+                @test loaded.physical[(5 - 1) * Ny + 7, 1, 1] ≈ u2[5, 7]
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "_FillValue decodes to NaN" begin
+            # write_netcdf writes fillvalue=NaN on every data variable, so its own
+            # output comes back as Union{Missing,Float64}; a bare Float64.() throws.
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "time", 1)
+                NCDatasets.defDim(ds, "x", N)
+                tv = NCDatasets.defVar(ds, "time", Float64, ("time",))
+                tv.attrib["units"] = "seconds since 1970-01-01T00:00:00Z"
+                tv[:] = [0.0]
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xs
+                gappy = copy(fv); gappy[4] = NaN
+                NCDatasets.defVar(ds, "u", Float64, ("time", "x"),
+                    fillvalue=NaN)[:, :] = reshape(gappy, 1, N)
+            end
+            try
+                loaded = grid_from_netcdf(f; mubar=3)
+                @test isnan(loaded.physical[4, 1, 1])
+                @test loaded.physical[5, 1, 1] ≈ fv[5]
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "grid_mapping scalar is not a data variable" begin
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "x", N)
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = xs
+                NCDatasets.defVar(ds, "u", Float64, ("x",))[:] = fv
+                NCDatasets.defVar(ds, "crs", Int32, ())[:] = Int32(0)
+            end
+            try
+                loaded = grid_from_netcdf(f; mubar=3)
+                @test collect(keys(loaded.params.vars)) == ["u"]
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+
+        @testset "rank mismatch names the variable" begin
+            Nx, Ny = 6, 6
+            f = tempname() * ".nc"
+            NCDatasets.NCDataset(f, "c") do ds
+                NCDatasets.defDim(ds, "x", Nx)
+                NCDatasets.defDim(ds, "y", Ny)
+                NCDatasets.defVar(ds, "x", Float64, ("x",))[:] = collect(1.0:Nx)
+                NCDatasets.defVar(ds, "y", Float64, ("y",))[:] = collect(1.0:Ny)
+                NCDatasets.defVar(ds, "u", Float64, ("x", "y"))[:, :] = zeros(Nx, Ny)
+            end
+            try
+                err = try
+                    grid_from_netcdf(f; dim_names=["x"], mubar=3); nothing
+                catch e; e end
+                @test err isa ArgumentError
+                @test occursin("u", sprint(showerror, err))
+            finally
+                isfile(f) && rm(f)
+            end
+        end
+    end
+
     # ════════════════════════════════════════════════════════════════════════
     # Layer 2: interpolate_to_grid — 1D
     # ════════════════════════════════════════════════════════════════════════

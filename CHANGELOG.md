@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`grid_from_netcdf` now handles a CF time axis**
+  ([#22](https://github.com/csu-tropical/Springsteel.jl/issues/22)). Reproducing the issue
+  turned up four distinct defects, one of them silent:
+  - A CF time axis decoded to `DateTime` and raised
+    `MethodError: no method matching Float64(::DateTime)` — including on files written by
+    `write_netcdf(grid; time=t)`.
+  - The documented workaround did not work. The data-variable inference excluded only the
+    dimensions the *caller* named, so `time` was adopted as a data variable and hit the
+    same conversion; the exclusion is now built from the file's own coordinate variables,
+    matching what `read_netcdf` already did. Passing `dim_names` alone is now sufficient.
+  - **Silent, and not in the issue:** a time axis carrying no CF `units` decoded to
+    `Float64` and was adopted as a *spatial* dimension, fitting a cubic spline **through
+    time** with no error or warning. Such an axis is now excluded, with a warning.
+  - Multi-timestep files could not be loaded at all. A new `time_index` keyword selects
+    the step; omitting it on a file with more than one step raises an `ArgumentError`
+    naming the variable and the valid range, so a slice is never chosen silently.
+
+  Detection uses the CF signals (`units` of the form `"<unit> since <origin>"`,
+  `standard_name = "time"`, `axis = "T"`) as well as the decoded element type. `units` is
+  deliberately first-class: Springsteel's own files carry no `standard_name` or `axis`, so
+  a detector keyed on those alone would miss them.
+
+- **A `_FillValue` no longer breaks `grid_from_netcdf`.** `write_netcdf` writes
+  `fillvalue = NaN` on every data variable, so NCDatasets decodes its own output back as
+  `Union{Missing,Float64}` and the unconditional `Float64.(...)` threw. Fill values now
+  decode to `NaN`.
+
+- **Data variables are no longer silently transposed.** The variable's own dimension order
+  is now consulted, so a field stored `(y, x)` and requested as `dim_names = ["x", "y"]` is
+  reordered rather than transposed. The documentation already promised this. Reordering is
+  a no-op when the orders already agree, so files that loaded correctly are unaffected.
+
+- **`grid_mapping` scalars are no longer imported as fields.** A 0-dimensional `crs`
+  variable (written by `write_netcdf`'s `grid_mapping` option) and non-numeric metadata
+  variables are skipped by the data-variable inference.
+
+- **Documented `grid_from_netcdf` call in the tutorial was not runnable.**
+  `docs/src/tutorial.md` passed `dim_names` as a `Tuple`, which raises a `TypeError` — the
+  signature takes a `Vector{String}`. The parallel example in `docs/src/interpolation.md`
+  was corrected in 1.1.0; this copy was missed.
+
 ### Added
 
 - **Ice thermodynamic primitives, for the ISHMAEL microphysics port.** `L_f0`
@@ -501,8 +544,8 @@ returned a spectral block count rather than physical columns).
 
 ### Known limitations
 
-Both are pre-existing (not v1.1 regressions), both fail loudly, and both are targeted
-at v1.1.1.
+Both are pre-existing (not v1.1 regressions) and both fail loudly. Their status as of
+this release is recorded below; see `[Unreleased]` for what has since been fixed.
 
 - **`grid_from_netcdf` does not support a time axis**
   ([#22](https://github.com/csu-tropical/Springsteel.jl/issues/22)). It builds a single
@@ -515,7 +558,7 @@ at v1.1.1.
   decodes to `Float64` and is **silently adopted as a spatial dimension**, fitting a
   spline through time with no error or warning. Multi-timestep files cannot be loaded at
   all. `read_netcdf` handles CF time correctly and is the workaround for reading such
-  files.
+  files. **Fixed after this release.**
 - **`write_netcdf` output does not round-trip through `grid_from_netcdf` for most cell
   counts** ([#24](https://github.com/csu-tropical/Springsteel.jl/issues/24)).
   `write_netcdf` emits `num_cells + 1` regular gridpoints, while `grid_from_regular_data`
