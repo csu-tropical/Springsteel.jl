@@ -52,16 +52,161 @@ function _check_mubar_divisibility(N::Int, mubar::Int)
 end
 
 """
-    _infer_domain_bounds(x::AbstractVector{<:Real}, h::Float64) -> (Float64, Float64)
+    _infer_domain_bounds(x, h, samples) -> (Float64, Float64)
 
-Infer domain bounds from regularly-spaced data points. For regular quadrature,
-points are at cell midpoints, so the domain extends half a grid spacing beyond
-the first and last points.
+Infer domain bounds from regularly-spaced data points, according to the sampling
+convention:
+
+- `:nodal` — the points are cell **boundaries**, endpoint-inclusive, so the domain
+  is exactly `[x[1], x[end]]`. This is the layout `write_netcdf` produces and the
+  one most gridded datasets use.
+- `:midpoint` — the points are cell **midpoints**, so the domain extends half a
+  spacing beyond each end.
 """
-function _infer_domain_bounds(x::AbstractVector{<:Real}, h::Float64)
-    xmin = Float64(x[1]) - 0.5 * h
-    xmax = Float64(x[end]) + 0.5 * h
-    return xmin, xmax
+function _infer_domain_bounds(x::AbstractVector{<:Real}, h::Float64, samples::Symbol)
+    if samples === :nodal
+        return Float64(x[1]), Float64(x[end])
+    else
+        return Float64(x[1]) - 0.5 * h, Float64(x[end]) + 0.5 * h
+    end
+end
+
+"""
+    _validate_samples(samples::Symbol)
+
+Reject anything but the two supported sampling conventions.
+"""
+function _validate_samples(samples::Symbol)
+    samples === :nodal || samples === :midpoint || throw(ArgumentError(
+        "samples must be :nodal (cell boundaries, endpoint-inclusive — the default) " *
+        "or :midpoint (cell midpoints), got :$samples"))
+    return samples
+end
+
+"""
+    _resolve_input_cells(N, mubar, samples, num_cells) -> (ncells, direct)
+
+Decide the cell count for an input axis of `N` points, and whether the data can be
+assigned straight onto the mish (`direct = true`) or must be projected.
+
+Direct assignment is only possible for `:midpoint` with no explicit `num_cells`,
+where the input *is* the `:regular` mish by construction — that is the historical
+behaviour and it stays exact. Everything else projects, which is why `:nodal`
+carries no `mubar` divisibility requirement at all.
+
+For `:nodal` the default `ncells = N - 1` makes the input points the cell
+boundaries, so `getRegularGridpoints` of the result reproduces them exactly.
+"""
+function _resolve_input_cells(N::Int, mubar::Int, samples::Symbol,
+                              num_cells::Union{Nothing, Int})
+    if num_cells !== nothing
+        num_cells >= 1 || throw(ArgumentError(
+            "num_cells must be at least 1, got $num_cells"))
+        return num_cells, false
+    end
+    if samples === :nodal
+        N >= 2 || throw(ArgumentError(
+            "nodal input needs at least 2 points to define a cell, got $N"))
+        return N - 1, false
+    end
+    _check_mubar_divisibility(N, mubar)
+    return N ÷ mubar, true
+end
+
+# Quadrature points for one spline axis, without building a grid.
+function _axis_mish(xmin::Float64, xmax::Float64, ncells::Int, mubar::Int,
+                    quadrature::Symbol)
+    sp = CubicBSpline.SplineParameters(xmin = xmin, xmax = xmax, num_cells = ncells,
+                                       mubar = mubar, quadrature = quadrature)
+    return CubicBSpline.calcMishPoints(sp)
+end
+
+# The stage-1 fit is regularised, not interpolating: with mubar = 1 there are N
+# quadrature points for N + 3 coefficients, so l_q = 0 makes the PQ factorisation
+# singular (PosDefException). This value is deliberately small — large enough to
+# regularise, small enough not to smooth the data meaningfully.
+const _PROJECT_L_Q = 0.05
+
+# Piecewise-linear resampling operator, used only for inputs too short to support a
+# cubic fit (see `_nodal_resample_matrix`). Values outside `nodes` extrapolate along
+# the nearest segment, matching what the spline path does at the domain edge.
+function _linear_resample_matrix(nodes::AbstractVector{<:Real},
+                                 targets::AbstractVector{<:Real})
+    # N >= 2 is guaranteed: every caller runs _check_uniform_spacing first, which
+    # rejects a shorter coordinate vector.
+    N = length(nodes)
+    R = zeros(Float64, length(targets), N)
+    for (i, t) in enumerate(targets)
+        j = clamp(searchsortedlast(nodes, t), 1, N - 1)
+        w = (Float64(t) - Float64(nodes[j])) /
+            (Float64(nodes[j + 1]) - Float64(nodes[j]))
+        R[i, j]     = 1.0 - w
+        R[i, j + 1] = w
+    end
+    return R
+end
+
+"""
+    _nodal_resample_matrix(nodes, targets) -> Matrix{Float64}
+
+Build the `(length(targets) × length(nodes))` operator that carries values sampled
+at uniformly spaced `nodes` onto arbitrary `targets`.
+
+Loading regular data onto a mish always requires interpolation: with `mubar = 1`
+the mish sits on cell midpoints, and with `mubar ≥ 2` the `:gauss` mish is not
+uniformly spaced, so no input length ever makes it a plain assignment.
+
+The construction fits a cubic B-spline whose own quadrature points **are** the
+input nodes — a `mubar = 1`, `:regular` spline on the half-cell-extended domain
+`[nodes[1] - h/2, nodes[end] + h/2]` — and then evaluates it at `targets`. That
+keeps the whole operation inside the package's own well-conditioned
+mish → coefficients → points path rather than inverting an ill-conditioned nodal
+evaluation matrix.
+
+`R0` (natural) boundary conditions are used regardless of the target grid's own
+BCs: on a linear ramp `R0` reconstructs to ~5e-7 where `R1T0` gives ~8e-2.
+"""
+function _nodal_resample_matrix(nodes::AbstractVector{<:Real},
+                                targets::AbstractVector{<:Real})
+    N = length(nodes)
+    # Below three nodes the mubar=1 fit is not usable: at N = 2 the PQ factorisation
+    # is erratic (it fails for some l_q and succeeds for others). Two nodal points
+    # also carry exactly a straight line, so linear interpolation is not a fallback
+    # here — it is the correct answer.
+    N >= 3 || return _linear_resample_matrix(nodes, targets)
+    h = (Float64(nodes[end]) - Float64(nodes[1])) / (N - 1)
+    gp = SpringsteelGridParameters(
+        geometry   = "R",
+        iMin       = Float64(nodes[1]) - 0.5 * h,
+        iMax       = Float64(nodes[end]) + 0.5 * h,
+        num_cells  = N,
+        mubar      = 1,
+        quadrature = :regular,
+        vars       = Dict("u" => 1),
+        l_q        = Dict("u" => _PROJECT_L_Q),
+        BCL        = Dict("u" => CubicBSpline.R0),
+        BCR        = Dict("u" => CubicBSpline.R0),
+    )
+    fit = createGrid(gp)
+    tgt = collect(Float64, targets)
+    R = zeros(Float64, length(tgt), N)
+    for k in 1:N
+        fill!(view(fit.physical, :, 1, 1), 0.0)
+        fit.physical[k, 1, 1] = 1.0
+        spectralTransform!(fit)
+        R[:, k] .= regularGridTransform(fit, tgt)[:, 1, 1]
+    end
+    return R
+end
+
+# Apply a resampling operator along one axis of an N-dimensional array.
+function _apply_axis(A::AbstractArray{Float64, Nd}, R::Matrix{Float64},
+                     dim::Int) where {Nd}
+    perm = [dim; setdiff(1:Nd, dim)]
+    B    = permutedims(A, perm)
+    sz   = size(B)
+    out  = reshape(R * reshape(B, sz[1], :), size(R, 1), sz[2:end]...)
+    return permutedims(out, invperm(perm))
 end
 
 """
@@ -124,17 +269,42 @@ _expand_bc(bc_spec::BoundaryConditions, var_dict::Dict) =
     grid_from_regular_data(x, y, data; kwargs...) -> SpringsteelGrid
     grid_from_regular_data(x, y, z, data; kwargs...) -> SpringsteelGrid
 
-Create a CubicBSpline grid with `quadrature=:regular` from regularly-spaced data.
+Create a CubicBSpline grid from regularly-spaced data.
 
-The coordinate vectors must be uniformly spaced. The number of points in each
-dimension must be divisible by `mubar`.
+The coordinate vectors must be uniformly spaced.
 
-# Dimension inference
+# Sampling conventions
 
-Given N regularly-spaced points and target `mubar`, `num_cells = N ÷ mubar`.
-Domain bounds are inferred from the coordinate vectors: since regular quadrature
-places points at cell midpoints, the domain extends half a grid spacing beyond
-the first and last data points.
+`samples` says where the coordinates sit relative to the grid cells:
+
+| `samples` | coordinates are | domain | `num_cells` default |
+|:--|:--|:--|:--|
+| `:nodal` (default) | cell boundaries, endpoint-inclusive | `[x[1], x[end]]` | `length(x) - 1` |
+| `:midpoint` | cell midpoints | `[x[1] - h/2, x[end] + h/2]` | `length(x) ÷ mubar` |
+
+`:nodal` is the layout of most gridded datasets and of everything `write_netcdf`
+writes, so a file it produced reads back with its `num_cells` and domain recovered
+exactly, for any cell count.
+
+# Values are projected, not assigned
+
+Loading regular data onto the quadrature mish always interpolates. That is forced
+by the geometry, not chosen: with `mubar = 1` the mish sits on cell midpoints, and
+with `mubar ≥ 2` the `:gauss` mish is not uniformly spaced, so no input length ever
+makes it a plain assignment.
+
+Consequently **`mubar` and the input length are independent** — `:nodal` has no
+divisibility requirement, and `num_cells` may be given explicitly to build a grid
+coarser or finer than the data.
+
+The projection fits a cubic B-spline whose own quadrature points are the input
+coordinates, then evaluates it on the target mish; it converges at cubic order and
+is far more accurate than linear interpolation. For an exact round trip use
+`save_grid` / `load_grid`, which store the spectral coefficients directly.
+
+`:midpoint` is the historical behaviour and keeps it exactly: the input *is* the
+`:regular` mish, values are assigned rather than projected, and the length must be
+divisible by `mubar`.
 
 # Data layout
 
@@ -147,6 +317,10 @@ reshaped to `(total_points, 1)`.
 
 # Keyword arguments
 - `mubar::Int=3`: Quadrature points per cell
+- `samples::Symbol=:nodal`: `:nodal` or `:midpoint` (see above)
+- `num_cells`: cell count for the i axis; `num_cells_i`/`_j`/`_k` for 2-D and 3-D.
+  Defaults per the table above; setting it decouples the grid from the input
+  resolution
 - `l_q=2.0`: Filter length (scalar or Dict)
 - `BCL`, `BCR`: i-dimension boundary conditions (default `CubicBSpline.R0`)
 - `BCU`, `BCD`: j-dimension boundary conditions (2D/3D only)
@@ -171,20 +345,22 @@ Derivative slots are filled with `NaN` — call `spectralTransform!` followed by
 See also: [`grid_from_netcdf`](@ref), [`interpolate_to_grid`](@ref)
 """
 function grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractMatrix{<:Real};
-        mubar::Int=3, l_q=2.0,
+        mubar::Int=3, l_q=2.0, samples::Symbol=:nodal,
+        num_cells::Union{Nothing, Int}=nothing,
         BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
         vars::Vector{String}=String[])
 
     N = length(x)
     nvars = size(data, 2)
 
+    _validate_samples(samples)
     h = _check_uniform_spacing(x)
-    _check_mubar_divisibility(N, mubar)
     size(data, 1) == N || throw(ArgumentError(
         "data must have $(N) rows (matching length(x)), got $(size(data, 1))"))
 
-    num_cells = N ÷ mubar
-    xmin, xmax = _infer_domain_bounds(x, h)
+    ncells, direct = _resolve_input_cells(N, mubar, samples, num_cells)
+    xmin, xmax = _infer_domain_bounds(x, h, samples)
+    quad = direct ? :regular : :gauss
     var_dict = _make_var_dict(vars, nvars)
     l_q_dict = _make_l_q_dict(l_q)
 
@@ -192,9 +368,9 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractMatrix{
         geometry  = "R",
         iMin      = xmin,
         iMax      = xmax,
-        num_cells = num_cells,
+        num_cells = ncells,
         mubar     = mubar,
-        quadrature = :regular,
+        quadrature = quad,
         BCL       = _expand_bc(BCL, var_dict),
         BCR       = _expand_bc(BCR, var_dict),
         l_q       = l_q_dict,
@@ -204,7 +380,12 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractMatrix{
     grid = createGrid(gp)
 
     # Copy function values into slot 1; fill derivative slots with NaN
-    grid.physical[:, :, 1] .= data
+    if direct
+        grid.physical[:, :, 1] .= data
+    else
+        R = _nodal_resample_matrix(x, _axis_mish(xmin, xmax, ncells, mubar, quad))
+        grid.physical[:, :, 1] .= R * data
+    end
     for d in 2:size(grid.physical, 3)
         grid.physical[:, :, d] .= NaN
     end
@@ -222,7 +403,9 @@ grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractVector{<:Real}; 
 
 function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
         data::AbstractMatrix{<:Real};
-        mubar::Int=3, l_q=2.0,
+        mubar::Int=3, l_q=2.0, samples::Symbol=:nodal,
+        num_cells_i::Union{Nothing, Int}=nothing,
+        num_cells_j::Union{Nothing, Int}=nothing,
         BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
         BCU::BCSpec=CubicBSpline.R0, BCD::BCSpec=CubicBSpline.R0,
         vars::Vector{String}=String[])
@@ -230,17 +413,18 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
     Nx, Ny = length(x), length(y)
     nvars = size(data, 2)
 
+    _validate_samples(samples)
     hx = _check_uniform_spacing(x)
     hy = _check_uniform_spacing(y)
-    _check_mubar_divisibility(Nx, mubar)
-    _check_mubar_divisibility(Ny, mubar)
     size(data, 1) == Nx * Ny || throw(ArgumentError(
         "data must have $(Nx*Ny) rows (length(x)*length(y)), got $(size(data, 1))"))
 
-    num_cells_i = Nx ÷ mubar
-    num_cells_j = Ny ÷ mubar
-    xmin, xmax = _infer_domain_bounds(x, hx)
-    ymin, ymax = _infer_domain_bounds(y, hy)
+    nci, direct_i = _resolve_input_cells(Nx, mubar, samples, num_cells_i)
+    ncj, direct_j = _resolve_input_cells(Ny, mubar, samples, num_cells_j)
+    direct = direct_i && direct_j
+    xmin, xmax = _infer_domain_bounds(x, hx, samples)
+    ymin, ymax = _infer_domain_bounds(y, hy, samples)
+    quad = direct ? :regular : :gauss
     var_dict = _make_var_dict(vars, nvars)
     l_q_dict = _make_l_q_dict(l_q)
 
@@ -248,14 +432,14 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
         geometry    = "RR",
         iMin        = xmin,
         iMax        = xmax,
-        num_cells_i = num_cells_i,
+        num_cells_i = nci,
         mubar       = mubar,
-        quadrature  = :regular,
+        quadrature  = quad,
         BCL         = _expand_bc(BCL, var_dict),
         BCR         = _expand_bc(BCR, var_dict),
         jMin        = ymin,
         jMax        = ymax,
-        num_cells_j = num_cells_j,
+        num_cells_j = ncj,
         BCU         = _expand_bc(BCU, var_dict),
         BCD         = _expand_bc(BCD, var_dict),
         l_q         = l_q_dict,
@@ -264,7 +448,17 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
 
     grid = createGrid(gp)
 
-    grid.physical[:, :, 1] .= data
+    if direct
+        grid.physical[:, :, 1] .= data
+    else
+        Rx = _nodal_resample_matrix(x, _axis_mish(xmin, xmax, nci, mubar, quad))
+        Ry = _nodal_resample_matrix(y, _axis_mish(ymin, ymax, ncj, mubar, quad))
+        # Layout is i-outer / j-inner, so a column reshapes as (Ny, Nx).
+        for v in 1:nvars
+            A = reshape(Float64.(view(data, :, v)), Ny, Nx)
+            grid.physical[:, v, 1] .= vec(Ry * A * transpose(Rx))
+        end
+    end
     for d in 2:size(grid.physical, 3)
         grid.physical[:, :, d] .= NaN
     end
@@ -280,7 +474,10 @@ grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
 
 function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
         z::AbstractVector{<:Real}, data::AbstractMatrix{<:Real};
-        mubar::Int=3, l_q=2.0,
+        mubar::Int=3, l_q=2.0, samples::Symbol=:nodal,
+        num_cells_i::Union{Nothing, Int}=nothing,
+        num_cells_j::Union{Nothing, Int}=nothing,
+        num_cells_k::Union{Nothing, Int}=nothing,
         BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
         BCU::BCSpec=CubicBSpline.R0, BCD::BCSpec=CubicBSpline.R0,
         BCB::BCSpec=CubicBSpline.R0, BCT::BCSpec=CubicBSpline.R0,
@@ -289,21 +486,21 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
     Nx, Ny, Nz = length(x), length(y), length(z)
     nvars = size(data, 2)
 
+    _validate_samples(samples)
     hx = _check_uniform_spacing(x)
     hy = _check_uniform_spacing(y)
     hz = _check_uniform_spacing(z)
-    _check_mubar_divisibility(Nx, mubar)
-    _check_mubar_divisibility(Ny, mubar)
-    _check_mubar_divisibility(Nz, mubar)
     size(data, 1) == Nx * Ny * Nz || throw(ArgumentError(
         "data must have $(Nx*Ny*Nz) rows, got $(size(data, 1))"))
 
-    num_cells_i = Nx ÷ mubar
-    num_cells_j = Ny ÷ mubar
-    num_cells_k = Nz ÷ mubar
-    xmin, xmax = _infer_domain_bounds(x, hx)
-    ymin, ymax = _infer_domain_bounds(y, hy)
-    zmin, zmax = _infer_domain_bounds(z, hz)
+    nci, di = _resolve_input_cells(Nx, mubar, samples, num_cells_i)
+    ncj, dj = _resolve_input_cells(Ny, mubar, samples, num_cells_j)
+    nck, dk = _resolve_input_cells(Nz, mubar, samples, num_cells_k)
+    direct = di && dj && dk
+    xmin, xmax = _infer_domain_bounds(x, hx, samples)
+    ymin, ymax = _infer_domain_bounds(y, hy, samples)
+    zmin, zmax = _infer_domain_bounds(z, hz, samples)
+    quad = direct ? :regular : :gauss
     var_dict = _make_var_dict(vars, nvars)
     l_q_dict = _make_l_q_dict(l_q)
 
@@ -311,19 +508,19 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
         geometry    = "RRR",
         iMin        = xmin,
         iMax        = xmax,
-        num_cells_i = num_cells_i,
+        num_cells_i = nci,
         mubar       = mubar,
-        quadrature  = :regular,
+        quadrature  = quad,
         BCL         = _expand_bc(BCL, var_dict),
         BCR         = _expand_bc(BCR, var_dict),
         jMin        = ymin,
         jMax        = ymax,
-        num_cells_j = num_cells_j,
+        num_cells_j = ncj,
         BCU         = _expand_bc(BCU, var_dict),
         BCD         = _expand_bc(BCD, var_dict),
         kMin        = zmin,
         kMax        = zmax,
-        num_cells_k = num_cells_k,
+        num_cells_k = nck,
         BCB         = _expand_bc(BCB, var_dict),
         BCT         = _expand_bc(BCT, var_dict),
         l_q         = l_q_dict,
@@ -332,7 +529,21 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
 
     grid = createGrid(gp)
 
-    grid.physical[:, :, 1] .= data
+    if direct
+        grid.physical[:, :, 1] .= data
+    else
+        Rx = _nodal_resample_matrix(x, _axis_mish(xmin, xmax, nci, mubar, quad))
+        Ry = _nodal_resample_matrix(y, _axis_mish(ymin, ymax, ncj, mubar, quad))
+        Rz = _nodal_resample_matrix(z, _axis_mish(zmin, zmax, nck, mubar, quad))
+        # Layout is k fastest, then j, then i, so a column reshapes as (Nz, Ny, Nx).
+        for v in 1:nvars
+            A = reshape(Float64.(view(data, :, v)), Nz, Ny, Nx)
+            A = _apply_axis(A, Rz, 1)
+            A = _apply_axis(A, Ry, 2)
+            A = _apply_axis(A, Rx, 3)
+            grid.physical[:, v, 1] .= vec(A)
+        end
+    end
     for d in 2:size(grid.physical, 3)
         grid.physical[:, :, d] .= NaN
     end
@@ -372,7 +583,11 @@ variable's dimension list. `time_index` selects the step (1-based):
 An axis named `time`/`t` that carries no CF metadata is still excluded, with a
 warning, rather than being fitted with a spline through time.
 
-All remaining keyword arguments are forwarded to [`grid_from_regular_data`](@ref).
+All remaining keyword arguments are forwarded to [`grid_from_regular_data`](@ref),
+including `samples` and `num_cells`. The default `samples = :nodal` matches what
+`write_netcdf` writes, so its output reads back with the cell count and domain
+recovered exactly; pass `samples = :midpoint` for a file whose coordinates are cell
+midpoints.
 
 See also: [`grid_from_regular_data`](@ref), [`read_netcdf`](@ref)
 """

@@ -26,36 +26,74 @@ block for both cross-geometry interpolation and user-facing tools like
 
 If you're starting from raw arrays of values on a regular grid,
 `grid_from_regular_data` wraps the whole setup: it creates a
-`SpringsteelGrid` with the right dimensions, fills the physical array,
-and runs `spectralTransform!` so the result is ready for transforms,
-derivatives, or further interpolation.
+`SpringsteelGrid` with the right dimensions and fills the physical
+array. Derivative slots are left `NaN` — call `spectralTransform!` and
+`gridTransform!` yourself when you need them.
 
 ```@docs
 grid_from_regular_data
 ```
 
 The signature is overloaded for 1D, 2D, and 3D inputs. Coordinate
-vectors must be **uniformly spaced** (the factory checks this), and
-their length must be divisible by `mubar` (default 3) so the input
-aligns to the internal Gauss–Legendre quadrature nodes. Domain bounds
-are inferred as `[x[1] - h/2, x[end] + h/2]` — regular-midpoint
-convention, which matches the layout of typical NetCDF and raw-array
-data sources.
+vectors must be **uniformly spaced** (the factory checks this).
+
+### Sampling conventions
+
+`samples` states where your coordinates sit relative to the grid cells:
+
+| `samples` | coordinates are | domain | `num_cells` default |
+|:--|:--|:--|:--|
+| `:nodal` (default) | cell **boundaries**, endpoint-inclusive | `[x[1], x[end]]` | `length(x) - 1` |
+| `:midpoint` | cell **midpoints** | `[x[1] - h/2, x[end] + h/2]` | `length(x) ÷ mubar` |
+
+`:nodal` is the layout of most gridded datasets and of everything
+[`write_netcdf`](@ref) produces, so it is the default. Because the input
+points become the cell boundaries, a file written by `write_netcdf` reads
+back with its `num_cells` and domain recovered **exactly**, for any cell
+count.
+
+!!! note "Loading regular data always interpolates"
+    Values are *projected* onto the grid's quadrature points, not assigned
+    to them, and that is unavoidable rather than a design choice: with
+    `mubar = 1` the mish sits on cell midpoints, and with `mubar ≥ 2` the
+    `:gauss` mish is not uniformly spaced, so no input length ever makes it
+    a plain assignment.
+
+    The consequence is a liberating one — **`mubar` and the input length
+    are independent**. There is no divisibility requirement under `:nodal`,
+    and `num_cells` can be set explicitly to build a grid coarser or finer
+    than the data.
+
+    The projection fits a cubic B-spline whose own quadrature points are
+    your input coordinates, then evaluates it on the target mish. It is far
+    more accurate than linear interpolation (roughly 10× at coarse
+    resolution, 250× at fine) and converges at cubic order. Accuracy at the
+    natural `write_netcdf` resolution is about 0.4% of field amplitude,
+    improving rapidly with more input points.
+
+    For an **exact** round trip, use [`save_grid`](@ref) / [`load_grid`](@ref),
+    which store the spectral coefficients directly.
+
+`:midpoint` preserves the historical behaviour exactly: the input *is* the
+`:regular` mish, values are assigned rather than projected, and the length
+must be divisible by `mubar`.
 
 ```julia
 using Springsteel
 
-x = collect(0.0:0.05:1.0)        # 21 points, h = 0.05
+x = collect(0.0:0.05:1.0)        # 21 nodes spanning [0, 1]
 data = @. exp(-(x - 0.5)^2 / 0.01)
 
 grid = grid_from_regular_data(x, data;
-    mubar = 1,                   # regular (non-Gauss) quadrature
+    mubar = 3,                   # quadrature points per cell
     BCL   = DirichletBC(),
     BCR   = DirichletBC(),
     vars  = ["u"],
 )
+# 20 cells spanning exactly [0, 1]; mubar is unconstrained by length(x)
 
-# grid is now a SpringsteelGrid that you can pass to downstream code
+# Build a deliberately coarser grid from the same data
+coarse = grid_from_regular_data(x, data; num_cells = 5, vars = ["u"])
 ```
 
 BCs may be bare `BoundaryConditions` (applied to every variable) or
@@ -119,13 +157,12 @@ matter whether the file stores `(time, y, x)` or `(y, x, time)`.
       or rename it if it is not.
 
 !!! note "Round-tripping `write_netcdf` output"
-    `write_netcdf` emits `num_cells + 1` regular gridpoints, while this factory
-    requires the coordinate length be a multiple of `mubar`. With the default
-    `mubar = 3` those agree only when `num_cells ≡ 2 (mod 3)`, so most grids do
-    not round-trip through NetCDF. Set `i_regular_out` (and the j/k equivalents)
-    to a multiple of `mubar` when building the grid to make its output readable.
-    Tracked in
-    [issue #24](https://github.com/csu-tropical/Springsteel.jl/issues/24).
+    `write_netcdf` emits `num_cells + 1` endpoint-inclusive nodes, which is
+    exactly the `:nodal` convention, so its output reads back with the geometry,
+    cell count and domain recovered exactly — for every cell count, with no
+    `mubar` constraint. Field *values* are interpolated onto the quadrature
+    points (see above), so the round trip is faithful but not bit-exact; use
+    [`save_grid`](@ref) / [`load_grid`](@ref) when you need exactness.
 
 ## Layer 2 — Same-geometry interpolation
 

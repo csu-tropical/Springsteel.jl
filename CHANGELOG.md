@@ -7,7 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`samples` and `num_cells` keywords on `grid_from_regular_data`.** `samples` selects
+  the coordinate convention (`:nodal` or `:midpoint`); `num_cells` (and `num_cells_i` /
+  `num_cells_j` / `num_cells_k` for 2-D and 3-D) sets the grid resolution independently
+  of the input resolution. Because values are projected rather than assigned, the input
+  length no longer has to be divisible by `mubar` under `:nodal`.
+
+- **Ice thermodynamic primitives, for the ISHMAEL microphysics port.** `L_f0`
+  (3.34e5 J/kg; Rogers & Yau 1989, Pruppacher & Klett 1997) and `L_s0`, defined as
+  `L_v0 + L_f0` so that Kirchhoff's identity `L_s = L_v + L_f` is exact by construction
+  rather than approximate. `L_s(T)` and `L_f(T)` are linear with the matching Kirchhoff
+  slopes `Cpv - Ci` and `Cl - Ci`; those sum to `L_v`'s `Cpv - Cl`, so the identity holds
+  at every temperature and not just at `T_0`. Also adds `sat_pressure_ice_buck_dT`, the
+  analytic temperature derivative of the Buck (1981) ice saturation vapor pressure
+  (verified against a central finite difference to `rtol=1e-6`), and `rho_i_sat`,
+  mirroring the existing `rho_v_sat`. All are exported from `Springsteel.Thermodynamics`.
+
+### Changed
+
+- **`grid_from_regular_data` now reads coordinates as cell boundaries (`:nodal`) by
+  default, not cell midpoints.** This is a behaviour change to exported API: callers
+  whose coordinates really are midpoints must pass `samples = :midpoint`, which
+  preserves the old behaviour exactly, or they will get a domain shifted by half a
+  spacing and a different cell count. `:nodal` is the layout of most gridded datasets
+  and of everything `write_netcdf` writes, which is why it becomes the default.
+
 ### Fixed
+
+- **`write_netcdf` output now round-trips through `grid_from_netcdf` for every cell
+  count** ([#24](https://github.com/csu-tropical/Springsteel.jl/issues/24)). The issue
+  reported that two out of every three cell counts failed with an `ArgumentError`.
+  Reproducing it showed the remaining third was worse: it did not throw, but silently
+  returned the wrong grid — `num_cells = 11` on `[0, 10]` came back as `num_cells = 4`
+  on `[-0.4545, 10.4545]`. The two defects had one root cause: `write_netcdf` emits
+  endpoint-inclusive nodes while the factory assumed cell midpoints.
+
+  The deeper finding is that the problem was not well posed. Loading regular data onto
+  the quadrature mish *always* requires interpolation — with `mubar = 1` the mish sits
+  on cell midpoints, and with `mubar ≥ 2` the `:gauss` mish is not uniformly spaced, so
+  no combination of input length and `mubar` ever makes it an assignment. The
+  divisibility rule was never buying correctness. Values are now projected onto the
+  mish by fitting a cubic B-spline whose own quadrature points are the input
+  coordinates, which converges at cubic order and is substantially more accurate than
+  linear interpolation.
+
+  Under `:nodal` the input points become the cell boundaries, so a `write_netcdf` file
+  reads back with its geometry, cell count and domain recovered **exactly**, for any
+  cell count and any `mubar`. Field values are interpolated rather than bit-exact —
+  `save_grid`/`load_grid` remain the exact path. `write_netcdf` itself is unchanged, so
+  existing files and downstream readers are unaffected.
+
+  Some related work is deferred and tracked separately.
 
 - **`grid_from_netcdf` now handles a CF time axis**
   ([#22](https://github.com/csu-tropical/Springsteel.jl/issues/22)). Reproducing the issue
@@ -49,20 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/src/tutorial.md` passed `dim_names` as a `Tuple`, which raises a `TypeError` — the
   signature takes a `Vector{String}`. The parallel example in `docs/src/interpolation.md`
   was corrected in 1.1.0; this copy was missed.
-
-### Added
-
-- **Ice thermodynamic primitives, for the ISHMAEL microphysics port.** `L_f0`
-  (3.34e5 J/kg; Rogers & Yau 1989, Pruppacher & Klett 1997) and `L_s0`, defined as
-  `L_v0 + L_f0` so that Kirchhoff's identity `L_s = L_v + L_f` is exact by construction
-  rather than approximate. `L_s(T)` and `L_f(T)` are linear with the matching Kirchhoff
-  slopes `Cpv - Ci` and `Cl - Ci`; those sum to `L_v`'s `Cpv - Cl`, so the identity holds
-  at every temperature and not just at `T_0`. Also adds `sat_pressure_ice_buck_dT`, the
-  analytic temperature derivative of the Buck (1981) ice saturation vapor pressure
-  (verified against a central finite difference to `rtol=1e-6`), and `rho_i_sat`,
-  mirroring the existing `rho_v_sat`. All are exported from `Springsteel.Thermodynamics`.
-
-### Fixed
 
 - **`[compat] julia` corrected from `"1.9"` to `"1.10"` — it was never satisfiable.**
   `Krylov = "0.10.6"` requires `julia >= 1.10`, so `Pkg.add("Springsteel")` on Julia 1.9
@@ -564,7 +602,8 @@ this release is recorded below; see `[Unreleased]` for what has since been fixed
   `write_netcdf` emits `num_cells + 1` regular gridpoints, while `grid_from_regular_data`
   requires the coordinate length be a multiple of `mubar`; with the default `mubar = 3`
   those agree only when `num_cells ≡ 2 (mod 3)`. Setting `i_regular_out` (and the j/k
-  equivalents) to a multiple of `mubar` produces readable output.
+  equivalents) to a multiple of `mubar` produces readable output. **Fixed after this
+  release.**
 
 ## [1.0.0] - 2025
 
