@@ -2,6 +2,7 @@ using Springsteel
 using Test
 using Dates
 using JLD2
+using Logging
 using NCDatasets
 using SharedArrays
 using SparseArrays

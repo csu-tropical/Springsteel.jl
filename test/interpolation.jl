@@ -453,6 +453,52 @@ using Springsteel.Chebyshev
             @test maximum(abs.(g.physical[:, 1, 1] .- (1.0 .+ 2.0 .* getGridpoints(g)))) < 1e-12
         end
 
+        @testset "ambiguous-call warning on the v1.2.0 default change" begin
+            # The default flipped from :midpoint to :nodal. Warn on exactly the
+            # calls whose result changed SILENTLY: no `samples`, no `num_cells`,
+            # and every length divisible by mubar. Where a length was not
+            # divisible the old code threw, so nothing silent happened.
+            # Uses @test_logs only: it builds its TestLogger with
+            # respect_maxlog=false, so `maxlog=1` on the warning does not hide
+            # repeated assertions, and it avoids the TestLogger keyword whose
+            # availability varies across the supported Julia range.
+            xdiv = collect(range(0.0, 5.0, length=12))    # 12 % 3 == 0
+            ddiv = reshape(sin.(xdiv), :, 1)
+            xnon = collect(range(0.0, 5.0, length=13))    # 13 % 3 != 0
+            dnon = reshape(sin.(xnon), :, 1)
+
+            @test_logs (:warn,) match_mode=:any grid_from_regular_data(
+                xdiv, ddiv; mubar=3, vars=["u"])
+            # stating the convention silences it, either way
+            @test_logs min_level=Logging.Warn grid_from_regular_data(
+                xdiv, ddiv; mubar=3, samples=:nodal, vars=["u"])
+            @test_logs min_level=Logging.Warn grid_from_regular_data(
+                xdiv, ddiv; mubar=3, samples=:midpoint, vars=["u"])
+            # an explicit num_cells is new-API usage; nothing to warn about
+            @test_logs min_level=Logging.Warn grid_from_regular_data(
+                xdiv, ddiv; mubar=3, num_cells=4, vars=["u"])
+            # not divisible: the old code raised ArgumentError here, so the change
+            # is error -> success, which is not silent
+            @test_logs min_level=Logging.Warn grid_from_regular_data(
+                xnon, dnon; mubar=3, vars=["u"])
+
+            # warning or not, the result follows the new default
+            @test grid_from_regular_data(xdiv, ddiv; mubar=3, vars=["u"]).params.num_cells ==
+                  length(xdiv) - 1
+
+            # 2-D warns only when BOTH axes would have been accepted before
+            xs = collect(range(0.0, 3.0, length=6))
+            ys = collect(range(0.0, 4.0, length=9))
+            ys_non = collect(range(0.0, 4.0, length=10))
+            @test_logs (:warn,) match_mode=:any grid_from_regular_data(
+                xs, ys, reshape(ones(6 * 9), :, 1); mubar=3, vars=["u"])
+            @test_logs min_level=Logging.Warn grid_from_regular_data(
+                xs, ys_non, reshape(ones(6 * 10), :, 1); mubar=3, vars=["u"])
+
+            # invalid values are still rejected outright
+            @test_throws ArgumentError grid_from_regular_data(xdiv, ddiv; samples=:cell_edge)
+        end
+
         @testset "samples is validated" begin
             x = collect(range(0.0, 1.0, length=9))
             d = reshape(sin.(x), :, 1)

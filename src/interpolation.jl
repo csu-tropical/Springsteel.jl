@@ -84,6 +84,40 @@ function _validate_samples(samples::Symbol)
 end
 
 """
+    _resolve_samples(samples, lengths, mubar, explicit_cells) -> Symbol
+
+Resolve the `samples` keyword, warning when the v1.2.0 default change alters this
+call's result silently.
+
+`samples` defaults to `:nodal` from v1.2.0; before that the behaviour was
+`:midpoint` in all but name. The warning fires only where the flip is silent — a
+call that omitted `samples`, omitted `num_cells`, and whose coordinate lengths
+were all divisible by `mubar`. Those succeeded under the old convention and now
+return a different grid. Where a length was *not* divisible the old code threw an
+`ArgumentError`, so there is nothing silent to announce and no warning is issued.
+"""
+function _resolve_samples(samples::Union{Nothing, Symbol}, lengths::Tuple,
+                          mubar::Int, explicit_cells::Bool)
+    samples === nothing || return _validate_samples(samples)
+    if !explicit_cells && all(N -> N % mubar == 0, lengths)
+        @warn """
+              grid_from_regular_data: `samples` was not given, and the meaning of \
+              this call changed in v1.2.0.
+
+              Coordinates are now read as cell BOUNDARIES (`samples = :nodal`, \
+              endpoint-inclusive). Before v1.2.0 they were read as cell MIDPOINTS, \
+              giving domain [x[1] - h/2, x[end] + h/2] and num_cells = length(x) ÷ \
+              mubar, rather than [x[1], x[end]] and length(x) - 1.
+
+              Pass `samples = :nodal` to accept the new reading, or \
+              `samples = :midpoint` to keep the old one. Only calls whose result \
+              changed silently are warned about.
+              """ maxlog=1
+    end
+    return :nodal
+end
+
+"""
     _resolve_input_cells(N, mubar, samples, num_cells) -> (ncells, direct)
 
 Decide the cell count for an input axis of `N` points, and whether the data can be
@@ -286,6 +320,13 @@ The coordinate vectors must be uniformly spaced.
 writes, so a file it produced reads back with its `num_cells` and domain recovered
 exactly, for any cell count.
 
+!!! note "Default changed in v1.2.0"
+    Before v1.2.0 coordinates were always read as midpoints. Omitting `samples` on
+    a call whose behaviour changed silently — no `num_cells`, and every length
+    divisible by `mubar` — emits a one-time warning naming both conventions. Calls
+    whose lengths were not divisible raised an `ArgumentError` before, so they are
+    not warned about.
+
 # Values are projected, not assigned
 
 Loading regular data onto the quadrature mish always interpolates. That is forced
@@ -345,7 +386,7 @@ Derivative slots are filled with `NaN` — call `spectralTransform!` followed by
 See also: [`grid_from_netcdf`](@ref), [`interpolate_to_grid`](@ref)
 """
 function grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractMatrix{<:Real};
-        mubar::Int=3, l_q=2.0, samples::Symbol=:nodal,
+        mubar::Int=3, l_q=2.0, samples::Union{Nothing, Symbol}=nothing,
         num_cells::Union{Nothing, Int}=nothing,
         BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
         vars::Vector{String}=String[])
@@ -353,7 +394,7 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractMatrix{
     N = length(x)
     nvars = size(data, 2)
 
-    _validate_samples(samples)
+    samples = _resolve_samples(samples, (N,), mubar, num_cells !== nothing)
     h = _check_uniform_spacing(x)
     size(data, 1) == N || throw(ArgumentError(
         "data must have $(N) rows (matching length(x)), got $(size(data, 1))"))
@@ -403,7 +444,7 @@ grid_from_regular_data(x::AbstractVector{<:Real}, data::AbstractVector{<:Real}; 
 
 function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
         data::AbstractMatrix{<:Real};
-        mubar::Int=3, l_q=2.0, samples::Symbol=:nodal,
+        mubar::Int=3, l_q=2.0, samples::Union{Nothing, Symbol}=nothing,
         num_cells_i::Union{Nothing, Int}=nothing,
         num_cells_j::Union{Nothing, Int}=nothing,
         BCL::BCSpec=CubicBSpline.R0, BCR::BCSpec=CubicBSpline.R0,
@@ -413,7 +454,8 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
     Nx, Ny = length(x), length(y)
     nvars = size(data, 2)
 
-    _validate_samples(samples)
+    samples = _resolve_samples(samples, (Nx, Ny), mubar,
+                               num_cells_i !== nothing || num_cells_j !== nothing)
     hx = _check_uniform_spacing(x)
     hy = _check_uniform_spacing(y)
     size(data, 1) == Nx * Ny || throw(ArgumentError(
@@ -474,7 +516,7 @@ grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
 
 function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
         z::AbstractVector{<:Real}, data::AbstractMatrix{<:Real};
-        mubar::Int=3, l_q=2.0, samples::Symbol=:nodal,
+        mubar::Int=3, l_q=2.0, samples::Union{Nothing, Symbol}=nothing,
         num_cells_i::Union{Nothing, Int}=nothing,
         num_cells_j::Union{Nothing, Int}=nothing,
         num_cells_k::Union{Nothing, Int}=nothing,
@@ -486,7 +528,9 @@ function grid_from_regular_data(x::AbstractVector{<:Real}, y::AbstractVector{<:R
     Nx, Ny, Nz = length(x), length(y), length(z)
     nvars = size(data, 2)
 
-    _validate_samples(samples)
+    samples = _resolve_samples(samples, (Nx, Ny, Nz), mubar,
+                               num_cells_i !== nothing || num_cells_j !== nothing ||
+                               num_cells_k !== nothing)
     hx = _check_uniform_spacing(x)
     hy = _check_uniform_spacing(y)
     hz = _check_uniform_spacing(z)
@@ -629,15 +673,16 @@ function grid_from_netcdf(filename::String;
 
         for t in time_axes
             t.cf && continue
-            # No maxlog here: maxlog is per call site per session, which would
-            # silence this for every test after the first in the same run.
+            # maxlog=1 so a caller sweeping many files is told once, not once per
+            # file. Safe for the tests: @test_logs builds its TestLogger with
+            # respect_maxlog=false, so it still observes every occurrence.
             @warn "grid_from_netcdf: treating \"$(t.name)\" in $filename as a time " *
                   "axis on the strength of its name alone — it carries no CF time " *
                   "metadata (no `units = \"… since …\"`, `standard_name = \"time\"` " *
                   "or `axis = \"T\"`), so it decoded as plain numbers. It is " *
                   "excluded from the spatial dimensions rather than fitted with a " *
                   "spline through time. Add CF `units` if it is a time axis, or " *
-                  "rename it if it is a spatial coordinate."
+                  "rename it if it is a spatial coordinate." maxlog=1
         end
 
         time_names = Set(t.name for t in time_axes)
