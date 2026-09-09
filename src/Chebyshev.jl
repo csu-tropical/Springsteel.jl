@@ -183,8 +183,8 @@ One-dimensional Chebyshev column object. Construct via `Chebyshev1D(cp::Chebyshe
 - `ax::Vector{Float64}`: Working buffer of length `zDim` for derivative/integral coefficients.
 
 # Notes
-- Constructing `Chebyshev1D` calls `FFTW.plan_r2r` with `FFTW.PATIENT`; first construction
-  is slow but subsequent transforms are fast.
+- Constructing `Chebyshev1D` calls `FFTW.plan_r2r` with `FFTW.ESTIMATE` (a fixed heuristic,
+  so every run gets the same plan and the same roundoff); subsequent transforms are fast.
 - The struct is **not thread-safe** if `uMish`, `b`, `a`, or `ax` are mutated concurrently.
 
 See also: [`ChebyshevParameters`](@ref), [`CBtransform`](@ref), [`CAtransform`](@ref),
@@ -234,7 +234,7 @@ Construct a [`Chebyshev1D`](@ref) object from column parameters.
 Pre-computes and caches all state needed for repeated spectral transforms:
 1. CGL mish points via [`calcMishPoints`](@ref)
 2. BC correction matrix/vector via [`calcGammaBC`](@ref)
-3. A `FFTW.REDFT00` (DCT-I) plan measured with `FFTW.PATIENT`
+3. A `FFTW.REDFT00` (DCT-I) plan (`FFTW.ESTIMATE`, reproducible plan choice)
 4. A spectral filter matrix via [`calcFilterMatrix`](@ref)
 5. Zero-initialised working buffers `uMish`, `b`, `a`, `ax`
 
@@ -271,7 +271,8 @@ function _build_chebyshev_template(cp::ChebyshevParameters)
     mishPoints = calcMishPoints(cp)
     gammaBC = calcGammaBC(cp)
     scratch = zeros(real, cp.zDim)
-    fftPlan = FFTW.plan_r2r(scratch, FFTW.REDFT00, flags=FFTW.PATIENT)
+    # ESTIMATE for run-to-run reproducibility (see the Fourier planner for why).
+    fftPlan = FFTW.plan_r2r(scratch, FFTW.REDFT00, flags=FFTW.ESTIMATE)
     filter = calcFilterMatrix(cp)
     return _ChebyshevTemplate(cp, mishPoints, gammaBC, fftPlan, filter)
 end

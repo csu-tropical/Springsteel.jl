@@ -105,9 +105,10 @@ One-dimensional Fourier ring object. Construct via `Fourier1D(fp::FourierParamet
   coefficient computations.
 
 # Notes
-- Constructing `Fourier1D` calls `FFTW.plan_r2r` with `FFTW.PATIENT`, which performs
-  benchmark measurements to find the fastest algorithm. First construction is slow;
-  subsequent transforms using the same plan are fast.
+- Constructing `Fourier1D` calls `FFTW.plan_r2r` with `FFTW.ESTIMATE`, which picks the
+  algorithm by a fixed heuristic (PATIENT/MEASURE pick by timing, so two identical runs
+  on a differently loaded machine could get different plans and different roundoff).
+  Planning is cheap and subsequent transforms using the same plan are fast.
 - The struct is **not thread-safe** if `uMish`, `b`, `a`, or `ax` are mutated concurrently.
   Create one `Fourier1D` per thread for parallel workloads.
 
@@ -155,7 +156,7 @@ Pre-computes and caches all state needed for repeated spectral transforms:
 1. Evenly-spaced mish points via [`calcMishPoints`](@ref)
 2. Phase-filter and inverse phase-filter matrices via [`calcPhaseFilter`](@ref) /
    [`calcInvPhaseFilter`](@ref)
-3. Forward and inverse FFTW plans (measured with `FFTW.PATIENT` for maximum performance)
+3. Forward and inverse FFTW plans (`FFTW.ESTIMATE`, so the plan is the same in every run)
 4. Zero-initialised working buffers `uMish`, `b`, `a`, `ax`
 
 Reuse the constructed `Fourier1D` object across multiple transforms to amortise the
@@ -189,8 +190,13 @@ const _FOURIER_CACHE_LOCK = ReentrantLock()
 function _build_fourier_template(fp::FourierParameters)
     mishPoints = calcMishPoints(fp)
     scratch = zeros(real, fp.yDim)
-    fftPlan  = FFTW.plan_r2r(scratch, FFTW.FFTW.R2HC, flags=FFTW.PATIENT)
-    ifftPlan = FFTW.plan_r2r(scratch, FFTW.FFTW.HC2R, flags=FFTW.PATIENT)
+    # ESTIMATE, not PATIENT/MEASURE: those select the algorithm by timing it, so the plan
+    # -- and with it the floating-point summation order of every transform in the run --
+    # can differ between two identical runs on a differently loaded machine. ESTIMATE
+    # chooses by a fixed heuristic and is reproducible; at these sizes the speed
+    # difference is negligible next to the spline fits.
+    fftPlan  = FFTW.plan_r2r(scratch, FFTW.FFTW.R2HC, flags=FFTW.ESTIMATE)
+    ifftPlan = FFTW.plan_r2r(scratch, FFTW.FFTW.HC2R, flags=FFTW.ESTIMATE)
     phasefilter = PhaseFilter(fp)
     return _FourierTemplate(fp, mishPoints, fftPlan, ifftPlan, phasefilter)
 end
