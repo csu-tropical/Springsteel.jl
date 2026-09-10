@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-09
+
 ### Added
+
+- **A one-time warning for calls whose meaning changed with the `samples` default.**
+  Omitting `samples` warns only where the flip is silent: no `num_cells`, and every
+  coordinate length divisible by `mubar`. Those calls succeeded under the old
+  midpoint convention and now return a different grid. Where a length was not
+  divisible the old code raised an `ArgumentError`, so the change there is
+  error-to-success and no warning is issued.
 
 - **`samples` and `num_cells` keywords on `grid_from_regular_data`.** `samples` selects
   the coordinate convention (`:nodal` or `:midpoint`); `num_cells` (and `num_cells_i` /

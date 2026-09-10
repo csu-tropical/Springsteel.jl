@@ -52,6 +52,17 @@ points become the cell boundaries, a file written by `write_netcdf` reads
 back with its `num_cells` and domain recovered **exactly**, for any cell
 count.
 
+!!! warning "The default changed in v1.2.0"
+    Coordinates were read as midpoints before v1.2.0. If you omit `samples`
+    on a call whose result changed silently — no `num_cells`, and every
+    coordinate length divisible by `mubar` — you get a one-time warning
+    naming both conventions. Pass `samples = :midpoint` to keep the old
+    reading, or `samples = :nodal` to accept the new one and silence it.
+
+    Calls whose lengths were *not* divisible by `mubar` raised an
+    `ArgumentError` before, so they changed from error to success and are
+    not warned about.
+
 !!! note "Loading regular data always interpolates"
     Values are *projected* onto the grid's quadrature points, not assigned
     to them, and that is unavoidable rather than a design choice: with
