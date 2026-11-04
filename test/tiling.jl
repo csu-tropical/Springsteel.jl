@@ -677,6 +677,98 @@
             @test tiled_roundtrip_3d("SLR") < 5e-3
         end
 
+        @testset "3D Cartesian tiling (RRR): i-tiles, maps and the distributed pipeline" begin
+            # The RRR spectral array is b_jDim*b_kDim consecutive i-blocks (block
+            # q = (z-1)*b_jDim + l holds the i-direction coefficients of j-mode l and
+            # k-mode z; transforms_cartesian.jl). i-tiling windows every block at
+            # spectralIndexL exactly as RiRk windows its b_kDim blocks. Before these
+            # methods the generic fallbacks marked only the FIRST block (calcPatchMap,
+            # calcHaloMap) and there was no splineTransform!/tileTransform! at all.
+            function rrr_patch(; nc = 9, ncj = 4, nck = 4)
+                bc = Dict("u" => CubicBSpline.R0, "v" => CubicBSpline.R1T0)
+                gp = SpringsteelGridParameters(geometry = "RRR",
+                    num_cells = nc, iMin = 0.0, iMax = 90.0,
+                    jMin = 0.0, jMax = 40.0, num_cells_j = ncj,
+                    kMin = 0.0, kMax = 10.0, num_cells_k = nck,
+                    vars = Dict("u" => 1, "v" => 2),
+                    BCL = bc, BCR = bc, BCU = bc, BCD = bc, BCB = bc, BCT = bc)
+                patch = createGrid(gp)
+                pts = getGridpoints(patch)
+                f(x, y, z, v) = (v == 1 ? sin(pi * x / 90.0) : cos(pi * x / 90.0)) *
+                                (1.0 + 0.3 * sin(2pi * y / 40.0)) * (0.5 + z / 10.0)
+                for i in axes(pts, 1), v in 1:2
+                    patch.physical[i, v, 1] = f(pts[i, 1], pts[i, 2], pts[i, 3], v)
+                end
+                spectralTransform!(patch)
+                gridTransform!(patch)
+                return patch
+            end
+            patch = rrr_patch()
+            gp = patch.params
+            nblk = gp.b_jDim * gp.b_kDim
+            @test size(patch.spectral, 1) == gp.b_iDim * nblk
+            pts = getGridpoints(patch)
+            key(p, i) = (p[i, 1], p[i, 2], p[i, 3])
+            where_in_patch = Dict(key(pts, i) => i for i in axes(pts, 1))
+            pmax = [maximum(abs, view(patch.physical, :, v, s)) for v in 1:2, s in 1:7]
+            # The B-vectors, kept: the 3-arg splineTransform! overwrites patch.spectral with
+            # the A-coefficients (and calcTileSizes(patch, 1) returns the patch itself).
+            B = copy(patch.spectral)
+
+            for ntiles in (1, 2, 3)
+                tiles = calcTileSizes(patch, ntiles)
+                @test length(tiles) == ntiles
+                shared = SharedArray{Float64}(size(patch.spectral))
+                shared[:, :] .= B
+                worst = 0.0
+                cover = zeros(Int, size(patch.spectral))
+                for (n, tile) in enumerate(tiles)
+                    @test tile.params.b_jDim == gp.b_jDim && tile.params.b_kDim == gp.b_kDim
+                    # pipeline: B (shared) -> A on the patch splines -> tile window -> physical
+                    splineTransform!(shared, patch, tile)
+                    tphys = zeros(Float64, size(tile.physical))
+                    tileTransform!(shared, tile, tphys, tile.spectral)
+                    tpts = getGridpoints(tile)
+                    for i in axes(tpts, 1)
+                        j = where_in_patch[key(tpts, i)]
+                        for v in 1:2, s in 1:7
+                            worst = max(worst, abs(tphys[i, v, s] - patch.physical[j, v, s]) / pmax[v, s])
+                        end
+                    end
+                    # maps: every block windowed at spectralIndexL
+                    pm = calcPatchMap(patch, tile)
+                    hm = calcHaloMap(patch, tile)
+                    @test nnz(pm) == (tile.params.b_iDim - 3) * nblk * 2
+                    @test nnz(hm) == 3 * nblk * 2
+                    siL = tile.params.spectralIndexL
+                    for q in 1:nblk
+                        r0 = (q - 1) * gp.b_iDim
+                        @test all(pm[r0 + siL : r0 + siL + tile.params.b_iDim - 4, :] .== 1.0)
+                        @test all(hm[r0 + siL + tile.params.b_iDim - 3 : r0 + siL + tile.params.b_iDim - 1, :] .== 1.0)
+                    end
+                    cover .+= Matrix(pm) .!= 0
+                    # a tile's halo is the next tile's first three rows of every block
+                    if n < ntiles
+                        pnext = calcPatchMap(patch, tiles[n + 1])
+                        @test all(pnext[findall(!iszero, hm)] .== 1.0)
+                    end
+                end
+                @test worst < 1.0e-12
+                # the patch maps are disjoint and leave only the last tile's 3-row halo
+                @test maximum(cover) == 1
+                @test count(iszero, cover) == 3 * nblk * 2
+            end
+
+            # 2-arg form (tile = patch): the same as the 3-arg form with one tile
+            shared = SharedArray{Float64}(size(patch.spectral))
+            shared[:, :] .= B
+            one = createGrid(gp)
+            splineTransform!(shared, one)
+            ph = zeros(Float64, size(one.physical))
+            tileTransform!(shared, one, ph, one.spectral)
+            @test maximum(abs.(ph .- patch.physical)) <= 1.0e-12 * maximum(abs, patch.physical)
+        end
+
         @testset "Multi-dim tiling" begin
 
             # ── 2D tiling on RR_Grid (3 i-tiles × 2 j-tiles = 6 tiles) ──────

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-04
+
+### Added
+
+- **i-tiling for the 3-D Cartesian box (`_3DCartesianRRR`).** `calcPatchMap`, `calcHaloMap`,
+  the 2- and 3-argument `splineTransform!` on a shared array, and `tileTransform!` now have
+  `RRR` methods, so a box can be time-stepped across workers (and on one worker, which goes
+  through the same path). Previously the two transforms were `MethodError`s and the maps fell
+  to the generic RiRk-era methods, which mark only the first i-block of the spectral array.
+  The box is decomposed in i only; its spectral array holds `b_jDim * b_kDim` consecutive
+  i-blocks of `b_iDim` rows (block `q = (z - 1) * b_jDim + l`), and the new maps mark the
+  inner rows and the 3-row halos of every block. `tileTransform!` is the box's
+  `gridTransform!` started from the A coefficients. Tested on 1, 2 and 3 tiles over all seven
+  slots against `gridTransform!` to 1e-12 (`test/tiling.jl`). Additive: no other geometry's
+  methods changed, and the `RRR` constructor is untouched (it still drops `gp.positivity`;
+  a caller needing a bound on a box variable must refuse the configuration).
+
 ## [1.2.0] - 2026-09-09
 
 ### Added
@@ -621,6 +638,8 @@ mixed CubicBSpline / Fourier / Chebyshev bases, the solver framework, grid-to-gr
 interpolation, spectral filtering, multi-patch grid connections, basis-template
 caching, and grid relocation. See the Git tag history for releases prior to 1.1.0.
 
-[Unreleased]: https://github.com/csu-tropical/Springsteel.jl/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/csu-tropical/Springsteel.jl/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/csu-tropical/Springsteel.jl/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/csu-tropical/Springsteel.jl/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/csu-tropical/Springsteel.jl/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/csu-tropical/Springsteel.jl/releases/tag/v1.0.0
