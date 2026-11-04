@@ -3054,6 +3054,240 @@ function tileTransform!(sharedSpectral::SharedArray{real},
 end
 
 # ════════════════════════════════════════════════════════════════════════════
+# 3-D Cartesian Spline×Spline×Spline (RRR) i-tiling
+# ════════════════════════════════════════════════════════════════════════════
+#
+# The RRR spectral array is b_jDim*b_kDim consecutive blocks of b_iDim rows:
+# block q = (z-1)*b_jDim + l holds the i-direction coefficients of j-mode l and
+# k-mode z (`spectral[(z-1)*b_jDim*b_iDim + (l-1)*b_iDim + i]`,
+# transforms_cartesian.jl). Tiles split the i-dimension only (calcTileSizes with an
+# integer tile count; the j and k bases are the patch's), so every block carries the
+# same tile window at spectralIndexL and the same 3-row right halo -- exactly the
+# RiRk layout with b_kDim blocks replaced by b_jDim*b_kDim. The generic fallbacks
+# (calcPatchMap / calcHaloMap on SpringsteelGrid) mark the FIRST block only, and no
+# splineTransform! / tileTransform! existed for this grid.
+
+"""
+    calcPatchMap(patch::RRR_Grid, tile::RRR_Grid) -> SparseMatrixCSC{Float64, Int64}
+
+Mark the inner (non-halo) spectral rows of `tile` within the patch spectral array,
+repeated for each of the `b_jDim*b_kDim` i-blocks of the RRR layout.
+"""
+function calcPatchMap(patch::_3DCartesianRRR, tile::_3DCartesianRRR)
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    nblk        = tile.params.b_jDim * tile.params.b_kDim
+    siL         = tile.params.spectralIndexL
+    patchStride = patch.params.b_iDim
+    tileShare   = tile.params.b_iDim - 4  # inner rows (excluding 3-row halo)
+
+    map_arr = spzeros(Float64, n, nvars)
+    for q in 1:nblk
+        p1 = (q - 1) * patchStride + siL
+        p2 = p1 + tileShare
+        if p1 >= 1 && p2 <= n
+            map_arr[p1:p2, :] .= 1.0
+        end
+    end
+    return map_arr
+end
+
+"""
+    calcHaloMap(patch::RRR_Grid, tile1::RRR_Grid, tile2::RRR_Grid) -> SparseMatrixCSC{Float64, Int64}
+
+Mark the 3-row right-edge halo of `tile1` within the patch spectral array, repeated for
+each of the `b_jDim*b_kDim` i-blocks of the RRR layout.
+"""
+function calcHaloMap(patch::_3DCartesianRRR, tile1::_3DCartesianRRR, tile2::_3DCartesianRRR)
+    n           = size(patch.spectral, 1)
+    nvars       = size(patch.spectral, 2)
+    nblk        = tile1.params.b_jDim * tile1.params.b_kDim
+    siL         = tile1.params.spectralIndexL
+    patchStride = patch.params.b_iDim
+    tileShare   = tile1.params.b_iDim - 3  # first halo index within tile block
+
+    map_arr = spzeros(Float64, n, nvars)
+    for q in 1:nblk
+        p1 = (q - 1) * patchStride + siL + tileShare
+        if p1 >= 1 && p1 + 2 <= n
+            map_arr[p1:p1+2, :] .= 1.0
+        end
+    end
+    return map_arr
+end
+
+"""
+    splineTransform!(sharedSpectral, tile::RRR_Grid) -> Nothing
+
+The SA (B-vector → A-coefficient) transform of every i-block of `tile`, reading the
+B-coefficients from `sharedSpectral`. Single-tile form: `tile` spans the whole patch.
+"""
+function splineTransform!(sharedSpectral::SharedArray{real}, tile::_3DCartesianRRR)
+    b_iDim = tile.params.b_iDim
+    b_jDim = tile.params.b_jDim
+    b_kDim = tile.params.b_kDim
+    for v in 1:length(tile.params.vars)
+        for z in 1:b_kDim, l in 1:b_jDim
+            r1 = ((z - 1) * b_jDim + (l - 1)) * b_iDim + 1
+            r2 = r1 + b_iDim - 1
+            tile.spectral[r1:r2, v] .= SAtransform_bounded(tile.ibasis.data[l, z, v],
+                                                           view(sharedSpectral, r1:r2, v))
+        end
+    end
+    return nothing
+end
+
+"""
+    splineTransform!(sharedSpectral, patch::RRR_Grid, tile::RRR_Grid) -> Nothing
+
+SA transform of every i-block on the PATCH splines, then the tile's A-coefficient window
+(starting at `spectralIndexL`) of each block copied into `tile.spectral`.
+"""
+function splineTransform!(sharedSpectral::SharedArray{real},
+                          patch::_3DCartesianRRR, tile::_3DCartesianRRR)
+    b_iDim_tile  = tile.params.b_iDim
+    b_iDim_patch = patch.params.b_iDim
+    b_jDim       = tile.params.b_jDim
+    b_kDim       = tile.params.b_kDim
+    siL          = tile.params.spectralIndexL
+
+    for v in 1:length(tile.params.vars)
+        for z in 1:b_kDim, l in 1:b_jDim
+            q = (z - 1) * b_jDim + l
+            pp1 = (q - 1) * b_iDim_patch + 1
+            tp1 = (q - 1) * b_iDim_tile + 1
+            patch.spectral[pp1:pp1+b_iDim_patch-1, v] .=
+                SAtransform_bounded(patch.ibasis.data[l, z, v],
+                                    view(sharedSpectral, pp1:pp1+b_iDim_patch-1, v))
+            tile.spectral[tp1:tp1+b_iDim_tile-1, v] .=
+                patch.spectral[pp1+siL-1:pp1+siL+b_iDim_tile-2, v]
+        end
+    end
+    return nothing
+end
+
+"""
+    tileTransform!(sharedSpectral, tile::RRR_Grid, physical, spectral) -> Array{Float64}
+
+Field values and all six derivatives on `tile`'s gridpoints from the i-direction
+A-coefficients in `spectral` (populated by [`splineTransform!`](@ref)). This is the RRR
+[`gridTransform`](@ref) with its first step reading the A-coefficients directly (no
+`SAtransform!`); the j and k legs are identical, so the seven slots follow the same
+convention (value, ∂i, ∂i², ∂j, ∂j², ∂k, ∂k²).
+"""
+function tileTransform!(sharedSpectral::SharedArray{real},
+                        tile::_3DCartesianRRR,
+                        physical::Array{real},
+                        spectral::Array{real})
+    iDim   = tile.params.iDim
+    jDim   = tile.params.jDim
+    kDim   = tile.params.kDim
+    b_iDim = tile.params.b_iDim
+    b_jDim = tile.params.b_jDim
+    b_kDim = tile.params.b_kDim
+    s = _scratch(tile)
+    splineBuffer_r     = s.splineBuffer_r
+    splineBuffer_l     = s.splineBuffer_l
+    splineBuffer_l_1st = s.splineBuffer_l_1st
+    splineBuffer_l_2nd = s.splineBuffer_l_2nd
+    scratch_i          = s.scratch_i
+    scratch_j          = s.scratch_j
+
+    for v in 1:length(tile.params.vars)
+        for dr in 0:2
+            # i-direction inverse transform from the A-coefficients
+            for z in 1:b_kDim
+                for l in 1:b_jDim
+                    idx = (z-1)*b_jDim*b_iDim + (l-1)*b_iDim + 1
+                    isp = tile.ibasis.data[l, z, v]
+                    copyto!(isp.a, view(spectral, idx:idx+b_iDim-1, v))
+                    if dr == 0
+                        SItransform!(isp)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = isp.uMish[r]
+                        end
+                    elseif dr == 1
+                        SIxtransform(isp, scratch_i)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = scratch_i[r]
+                        end
+                    else
+                        SIxxtransform(isp, scratch_i)
+                        @inbounds for r in 1:iDim
+                            splineBuffer_r[r, l, z] = scratch_i[r]
+                        end
+                    end
+                end
+            end
+
+            # j and k legs, as gridTransform for RRR
+            for r in 1:iDim
+                for z in 1:b_kDim
+                    jsp = tile.jbasis.data[r, z, v]
+                    @inbounds for l in 1:b_jDim
+                        jsp.b[l] = splineBuffer_r[r, l, z]
+                    end
+                    SAtransform!(jsp)
+                    SItransform!(jsp)
+                    @inbounds for l in 1:jDim
+                        splineBuffer_l[l, z] = jsp.uMish[l]
+                    end
+                    if dr == 0
+                        SIxtransform(jsp, scratch_j)
+                        @inbounds for l in 1:jDim
+                            splineBuffer_l_1st[l, z] = scratch_j[l]
+                        end
+                        SIxxtransform(jsp, scratch_j)
+                        @inbounds for l in 1:jDim
+                            splineBuffer_l_2nd[l, z] = scratch_j[l]
+                        end
+                    end
+                end
+
+                for l in 1:jDim
+                    ksp = tile.kbasis.data[r, l, v]
+                    @inbounds for zb in 1:b_kDim
+                        ksp.b[zb] = splineBuffer_l[l, zb]
+                    end
+                    SAtransform!(ksp)
+                    SItransform!(ksp)
+
+                    i_flat = (r-1)*jDim*kDim + (l-1)*kDim + 1
+                    i_flat_end = i_flat + kDim - 1
+                    if dr == 0
+                        copyto!(view(physical, i_flat:i_flat_end, v, 1), ksp.uMish)
+                        SIxtransform(ksp, ksp.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 6), ksp.uMish)
+                        SIxxtransform(ksp, ksp.uMish)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 7), ksp.uMish)
+
+                        @inbounds for zb in 1:b_kDim
+                            ksp.b[zb] = splineBuffer_l_1st[l, zb]
+                        end
+                        SAtransform!(ksp)
+                        SItransform!(ksp)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 4), ksp.uMish)
+
+                        @inbounds for zb in 1:b_kDim
+                            ksp.b[zb] = splineBuffer_l_2nd[l, zb]
+                        end
+                        SAtransform!(ksp)
+                        SItransform!(ksp)
+                        copyto!(view(physical, i_flat:i_flat_end, v, 5), ksp.uMish)
+                    elseif dr == 1
+                        copyto!(view(physical, i_flat:i_flat_end, v, 2), ksp.uMish)
+                    else
+                        copyto!(view(physical, i_flat:i_flat_end, v, 3), ksp.uMish)
+                    end
+                end
+            end
+        end
+    end
+    return physical
+end
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Multi-Dimensional Tiling
 # ════════════════════════════════════════════════════════════════════════════
 #
